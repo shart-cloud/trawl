@@ -1,0 +1,130 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+env:
+  # Pinned by the `go` directive in go.mod; GOTOOLCHAIN=auto fetches it exactly.
+  GOTOOLCHAIN: auto
+
+jobs:
+  tools:
+    name: Tool pins
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+      - name: Verify pinned tool versions
+        run: hack/verify-tools.sh --install
+
+  drift:
+    name: Generated-artifact drift
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+      # CRDs, RBAC, and the install bundle are contract artifacts. If they differ
+      # from what the current source generates, the checked-in copy is a lie.
+      - name: Regenerate and check for drift
+        run: make verify
+      - name: Verify go.mod/go.sum are tidy
+        run: |
+          cp go.mod go.mod.bak && cp go.sum go.sum.bak
+          go mod tidy
+          diff -u go.mod.bak go.mod
+          diff -u go.sum.bak go.sum
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+      - name: Verify lint configuration
+        run: make lint-config
+      - name: Lint
+        run: make lint
+
+  unit:
+    name: Unit and envtest
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+      # `make test` installs the envtest control-plane binaries, so reconciliation
+      # tests run against a real apiserver rather than a fake client.
+      - name: Unit, schema, contract, and envtest suites
+        run: make test
+      - name: Upload coverage
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: coverage
+          path: cover.out
+          if-no-files-found: ignore
+
+  integration:
+    name: Container integration
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+      # Real analyzers, MinIO, Loki, and Hubble fixtures. The constitution
+      # requires these boundaries be exercised as processes, not mocks.
+      - name: Integration suites
+        run: make test-integration
+
+  docs:
+    name: Docs site
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+      # ADRs, runbooks, and security docs are Starlight content. A broken link or
+      # malformed frontmatter fails the build, so it is checked like code.
+      - name: Build documentation
+        working-directory: docs
+        run: |
+          npm ci
+          npm run build

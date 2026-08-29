@@ -1,0 +1,272 @@
+openapi: 3.1.0
+info:
+  title: Trawl Artifact Gateway
+  version: 0.1.0
+  description: >-
+    Internal HTTPS API used by the supported Trawl CLI for authorized download of
+    completed, unexpired capture artifacts. Grafana does not call it directly in
+    the MVP. It never serves packet bytes itself and never exposes storage
+    credentials or permanent object locations.
+servers:
+  - url: https://trawl-artifact-gateway.trawl-system.svc
+    description: In-cluster service; external access requires an approved authenticated route.
+tags:
+  - name: artifacts
+  - name: health
+paths:
+  /api/v1/namespaces/{namespace}/capturejobs/{name}/download:
+    get:
+      tags: [artifacts]
+      operationId: downloadCaptureJobArtifact
+      summary: Request a short-lived download redirect
+      description: >-
+        Authenticates the bearer token with Kubernetes TokenReview, authorizes
+        `get` on `trawl.cloud` resource `capturejobs`, subresource `download`,
+        for this namespace and name, then verifies the live CaptureJob and object.
+        A successful response is allowed only after its idempotent audit record is
+        durably committed, then redirects to a private presigned GET URL valid for
+        at most five minutes and never beyond the retention deadline. Responses and
+        redirects must use `Cache-Control: no-store`.
+      security:
+        - kubernetesBearer: []
+      parameters:
+        - $ref: '#/components/parameters/namespace'
+        - $ref: '#/components/parameters/name'
+      responses:
+        '303':
+          description: Authorized short-lived object download redirect.
+          headers:
+            Location:
+              description: Private presigned GET URL; never log or persist this value.
+              required: true
+              schema:
+                type: string
+                format: uri
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/NotDownloadable'
+        '410':
+          $ref: '#/components/responses/Expired'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /healthz:
+    get:
+      tags: [health]
+      operationId: health
+      security: []
+      responses:
+        '200':
+          description: Process is alive.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+  /readyz:
+    get:
+      tags: [health]
+      operationId: readiness
+      security: []
+      responses:
+        '200':
+          description: Kubernetes auth APIs and artifact metadata dependencies are reachable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+components:
+  securitySchemes:
+    kubernetesBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: Kubernetes bearer token
+      description: >-
+        An audience-valid token accepted by Kubernetes TokenReview. Tokens are
+        sensitive and must never be included in logs, metrics, traces, or errors.
+  parameters:
+    namespace:
+      name: namespace
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 63
+        pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+    name:
+      name: name
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 253
+        pattern: '^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$'
+  headers:
+    NoStore:
+      description: Prevents caching of sensitive authorization results and URLs.
+      required: true
+      schema:
+        type: string
+        const: no-store
+    RequestID:
+      description: Opaque request correlation identifier; contains no user or artifact data.
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+  schemas:
+    Error:
+      type: object
+      additionalProperties: false
+      required: [code, message, request_id]
+      properties:
+        code:
+          type: string
+          enum:
+            - BadRequest
+            - Unauthenticated
+            - Forbidden
+            - NotFound
+            - NotDownloadable
+            - Expired
+            - RateLimited
+            - Unavailable
+        message:
+          type: string
+          maxLength: 512
+          description: Sanitized explanation with no token, URL, credential, or packet data.
+        request_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+    Health:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, unavailable]
+  responses:
+    BadRequest:
+      description: Invalid namespace, resource name, or request shape.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/NoStore'
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthenticated:
+      description: Missing, invalid, expired, or wrong-audience bearer token.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/NoStore'
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: >-
+        SubjectAccessReview denied `get capturejobs/download`; the response does
+        not reveal whether the named CaptureJob exists.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/NoStore'
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Authorized caller requested a CaptureJob or verified artifact that does not exist.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/NoStore'
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotDownloadable:
+      description: CaptureJob is pending, capturing, storing, failed, or lacks a verified artifact.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/NoStore'
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+        Retry-After:
+          description: Optional seconds before retry for a non-terminal execution.
+          schema:
+            type: integer
+            minimum: 1
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Expired:
+      description: Retention deadline has passed; download is denied regardless of deletion progress.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/NoStore'
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    RateLimited:
+      description: Caller-specific gateway request limit exceeded.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/NoStore'
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+        Retry-After:
+          description: Seconds before retry.
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unavailable:
+      description: Kubernetes authorization or private object storage is unavailable.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/NoStore'
+        X-Request-ID:
+          $ref: '#/components/headers/RequestID'
+        Retry-After:
+          description: Suggested seconds before retry.
+          schema:
+            type: integer
+            minimum: 1
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
