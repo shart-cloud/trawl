@@ -41,3 +41,4 @@ dist/
 .env
 .env.*
 .DS_Store
+images/content-init/trawl-content

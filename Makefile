@@ -111,6 +111,18 @@ test-integration: manifests generate fmt vet setup-envtest ## Run integration te
 test-race: manifests generate fmt vet ## Run unit tests under the race detector.
 	go test -race ./internal/... ./api/...
 
+.PHONY: docker-build-content-init
+docker-build-content-init: ## Build the analyzer content-init image.
+	$(CONTAINER_TOOL) build --build-arg BINARY=content-init \
+		--build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) \
+		--target builder -t trawl-content-builder .
+	$(CONTAINER_TOOL) create --name trawl-content-extract trawl-content-builder
+	$(CONTAINER_TOOL) cp trawl-content-extract:/workspace/trawl-binary images/content-init/trawl-content
+	$(CONTAINER_TOOL) rm trawl-content-extract
+	$(CONTAINER_TOOL) build -f images/content-init/Containerfile \
+		-t $(IMAGE_REPO)/content-init:$(VERSION) images/content-init
+	rm -f images/content-init/trawl-content
+
 .PHONY: manifest-security
 manifest-security: ## Fail on manifests that grant more than Trawl needs.
 	hack/verify-manifests.sh

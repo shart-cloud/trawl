@@ -34,6 +34,6 @@ while detecting nothing, which is the worse failure mode.
 
 ## Build
 
-The image expects a `trawl-build` stage supplying `/workspace/trawl-content`.
-It is built by `make docker-build-content-init`, which supplies that stage from
-the root `Dockerfile`.
+`make docker-build-content-init` builds `cmd/content-init` with the root
+`Dockerfile` and stages the binary here, so it shares one toolchain and one set
+of build flags with every other Trawl binary.

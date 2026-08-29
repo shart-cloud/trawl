@@ -40,8 +40,11 @@ RUN curl -fsSL -o /tmp/oras.tar.gz \
     && chmod 0755 /usr/local/bin/oras
 
 # The Trawl content binary performs the merge, validates paths, and writes the
-# feed timestamp and custom digest that the sensor agent reports as status.
-COPY --from=trawl-build /workspace/trawl-content /usr/local/bin/trawl-content
+# feed timestamp and custom digest that the sensor agent reports as status. It
+# is built by the root Dockerfile with BINARY=content-init and copied in here,
+# so it shares one toolchain and one set of build flags with every other Trawl
+# binary rather than having its own.
+COPY trawl-content /usr/local/bin/trawl-content
 
 # Non-root. The only thing this container writes is the shared content volume,
 # which is mounted writable for it and read-only for the analyzers.
