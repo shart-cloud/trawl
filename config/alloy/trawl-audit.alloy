@@ -1,0 +1,96 @@
+// Trawl audit replay pipeline.
+//
+// The controller manager emits committed audit records on stdout after they are
+// durably written to the object ledger. This pipeline forwards that searchable
+// copy to Loki.
+//
+// Loki is explicitly not the durability boundary here (ADR-0003). If this
+// pipeline stalls or drops, the ledger is unaffected and the records are
+// replayed from it; that is why delivery failure is a bounded metric rather
+// than an incident.
+
+discovery.kubernetes "trawl_control_plane" {
+  role = "pod"
+
+  selectors {
+    role  = "pod"
+    label = "app.kubernetes.io/name=trawl,app.kubernetes.io/component=controller-manager"
+  }
+}
+
+loki.source.kubernetes "trawl_audit" {
+  targets    = discovery.kubernetes.trawl_control_plane.targets
+  forward_to = [loki.process.trawl_audit.receiver]
+}
+
+loki.process "trawl_audit" {
+  forward_to = [loki.write.trawl_audit.receiver]
+
+  stage.json {
+    expressions = {
+      schema_version = "schemaVersion",
+      action         = "action",
+      decision       = "decision",
+      reason         = "reason",
+      recorded_at    = "recordedAt",
+      stable_key     = "stableKey",
+      request_id     = "requestID",
+      actor_username = "actor.username",
+      resource_kind  = "resource.kind",
+      resource_name  = "resource.name",
+      resource_ns    = "resource.namespace",
+      ledger_key     = "ledgerKey",
+    }
+  }
+
+  // Only audit records; the manager's other log lines are not audit events and
+  // must not appear in an audit query as though they were.
+  stage.match {
+    selector = "{job=~\".+\"} !~ \"trawl.audit/v1\""
+    action   = "drop"
+    drop_counter_reason = "not_an_audit_record"
+  }
+
+  stage.timestamp {
+    source = "recorded_at"
+    format = "RFC3339Nano"
+  }
+
+  // action and decision are the contract's indexed audit labels. Actor,
+  // resource names, and request IDs stay structured metadata: an audit stream
+  // labelled by username would create a stream per user.
+  stage.labels {
+    values = {
+      action   = "",
+      decision = "",
+    }
+  }
+
+  stage.static_labels {
+    values = {
+      service_name = "trawl-audit",
+      cluster      = env("TRAWL_CLUSTER_ID"),
+    }
+  }
+
+  stage.structured_metadata {
+    values = {
+      // stable_key is what lets a duplicate replayed copy be collapsed. Replay
+      // deliberately re-delivers around its cursor, so duplicates are expected
+      // and must be de-duplicable at query time.
+      stable_key     = "",
+      request_id     = "",
+      actor_username = "",
+      resource_kind  = "",
+      resource_name  = "",
+      resource_ns    = "",
+      ledger_key     = "",
+    }
+  }
+}
+
+loki.write "trawl_audit" {
+  endpoint {
+    url = env("TRAWL_LOKI_URL")
+  }
+}

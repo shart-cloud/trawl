@@ -1,0 +1,25 @@
+# REJECTED: custom content must be digest-pinned.
+#
+# A tag can be repointed after the review that approved its content, so it
+# cannot identify what a sensor is running (FR-042).
+apiVersion: trawl.cloud/v1alpha1
+kind: NetworkTap
+metadata:
+  name: floating-content
+  namespace: trawl-system
+spec:
+  mode: Passive
+  type: MirrorInterface
+  mirrorInterface:
+    interface: enp5s0
+    nodeSelector:
+      matchLabels:
+        kubernetes.io/hostname: talos-sensor-01
+  analyzers:
+    suricata:
+      enabled: true
+      resources:
+        requests: {cpu: 500m, memory: 512Mi}
+        limits: {cpu: "1", memory: 1Gi}
+      customContent:
+        reference: registry.example.com/trawl/custom-suricata:latest

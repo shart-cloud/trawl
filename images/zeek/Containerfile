@@ -1,0 +1,42 @@
+# Zeek 8.0.10 LTS, built from verified upstream source.
+#
+# No scripts are baked in. Base scripts and any site overlay arrive on the
+# mounted content volume at startup (ADR-0005), so a script change does not
+# require an image rebuild.
+
+FROM docker.io/library/debian:12-slim AS builder
+
+ARG ZEEK_VERSION=8.0.10
+# Checksum from SOURCES.lock; the tarball is verified before it is unpacked.
+ARG ZEEK_SHA256
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential ca-certificates cmake curl flex bison \
+      libpcap-dev libssl-dev python3-dev swig zlib1g-dev git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+RUN curl -fsSL -o zeek.tar.gz \
+      "https://github.com/zeek/zeek/releases/download/v${ZEEK_VERSION}/zeek-${ZEEK_VERSION}.tar.gz" \
+ && echo "${ZEEK_SHA256}  zeek.tar.gz" | sha256sum -c - \
+ && tar -xzf zeek.tar.gz --strip-components=1 \
+ && rm zeek.tar.gz
+
+RUN ./configure --prefix=/usr/local/zeek --generator=Ninja --build-type=Release \
+ && cd build && ninja && DESTDIR=/rootfs ninja install
+
+FROM docker.io/library/debian:12-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libpcap0.8 libssl3 python3 zlib1g \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /rootfs/ /
+ENV PATH="/usr/local/zeek/bin:${PATH}"
+
+# Base configuration only; it loads scripts from the mounted content volume.
+COPY local.zeek /usr/local/zeek/share/zeek/site/local.zeek
+
+# Runs as root because libpcap capture needs CAP_NET_RAW, granted explicitly by
+# the pod, which drops every other capability (ADR-0004).
+ENTRYPOINT ["/usr/local/zeek/bin/zeek"]

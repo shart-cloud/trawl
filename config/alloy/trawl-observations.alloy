@@ -1,0 +1,148 @@
+// Trawl observation pipeline.
+//
+// The sensor emits normalized JSON on stdout; Alloy collects it, promotes a
+// bounded set of fields, and writes to Loki.
+//
+// The label discipline here is the whole point. Loki creates a stream per
+// distinct label combination, so promoting an IP or a rule ID would produce
+// millions of streams and degrade the query path for everyone. Only the four
+// labels the telemetry contract permits become labels; everything an analyst
+// filters on becomes structured metadata, which is indexed without multiplying
+// streams (contracts/telemetry.md).
+
+discovery.kubernetes "trawl_sensors" {
+  role = "pod"
+
+  selectors {
+    role  = "pod"
+    label = "app.kubernetes.io/name=trawl,app.kubernetes.io/component=sensor"
+  }
+}
+
+discovery.relabel "trawl_sensors" {
+  targets = discovery.kubernetes.trawl_sensors.targets
+
+  // Only the sensor container's stdout carries observations. The analyzer
+  // containers write files that the sensor reads; collecting them here as well
+  // would duplicate every record in a different shape.
+  rule {
+    source_labels = ["__meta_kubernetes_pod_container_name"]
+    regex         = "sensor-agent"
+    action        = "keep"
+  }
+
+  rule {
+    source_labels = ["__meta_kubernetes_pod_node_name"]
+    target_label  = "__trawl_node"
+  }
+}
+
+loki.source.kubernetes "trawl_sensors" {
+  targets    = discovery.relabel.trawl_sensors.output
+  forward_to = [loki.process.trawl_observations.receiver]
+}
+
+loki.process "trawl_observations" {
+  forward_to = [loki.write.trawl.receiver]
+
+  // Parse the envelope. Fields not named here stay in the JSON line, which
+  // remains authoritative: this stage selects what is queryable cheaply, not
+  // what is retained.
+  stage.json {
+    expressions = {
+      schema_version   = "schema_version",
+      observation_type = "observation_type",
+      source_kind      = "source.kind",
+      event_time       = "event_time",
+      tap_uid          = "tap.uid",
+      tap_namespace    = "tap.namespace",
+      tap_name         = "tap.name",
+      target_node      = "target.node",
+      target_interface = "target.interface",
+      community_id     = "flow.community_id",
+      zeek_uid         = "flow.zeek_uid",
+      source_ip        = "flow.source.ip",
+      source_port      = "flow.source.port",
+      destination_ip   = "flow.destination.ip",
+      destination_port = "flow.destination.port",
+      protocol         = "flow.protocol",
+      duplication      = "duplication",
+    }
+  }
+
+  // Signature fields, present only on signature records.
+  stage.json {
+    source = "details"
+    expressions = {
+      severity = "signature.severity",
+      rule_id  = "signature.rule_id",
+      category = "signature.category",
+    }
+  }
+
+  // A record without the expected schema version is not one this pipeline knows
+  // how to interpret. Dropping it here, with a counter, is better than storing
+  // something a dashboard will silently fail to match.
+  stage.match {
+    selector = "{job=~\".+\"} !~ \"trawl.observation/v1alpha1\""
+    action   = "drop"
+    drop_counter_reason = "unexpected_schema_version"
+  }
+
+  // Event time, not ingestion time. An observation's position in an
+  // investigation timeline is when the traffic happened; using ingestion time
+  // would reorder records whenever the pipeline hiccuped.
+  stage.timestamp {
+    source = "event_time"
+    format = "RFC3339Nano"
+  }
+
+  // The four permitted indexed labels. Adding a fifth requires a measured
+  // cardinality review (contracts/telemetry.md).
+  stage.labels {
+    values = {
+      observation_type = "",
+      source_kind      = "",
+    }
+  }
+
+  stage.static_labels {
+    values = {
+      service_name = "trawl-observation",
+      cluster      = env("TRAWL_CLUSTER_ID"),
+    }
+  }
+
+  // Everything an analyst filters on, indexed without multiplying streams.
+  stage.structured_metadata {
+    values = {
+      tap_uid          = "",
+      tap_namespace    = "",
+      tap_name         = "",
+      target_node      = "",
+      target_interface = "",
+      community_id     = "",
+      zeek_uid         = "",
+      source_ip        = "",
+      source_port      = "",
+      destination_ip   = "",
+      destination_port = "",
+      protocol         = "",
+      severity         = "",
+      rule_id          = "",
+      category         = "",
+      duplication      = "",
+    }
+  }
+}
+
+loki.write "trawl" {
+  endpoint {
+    url = env("TRAWL_LOKI_URL")
+  }
+
+  // Observations and audit records go to separate write paths so a backlog in
+  // one cannot delay the other. Audit delivery is the one that must not be
+  // starved: it is the searchable copy of the durable ledger.
+  external_labels = {}
+}

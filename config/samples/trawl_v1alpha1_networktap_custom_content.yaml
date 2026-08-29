@@ -1,0 +1,28 @@
+# A tap with site-specific detection content overlaid on the upstream feed.
+#
+# The reference is digest-pinned. A tag could be repointed after the rule review
+# that approved its content, so it could not identify what the sensor is
+# actually running (FR-042). Build the artifact with
+# hack/build-custom-content.sh, which validates the rules before publishing.
+apiVersion: trawl.cloud/v1alpha1
+kind: NetworkTap
+metadata:
+  name: mirror-with-site-rules
+  namespace: trawl-system
+spec:
+  mode: Passive
+  type: MirrorInterface
+  mirrorInterface:
+    interface: enp5s0
+    promiscuous: true
+    nodeSelector:
+      matchLabels:
+        kubernetes.io/hostname: talos-sensor-01
+  analyzers:
+    suricata:
+      enabled: true
+      resources:
+        requests: {cpu: 500m, memory: 512Mi}
+        limits: {cpu: "1", memory: 1Gi}
+      customContent:
+        reference: registry.example.com/trawl/custom-suricata@sha256:0000000000000000000000000000000000000000000000000000000000000000

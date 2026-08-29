@@ -1,0 +1,74 @@
+%YAML 1.1
+---
+# Trawl's Suricata base configuration.
+#
+# Two things are deliberately absent:
+#
+#   - Rule files. They arrive on the mounted content volume at startup, so this
+#     file names the directory and not its contents.
+#   - Any pcap-logging output. Packet capture is CaptureJob's job, under its own
+#     authorization and retention boundary. A Suricata-side pcap log would write
+#     packet data outside that boundary with no retention and no audit trail.
+
+vars:
+  address-groups:
+    HOME_NET: "[10.0.0.0/8,172.16.0.0/12,192.168.0.0/16]"
+    EXTERNAL_NET: "!$HOME_NET"
+
+default-rule-path: /var/lib/trawl/content/Suricata/rules
+rule-files:
+  - "*.rules"
+
+af-packet:
+  - interface: default
+    cluster-type: cluster_flow
+    defrag: yes
+    use-mmap: yes
+    tpacket-v3: yes
+    # Fail rather than silently observing nothing if the interface is missing.
+    # A sensor that starts happily on a nonexistent interface reports healthy
+    # while seeing no traffic, which is the hardest failure to notice.
+    checksum-checks: kernel
+
+outputs:
+  - eve-log:
+      enabled: yes
+      filetype: regular
+      filename: /var/log/trawl/suricata/eve.json
+      # community-id is what makes an exact pivot to Zeek's records possible.
+      # Seed 0 matches the Zeek configuration; a mismatch would silently break
+      # every cross-analyzer correlation.
+      community-id: true
+      community-id-seed: 0
+      types:
+        - alert:
+            payload: no
+            payload-printable: no
+            packet: no
+            http-body: no
+            metadata: yes
+        # Counters feed target health and packet-loss reporting (FR-039).
+        - stats:
+            totals: yes
+            threads: no
+            deltas: no
+
+  # Trawl reads stats from the EVE stream; a second stats file would duplicate
+  # it without adding anything.
+  - stats:
+      enabled: no
+
+logging:
+  default-log-level: notice
+  outputs:
+    - console:
+        enabled: yes
+
+app-layer:
+  protocols:
+    tls:
+      enabled: yes
+    http:
+      enabled: yes
+    dns:
+      enabled: yes

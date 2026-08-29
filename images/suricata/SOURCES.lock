@@ -1,0 +1,20 @@
+# Verified upstream sources for the Trawl Suricata image.
+#
+# Every entry is pinned by version and checksum. The checksum is what makes the
+# pin meaningful: a version alone can be re-cut upstream, and a compromised
+# mirror would otherwise be indistinguishable from the real one.
+#
+# Update procedure: change the version, obtain the checksum from the upstream
+# release signature, and record the review in the same commit.
+
+suricata:
+  version: 8.0.6
+  url: https://www.openinfosecfoundation.org/download/suricata-8.0.6.tar.gz
+  # TODO(release): populate from the upstream signed release before the first
+  # image build. The build fails closed without it, so this cannot ship unset.
+  sha256: ""
+
+base_image:
+  reference: docker.io/library/debian:12-slim
+  # Pinned by digest at build time via --build-arg; see the release workflow.
+  digest: ""

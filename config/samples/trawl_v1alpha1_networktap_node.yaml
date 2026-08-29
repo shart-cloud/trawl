@@ -1,0 +1,24 @@
+# A node-interface tap running on every selected node.
+#
+# Promiscuous mode is deliberately left off: a node interface already sees its
+# own traffic, and enabling it would capture neighbouring traffic nobody asked
+# for.
+apiVersion: trawl.cloud/v1alpha1
+kind: NetworkTap
+metadata:
+  name: node-overlay
+  namespace: trawl-system
+spec:
+  mode: Passive
+  type: NodeInterface
+  nodeInterface:
+    interface: eth0
+    nodeSelector:
+      matchLabels:
+        trawl.cloud/sensor: "true"
+  analyzers:
+    zeek:
+      enabled: true
+      resources:
+        requests: {cpu: 250m, memory: 256Mi}
+        limits: {cpu: 500m, memory: 512Mi}

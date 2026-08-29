@@ -1,0 +1,60 @@
+# Suricata 8.0.6, built from verified upstream source.
+#
+# No rules are baked in. Rules are fetched by the content-init container at pod
+# startup and mounted read-only at /var/lib/trawl/content (ADR-0005), so an
+# ET Open update does not require an image rebuild and the image digest keeps
+# meaning "this software" rather than "this software and that day's rules".
+
+FROM docker.io/library/debian:12-slim AS builder
+
+ARG SURICATA_VERSION=8.0.6
+# Checksum from SOURCES.lock. The tarball is verified before it is unpacked:
+# this is the point where an upstream compromise would otherwise enter the
+# supply chain unnoticed.
+ARG SURICATA_SHA256
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential ca-certificates curl \
+      libpcap-dev libnet1-dev libyaml-dev libjansson-dev \
+      libcap-ng-dev libmagic-dev libpcre2-dev liblz4-dev \
+      zlib1g-dev pkg-config rustc cargo python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+RUN curl -fsSL -o suricata.tar.gz \
+      "https://www.openinfosecfoundation.org/download/suricata-${SURICATA_VERSION}.tar.gz" \
+ && echo "${SURICATA_SHA256}  suricata.tar.gz" | sha256sum -c - \
+ && tar -xzf suricata.tar.gz --strip-components=1 \
+ && rm suricata.tar.gz
+
+# AF_PACKET is the capture path; nfqueue and prelude are deliberately not
+# built. nfqueue is the inline path, and an analyzer that cannot be built to
+# modify traffic cannot be configured into doing so by accident (Principle I).
+RUN ./configure \
+      --prefix=/usr \
+      --sysconfdir=/etc \
+      --localstatedir=/var \
+      --enable-af-packet \
+      --disable-nfqueue \
+      --disable-prelude \
+      --disable-gccmarch-native \
+ && make -j"$(nproc)" \
+ && make DESTDIR=/rootfs install
+
+FROM docker.io/library/debian:12-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libpcap0.8 libnet1 libyaml-0-2 libjansson4 libcap-ng0 \
+      libmagic1 libpcre2-8-0 liblz4-1 zlib1g \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /rootfs/ /
+
+# Base configuration only. The rule path points at the mounted content volume,
+# which is empty until the init container has run, so an analyzer cannot start
+# against rules that are not there.
+COPY suricata.yaml /etc/suricata/suricata.yaml
+
+# Runs as root because AF_PACKET needs CAP_NET_RAW, which the pod grants
+# explicitly. The pod drops every other capability (ADR-0004).
+ENTRYPOINT ["/usr/bin/suricata"]

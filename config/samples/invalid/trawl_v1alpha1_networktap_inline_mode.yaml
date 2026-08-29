@@ -1,0 +1,25 @@
+# REJECTED: inline mode is not offered in this release.
+#
+# The mode field is an enum with one member so that adding an inline mode is a
+# visible API change requiring the separate approved specification the
+# constitution demands. A tap that could silently become inline is exactly what
+# Principle I exists to prevent.
+apiVersion: trawl.cloud/v1alpha1
+kind: NetworkTap
+metadata:
+  name: inline-tap
+  namespace: trawl-system
+spec:
+  mode: Inline
+  type: MirrorInterface
+  mirrorInterface:
+    interface: enp5s0
+    nodeSelector:
+      matchLabels:
+        kubernetes.io/hostname: talos-sensor-01
+  analyzers:
+    suricata:
+      enabled: true
+      resources:
+        requests: {cpu: 500m, memory: 512Mi}
+        limits: {cpu: "1", memory: 1Gi}

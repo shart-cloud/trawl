@@ -1,0 +1,15 @@
+# Verified upstream sources for the Trawl Zeek image.
+#
+# Every entry is pinned by version and checksum. A version alone can be re-cut
+# upstream; the checksum is what makes the pin meaningful.
+
+zeek:
+  version: 8.0.10
+  url: https://github.com/zeek/zeek/releases/download/v8.0.10/zeek-8.0.10.tar.gz
+  # TODO(release): populate from the upstream signed release before the first
+  # image build. The build fails closed without it, so this cannot ship unset.
+  sha256: ""
+
+base_image:
+  reference: docker.io/library/debian:12-slim
+  digest: ""

@@ -1,0 +1,28 @@
+# REJECTED: outside the configured system namespace.
+#
+# Trawl's CRDs are visible cluster-wide, but reconciliation happens only in the
+# installation's system namespace. Without that boundary, a user with create
+# rights in their own namespace could have Trawl render a privileged,
+# host-network, CAP_NET_RAW workload there (FR-001).
+#
+# The admission webhook rejects this, and the reconciler rejects it again in
+# case the object reached etcd without passing admission.
+apiVersion: trawl.cloud/v1alpha1
+kind: NetworkTap
+metadata:
+  name: escaped-tap
+  namespace: default
+spec:
+  mode: Passive
+  type: MirrorInterface
+  mirrorInterface:
+    interface: enp5s0
+    nodeSelector:
+      matchLabels:
+        kubernetes.io/hostname: talos-sensor-01
+  analyzers:
+    suricata:
+      enabled: true
+      resources:
+        requests: {cpu: 500m, memory: 512Mi}
+        limits: {cpu: "1", memory: 1Gi}

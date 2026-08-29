@@ -1,0 +1,32 @@
+# A physical mirror tap: the SPAN port case.
+#
+# The node selector must resolve to exactly one node — the machine wired to the
+# switch's mirror port. A selector matching several is rejected rather than
+# guessed at, because only one of them can actually see the traffic.
+apiVersion: trawl.cloud/v1alpha1
+kind: NetworkTap
+metadata:
+  name: north-south-mirror
+  namespace: trawl-system
+spec:
+  mode: Passive
+  type: MirrorInterface
+  mirrorInterface:
+    interface: enp5s0
+    # Defaulted on for mirror sources: the port carries frames addressed to
+    # other hosts, and without promiscuous mode the NIC drops all of them.
+    promiscuous: true
+    nodeSelector:
+      matchLabels:
+        kubernetes.io/hostname: talos-sensor-01
+  analyzers:
+    suricata:
+      enabled: true
+      resources:
+        requests: {cpu: 500m, memory: 512Mi}
+        limits: {cpu: "1", memory: 1Gi}
+    zeek:
+      enabled: true
+      resources:
+        requests: {cpu: 500m, memory: 512Mi}
+        limits: {cpu: "1", memory: 1Gi}
