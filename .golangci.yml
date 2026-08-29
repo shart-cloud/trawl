@@ -120,6 +120,16 @@ linters:
           - goconst
           - dupl
         path: _test\.go
+      # httptest.NewRequest in a handler test has no caller context to inherit;
+      # NewRequestWithContext adds ceremony without adding a real deadline.
+      - linters:
+          - noctx
+        path: _test\.go
+      # Metric names appear once in the definition and once in the contract
+      # test's expectation table. That duplication is the test's whole purpose.
+      - linters:
+          - goconst
+        path: internal/telemetry/
     paths:
       - third_party$
       - builtin$
