@@ -76,7 +76,11 @@ AnalyzerSelection
 
 AnalyzerConfig
 ├── enabled: boolean                                   default false
-└── resources?: corev1.ResourceRequirements            required when enabled
+├── resources?: corev1.ResourceRequirements            required when enabled
+└── customContent?: CustomContentRef                   optional site-specific overlay
+
+CustomContentRef
+└── reference: string                                  OCI repository@sha256:<64 hex>
 ```
 
 Cross-field rules:
@@ -88,6 +92,7 @@ Cross-field rules:
 5. A mirror selector resolves to exactly one eligible node before activation.
 6. `mode`, source type, and interface are accepted only for passive observation;
    the generated workload cannot specify packet-path mutation.
+7. `customContent.reference` must be digest-pinned; a tag is rejected (FR-042).
 
 ### Status
 
@@ -119,6 +124,8 @@ AnalyzerStatus
 ├── healthy: boolean
 ├── version?: string
 ├── lastRecordTime?: metav1.Time
+├── upstreamFetchedAt?: metav1.Time                    upstream content currency
+├── customContentDigest?: string                       applied overlay digest
 └── reason?: string                                    sanitized, <=256 bytes
 ```
 

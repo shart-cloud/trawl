@@ -95,7 +95,7 @@ tap continues.
 
 ### Tests for User Story 1
 
-- [ ] T028 [P] [US1] Add failing NetworkTap configured-namespace, defaulting, closed-union, interface-name, analyzer-selection, resource-bound, and passive-only API tests in `api/v1alpha1/networktap_types_test.go`
+- [X] T028 [P] [US1] Add failing NetworkTap configured-namespace, defaulting, closed-union, interface-name, analyzer-selection, resource-bound, and passive-only API tests in `api/v1alpha1/networktap_types_test.go`
 - [ ] T029 [P] [US1] Add failing golden tests for mirror Deployment, node DaemonSet, direct interface binding, explicit capabilities, projected sensor token, owner references, and resource limits in `internal/controller/networktap_workload_test.go`
 - [ ] T030 [P] [US1] Add failing envtest cases for create/update/delete, zero/one/many target resolution, partial analyzer health, stale generations, finalizer cleanup, and restart convergence in `internal/controller/networktap_controller_test.go`
 - [ ] T031 [P] [US1] Add failing Suricata EVE normalization and normative-schema tests for signature/common-flow fields, Community ID preservation, stats counters, suspected-duplicate marking, and safe rejection in `internal/observation/suricata_test.go`
@@ -106,8 +106,8 @@ tap continues.
 
 ### Implementation for User Story 1
 
-- [ ] T035 [US1] Define NetworkTap spec/status types, enums, list-map markers, print columns, status subresource, defaults, optional custom-content OCI reference, analyzer content status fields, and structural/CEL validation markers in `api/v1alpha1/networktap_types.go`; sensor-agent resources are not user-configurable here and come from installation config (T014)
-- [ ] T036 [US1] Implement identity-aware NetworkTap validation/defaulting for configured-namespace enforcement, source unions, live selector rules, passive mode, resources, durable audit acknowledgement, and immutable forbidden fields in `internal/admission/networktap_webhook.go`
+- [X] T035 [US1] Define NetworkTap spec/status types, enums, list-map markers, print columns, status subresource, defaults, optional custom-content OCI reference, analyzer content status fields, and structural/CEL validation markers in `api/v1alpha1/networktap_types.go`; sensor-agent resources are not user-configurable here and come from installation config (T014)
+- [X] T036 [US1] Implement identity-aware NetworkTap validation/defaulting for configured-namespace enforcement, source unions, live selector rules, passive mode, resources, durable audit acknowledgement, and immutable forbidden fields in `internal/admission/networktap_webhook.go`
 - [ ] T037 [US1] Implement and embed the normative `trawl.observation/v1alpha1` schema plus its Go envelope, source/tap/target/flow types, subtype enums, and bounded validation errors in `internal/observation/model.go` and `internal/observation/schema.go`
 - [ ] T038 [P] [US1] Implement Suricata EVE signature/stats normalization and Community ID mapping in `internal/observation/suricata.go`
 - [ ] T039 [P] [US1] Implement Zeek connection/DNS/HTTP/TLS/x509/file/notice/weird normalization and sensitive-field redaction in `internal/observation/zeek.go`

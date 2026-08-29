@@ -41,6 +41,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+
+	trawlv1alpha1 "trawl.cloud/trawl/api/v1alpha1"
 )
 
 var (
@@ -60,11 +62,14 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "adding client-go scheme: %v\n", err)
 		os.Exit(1)
 	}
-	// Trawl API types are registered here as api/v1alpha1 lands in US1.
+	if err := trawlv1alpha1.AddToScheme(scheme); err != nil {
+		fmt.Fprintf(os.Stderr, "adding Trawl scheme: %v\n", err)
+		os.Exit(1)
+	}
 
 	testEnv = &envtest.Environment{
 		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
-		ErrorIfCRDPathMissing: false,
+		ErrorIfCRDPathMissing: true,
 	}
 
 	var err error
