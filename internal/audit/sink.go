@@ -93,6 +93,21 @@ type CommitResult struct {
 //
 // The caller must not report its action as complete until this returns without
 // error. A returned error means the action must fail closed.
+//
+// Two properties have to hold at once, and they pull in opposite directions:
+//
+//   - Idempotency is keyed on the stable key, so a retry converges on one
+//     record.
+//   - Replay resumes from a cursor over a lexicographically ordered key space,
+//     which therefore has to be chronological — a record that sorted before the
+//     cursor would never be forwarded.
+//
+// A single key cannot do both: a stable-key hash is not time-ordered, and a
+// time-prefixed key differs on every retry. So a commit writes two objects. An
+// index object under a stable-key-derived key is claimed first and holds a
+// pointer to the record; the record itself lives under a time-ordered key that
+// replay lists. The conditional claim is what makes the stable key an
+// idempotency guarantee; the record key is what keeps replay resumable.
 func (s *Sink) Commit(ctx context.Context, rec Record) (CommitResult, error) {
 	rec = rec.Sanitized()
 	if err := rec.Validate(); err != nil {
@@ -105,8 +120,9 @@ func (s *Sink) Commit(ctx context.Context, rec Record) (CommitResult, error) {
 		rec.RecordedAt = committedAt
 	}
 
-	key := s.keyFor(rec)
-	rec.LedgerKey = key
+	indexKey := s.indexKeyFor(rec)
+	recordKey := s.recordKeyFor(rec)
+	rec.LedgerKey = recordKey
 	rec.CommittedAt = committedAt
 
 	body, err := Encode(rec)
@@ -114,55 +130,99 @@ func (s *Sink) Commit(ctx context.Context, rec Record) (CommitResult, error) {
 		return CommitResult{Result: ResultConflict}, err
 	}
 
-	_, putErr := s.store.Put(ctx, key, body, storage.PutOptions{
+	// Claim the stable key. Conditional on absence, so exactly one commit wins
+	// even with concurrent writers in different processes.
+	_, claimErr := s.store.Put(ctx, indexKey, []byte(recordKey), storage.PutOptions{
 		IfNotExists: true,
 		RetainUntil: committedAt.Add(s.retention),
-		ContentType: "application/json",
+		ContentType: "text/plain",
 	})
 
 	switch {
-	case putErr == nil:
-		// Verify before acknowledging. A backend that reported success without
-		// persisting must not produce a completed user action.
-		if _, err := s.store.Head(ctx, key); err != nil {
-			return CommitResult{Result: ResultUnavailable},
-				sanitize.Errorf("audit record could not be verified after write: %v", err)
-		}
-		return CommitResult{Result: ResultSuccess, LedgerKey: key, CommittedAt: committedAt}, nil
+	case claimErr == nil:
+		// The claim is ours; write the record it points at.
+		return s.writeRecord(ctx, recordKey, body, committedAt, ResultSuccess)
 
-	case errors.Is(putErr, storage.ErrAlreadyExists):
-		// Either an idempotent retry of the same action, or two different
-		// actions claiming one identity. Only the stored bytes can tell.
-		return s.resolveExisting(ctx, key, rec)
+	case errors.Is(claimErr, storage.ErrAlreadyExists):
+		return s.resolveExisting(ctx, indexKey, rec, body, committedAt)
 
 	default:
 		return CommitResult{Result: ResultUnavailable},
-			sanitize.Errorf("committing audit record: %v", putErr)
+			sanitize.Errorf("claiming audit stable key: %v", claimErr)
 	}
 }
 
-// resolveExisting distinguishes an idempotent retry from a stable-key conflict.
+// writeRecord writes the record object and verifies it before acknowledging.
 //
-// The comparison ignores the fields the sink itself stamps, since a retry
-// legitimately carries a later commit time while describing the same action.
-func (s *Sink) resolveExisting(ctx context.Context, key string, rec Record) (CommitResult, error) {
-	existingBytes, err := s.store.Get(ctx, key)
+// The write is not conditional: the claim already established exclusivity, and
+// a crash between claim and record leaves a dangling claim that a retry must be
+// able to complete.
+func (s *Sink) writeRecord(ctx context.Context, key string, body []byte, committedAt time.Time, result string) (CommitResult, error) {
+	if _, err := s.store.Put(ctx, key, body, storage.PutOptions{
+		RetainUntil: committedAt.Add(s.retention),
+		ContentType: "application/json",
+	}); err != nil {
+		return CommitResult{Result: ResultUnavailable},
+			sanitize.Errorf("committing audit record: %v", err)
+	}
+
+	// Verify before acknowledging. A backend that reported success without
+	// persisting must not produce a completed user action.
+	if _, err := s.store.Head(ctx, key); err != nil {
+		return CommitResult{Result: ResultUnavailable},
+			sanitize.Errorf("audit record could not be verified after write: %v", err)
+	}
+	return CommitResult{Result: result, LedgerKey: key, CommittedAt: committedAt}, nil
+}
+
+// resolveExisting handles a stable key that is already claimed.
+//
+// Three cases matter. The claim may point at a record whose content matches, an
+// idempotent retry. It may point at a record with different content, meaning two
+// different actions claimed one identity — an integrity error, not a retry. Or
+// the claim may point at no record at all, because a previous attempt crashed
+// between the two writes; that record is completed rather than abandoned.
+func (s *Sink) resolveExisting(ctx context.Context, indexKey string, rec Record, body []byte, committedAt time.Time) (CommitResult, error) {
+	pointer, err := s.store.Get(ctx, indexKey)
 	if err != nil {
+		return CommitResult{Result: ResultUnavailable},
+			sanitize.Errorf("reading audit stable-key claim: %v", err)
+	}
+	recordKey := string(pointer)
+
+	existingBytes, err := s.store.Get(ctx, recordKey)
+	switch {
+	case errors.Is(err, storage.ErrNotFound):
+		// Dangling claim from an interrupted commit. Finish it under the key
+		// the claim already points at, so the record still matches its claim.
+		rec.LedgerKey = recordKey
+		completed, encErr := Encode(rec)
+		if encErr != nil {
+			return CommitResult{Result: ResultConflict}, encErr
+		}
+		return s.writeRecord(ctx, recordKey, completed, committedAt, ResultSuccess)
+
+	case err != nil:
 		return CommitResult{Result: ResultUnavailable},
 			sanitize.Errorf("reading existing audit record: %v", err)
 	}
+
 	existing, err := Decode(existingBytes)
 	if err != nil {
 		return CommitResult{Result: ResultConflict},
 			sanitize.Errorf("existing audit record is unreadable: %v", err)
 	}
 
-	if !sameAction(existing, rec) {
+	candidate, err := Decode(body)
+	if err != nil {
+		return CommitResult{Result: ResultConflict}, err
+	}
+	if !sameAction(existing, candidate) {
 		return CommitResult{Result: ResultConflict}, errConflict
 	}
 	return CommitResult{
 		Result:      ResultRetry,
-		LedgerKey:   key,
+		LedgerKey:   recordKey,
 		CommittedAt: existing.CommittedAt,
 	}, nil
 }
@@ -182,14 +242,30 @@ func sameAction(a, b Record) bool {
 	return bytes.Equal(ab, bb)
 }
 
-// keyFor derives the ledger object key.
+// Key layout.
+//
+// Index and record objects live under separate prefixes so replay can list the
+// records alone. Listing the index prefix would interleave pointers with
+// records and break the chronological ordering replay depends on.
+const (
+	indexInfix  = "index/"
+	recordInfix = "records/"
+)
+
+// indexKeyFor derives the stable-key claim object key. It depends only on the
+// record's stable key, which is what makes a retry collide with its original.
+func (s *Sink) indexKeyFor(rec Record) string {
+	return s.prefix + indexInfix + sanitize.DiagnosticHash(rec.StableKey)
+}
+
+// recordKeyFor derives the record object key.
 //
 // The timestamp prefix makes lexicographic listing chronological, which is what
-// lets replay resume from a cursor. The stable key suffix keeps the key
-// one-to-one with the action identity.
-func (s *Sink) keyFor(rec Record) string {
+// lets replay resume from a cursor without skipping later records. The stable
+// key suffix keeps two records written in the same nanosecond distinct.
+func (s *Sink) recordKeyFor(rec Record) string {
 	ts := rec.RecordedAt.UTC().Format("20060102T150405.000000000Z")
-	return fmt.Sprintf("%s%s-%s.json", s.prefix, ts, sanitize.DiagnosticHash(rec.StableKey))
+	return fmt.Sprintf("%s%s%s-%s.json", s.prefix, recordInfix, ts, sanitize.DiagnosticHash(rec.StableKey))
 }
 
 // DeliverFunc forwards one record to the searchable stream.
@@ -206,7 +282,7 @@ type DeliverFunc func(ctx context.Context, rec Record) error
 // succeed, so the caller advances its cursor no further than what was actually
 // forwarded.
 func (s *Sink) Replay(ctx context.Context, cursor string, deliver DeliverFunc) (int, error) {
-	objects, err := s.store.List(ctx, s.prefix, cursor)
+	objects, err := s.store.List(ctx, s.prefix+recordInfix, cursor)
 	if err != nil {
 		return 0, sanitize.Errorf("listing audit ledger: %v", err)
 	}
@@ -235,7 +311,7 @@ func (s *Sink) Replay(ctx context.Context, cursor string, deliver DeliverFunc) (
 // oldest of them is, feeding trawl_audit_backlog_objects and
 // trawl_audit_oldest_unforwarded_seconds.
 func (s *Sink) Backlog(ctx context.Context, cursor string) (int, time.Time, error) {
-	objects, err := s.store.List(ctx, s.prefix, cursor)
+	objects, err := s.store.List(ctx, s.prefix+recordInfix, cursor)
 	if err != nil {
 		return 0, time.Time{}, sanitize.Errorf("listing audit ledger: %v", err)
 	}

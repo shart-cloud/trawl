@@ -107,6 +107,12 @@ linters:
           - gosec
           - noctx
         path: test/utils/
+      # The integration harness shells out to docker with container IDs and
+      # image names it created itself. G204 has no caller input to warn about.
+      - linters:
+          - gosec
+        text: "G204"
+        path: test/integration/harness/
       # Redaction tests must contain credential-shaped fixtures to prove the
       # redaction works. G101 on those strings is the test doing its job.
       # (AKIAIOSFODNN7EXAMPLE is AWS's published example key, not a real one.)

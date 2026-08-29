@@ -19,6 +19,7 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"net/http"
 	"os"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -29,11 +30,19 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/metrics"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
+
+	"trawl.cloud/trawl/internal/audit"
+	"trawl.cloud/trawl/internal/config"
+	"trawl.cloud/trawl/internal/sanitize"
+	"trawl.cloud/trawl/internal/storage"
+	"trawl.cloud/trawl/internal/telemetry"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -61,6 +70,9 @@ func main() {
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
+	var configPath string
+	flag.StringVar(&configPath, "config", "/etc/trawl/config.yaml",
+		"Path to the Trawl installation configuration file.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
@@ -150,6 +162,31 @@ func main() {
 		metricsServerOptions.KeyName = metricsCertKey
 	}
 
+	// Installation configuration is loaded before the manager starts. Storage
+	// endpoints, retention bounds, and image digests are security-relevant, so
+	// an invalid or incomplete install must refuse to start rather than run
+	// with defaults.
+	// gosec G304: configPath is an operator-supplied flag on the manager's own
+	// command line, not caller input.
+	rawConfig, err := os.ReadFile(configPath) //nolint:gosec
+	if err != nil {
+		setupLog.Error(sanitize.Error(err), "Failed to read installation configuration")
+		os.Exit(1)
+	}
+	installCfg, err := config.Load(rawConfig)
+	if err != nil {
+		setupLog.Error(sanitize.Error(err), "Invalid installation configuration")
+		os.Exit(1)
+	}
+
+	// Trawl's own metric set, registered on the controller-runtime registry so
+	// it is served by the same authenticated metrics endpoint.
+	trawlMetrics := telemetry.NewMetrics()
+	if err := trawlMetrics.Register(metrics.Registry); err != nil {
+		setupLog.Error(sanitize.Error(err), "Failed to register Trawl metrics")
+		os.Exit(1)
+	}
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
@@ -157,6 +194,16 @@ func main() {
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "48b4eaf3.trawl.cloud",
+		// The cache is restricted to the configured system namespace. Trawl's
+		// CRDs are cluster-scoped in discovery, but reconciling anywhere else
+		// would let a namespace-scoped creator elsewhere obtain privileged
+		// workloads (FR-001). Restricting the cache means the manager cannot
+		// even observe those objects.
+		Cache: cache.Options{
+			DefaultNamespaces: map[string]cache.Config{
+				installCfg.SystemNamespace: {},
+			},
+		},
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
@@ -176,14 +223,45 @@ func main() {
 
 	// +kubebuilder:scaffold:builder
 
+	// The audit ledger is addressed with its own bucket and credentials,
+	// separate from the artifact store (ADR-0003).
+	auditStore, err := storage.NewS3Store(installCfg.AuditLedger)
+	if err != nil {
+		setupLog.Error(sanitize.Error(err), "Failed to connect to the audit ledger")
+		os.Exit(1)
+	}
+	auditSink, err := audit.NewSink(audit.Options{
+		Store:     auditStore,
+		Prefix:    audit.DefaultPrefix,
+		Retention: installCfg.AuditRetention,
+	})
+	if err != nil {
+		setupLog.Error(sanitize.Error(err), "Failed to create the audit sink")
+		os.Exit(1)
+	}
+
+	// healthz stays process liveness only. If it consulted the ledger, a MinIO
+	// outage would restart otherwise-healthy pods and turn a storage blip into
+	// a monitoring outage.
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "Failed to set up health check")
 		os.Exit(1)
 	}
-	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+	// readyz does consult it: without a committable ledger every user mutation
+	// fails closed (FR-036), so reporting ready would be a lie.
+	if err := mgr.AddReadyzCheck("audit-ledger", func(req *http.Request) error {
+		_, _, err := auditSink.Backlog(req.Context(), "")
+		return sanitize.Error(err)
+	}); err != nil {
 		setupLog.Error(err, "Failed to set up ready check")
 		os.Exit(1)
 	}
+
+	setupLog.Info("Trawl configuration loaded",
+		"systemNamespace", installCfg.SystemNamespace,
+		"cluster", installCfg.ClusterID,
+		"auditRetention", installCfg.AuditRetention.String(),
+		"captureRetentionCeiling", installCfg.CaptureRetentionCeiling.String())
 
 	setupLog.Info("Starting manager")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {

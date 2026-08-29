@@ -83,13 +83,15 @@ func TestCommitWritesConditionallyAndVerifies(t *testing.T) {
 		t.Error("Commit did not record a durable commit time")
 	}
 
-	// Conditional creation, then HEAD verification: acknowledging a write that
-	// was never durable is the failure this guards against.
-	if got := store.PutCount(res.LedgerKey); got != 1 {
-		t.Errorf("put count = %d, want 1", got)
+	// Exclusivity comes from the conditional claim on the stable-key index;
+	// the record itself is then written under the claimed key and verified.
+	// Acknowledging a write that was never durable is the failure this guards.
+	indexKey := sink.indexKeyFor(testRecord().Sanitized())
+	if !store.WasConditional(indexKey) {
+		t.Error("the stable-key claim was not conditional on absence")
 	}
-	if !store.WasConditional(res.LedgerKey) {
-		t.Error("ledger write was not conditional on absence")
+	if got := store.PutCount(res.LedgerKey); got != 1 {
+		t.Errorf("record put count = %d, want 1", got)
 	}
 	if got := store.HeadCount(res.LedgerKey); got < 1 {
 		t.Error("Commit acknowledged without a HEAD verification")
@@ -118,8 +120,9 @@ func TestIdenticalRetryIsSuccessfulAndNotDuplicated(t *testing.T) {
 	if first.LedgerKey != second.LedgerKey {
 		t.Errorf("retry wrote a different key: %q vs %q", first.LedgerKey, second.LedgerKey)
 	}
-	if got := store.ObjectCount(); got != 1 {
-		t.Errorf("object count = %d, want 1", got)
+	// One index object and one record object; a retry adds neither.
+	if got := store.ObjectCount(); got != 2 {
+		t.Errorf("object count = %d, want 2 (one index, one record)", got)
 	}
 }
 
@@ -144,8 +147,8 @@ func TestConflictingContentForSameKeyIsRejected(t *testing.T) {
 	if res.Result != ResultConflict {
 		t.Errorf("result = %q, want %q", res.Result, ResultConflict)
 	}
-	if got := store.ObjectCount(); got != 1 {
-		t.Errorf("conflict overwrote the ledger: object count = %d, want 1", got)
+	if got := store.ObjectCount(); got != 2 {
+		t.Errorf("conflict wrote to the ledger: object count = %d, want 2 (the original index and record)", got)
 	}
 }
 
@@ -407,4 +410,87 @@ func TestReplayStopsOnDeliveryFailure(t *testing.T) {
 	if n != 1 {
 		t.Errorf("replay counted %d successful deliveries, want 1", n)
 	}
+}
+
+func TestIdempotencyHoldsUnderARealClock(t *testing.T) {
+	// Regression: the ledger key once embedded RecordedAt, so two commits of the
+	// same stable key produced different keys and never collided. Every unit
+	// test passed because they all injected a fixed clock; under time.Now every
+	// retry silently wrote a duplicate record.
+	//
+	// This test deliberately uses a moving clock, which is what the original
+	// design could not survive.
+	store := storage.NewFake()
+	sink, err := NewSink(Options{
+		Store:     store,
+		Prefix:    DefaultPrefix,
+		Retention: 365 * 24 * time.Hour,
+		Now:       time.Now, // moving, not pinned
+	})
+	if err != nil {
+		t.Fatalf("NewSink: %v", err)
+	}
+
+	rec := testRecord()
+	first, err := sink.Commit(t.Context(), rec)
+	if err != nil {
+		t.Fatalf("first Commit: %v", err)
+	}
+	second, err := sink.Commit(t.Context(), rec)
+	if err != nil {
+		t.Fatalf("retry Commit: %v", err)
+	}
+
+	if second.Result != ResultRetry {
+		t.Errorf("retry result = %q, want %q", second.Result, ResultRetry)
+	}
+	if first.LedgerKey != second.LedgerKey {
+		t.Errorf("retry wrote a different record key: %q vs %q", first.LedgerKey, second.LedgerKey)
+	}
+
+	// One index object and one record object, not two of each.
+	if got := store.ObjectCount(); got != 2 {
+		t.Errorf("object count = %d, want 2 (one index, one record)", got)
+	}
+}
+
+func TestDanglingClaimIsCompletedByRetry(t *testing.T) {
+	// A crash between claiming the stable key and writing the record leaves a
+	// claim pointing at nothing. A retry must complete that record rather than
+	// treat the claim as proof the record exists.
+	store := storage.NewFake()
+	sink := newTestSink(t, store)
+	rec := testRecord()
+
+	// Claim the key by hand, simulating the interrupted commit.
+	indexKey := sink.indexKeyFor(rec.Sanitized())
+	recordKey := sink.recordKeyFor(withCommitFields(rec, sink))
+	if _, err := store.Put(t.Context(), indexKey, []byte(recordKey), storage.PutOptions{IfNotExists: true}); err != nil {
+		t.Fatalf("seeding dangling claim: %v", err)
+	}
+
+	res, err := sink.Commit(t.Context(), rec)
+	if err != nil {
+		t.Fatalf("Commit over a dangling claim: %v", err)
+	}
+	if res.Result != ResultSuccess {
+		t.Errorf("result = %q, want %q", res.Result, ResultSuccess)
+	}
+	if res.LedgerKey != recordKey {
+		t.Errorf("completed record key = %q, want the claimed key %q", res.LedgerKey, recordKey)
+	}
+	if len(store.Object(recordKey)) == 0 {
+		t.Error("the claimed record key still holds no record")
+	}
+}
+
+// withCommitFields mirrors what Commit stamps before deriving the record key,
+// so the test can predict that key.
+func withCommitFields(rec Record, s *Sink) Record {
+	out := rec.Sanitized()
+	out.SchemaVersion = SchemaVersion
+	if out.RecordedAt.IsZero() {
+		out.RecordedAt = s.now().UTC()
+	}
+	return out
 }
