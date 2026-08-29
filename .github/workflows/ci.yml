@@ -83,6 +83,11 @@ jobs:
       # tests run against a real apiserver rather than a fake client.
       - name: Unit, schema, contract, and envtest suites
         run: make test
+      # The sensor's counters are sampled by the status reporter from another
+      # goroutine, so concurrent access is a production path, not a test
+      # artifact. -race is what caught it.
+      - name: Race detector
+        run: make test-race
       - name: Upload coverage
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

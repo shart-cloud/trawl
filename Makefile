@@ -107,6 +107,10 @@ test-integration: manifests generate fmt vet setup-envtest ## Run integration te
 	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" \
 		go test ./test/integration/... -timeout 20m
 
+.PHONY: test-race
+test-race: manifests generate fmt vet ## Run unit tests under the race detector.
+	go test -race ./internal/... ./api/...
+
 .PHONY: manifest-security
 manifest-security: ## Fail on manifests that grant more than Trawl needs.
 	hack/verify-manifests.sh
