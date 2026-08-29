@@ -5,13 +5,20 @@ metadata:
   labels:
     app.kubernetes.io/name: trawl
     app.kubernetes.io/managed-by: kustomize
-    # Trawl's control plane runs unprivileged and must keep doing so. Enforcing
-    # restricted here means a control-plane pod that acquires a capability or a
-    # host namespace is rejected at admission rather than discovered later.
+    # Enforcement must be privileged at the namespace level, because analyzer
+    # and capture pods legitimately need hostNetwork and CAP_NET_RAW to observe
+    # packets, and Pod Security has no per-workload exemption (research.md #4).
     #
-    # Capture and analyzer pods need CAP_NET_RAW and are created by the operator
-    # with an explicit exception; they are the only workloads that get one.
-    pod-security.kubernetes.io/enforce: restricted
+    # That makes namespace-level PSA a weak control here, so the actual
+    # hardening is per workload and is enforced elsewhere instead: every pod
+    # spec drops ALL capabilities and adds back only what its role requires,
+    # control-plane pods request no host access at all, and both
+    # hack/verify-manifests.sh and test/contract assert that. audit and warn
+    # stay at restricted so any pod exceeding the restricted profile is still
+    # reported, including ones a future change adds without review.
+    pod-security.kubernetes.io/enforce: privileged
     pod-security.kubernetes.io/enforce-version: latest
     pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
     pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest

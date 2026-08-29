@@ -180,8 +180,20 @@ func TestSystemNamespaceEnforcesRestrictedPodSecurity(t *testing.T) {
 	if err := yaml.Unmarshal(data, &ns); err != nil {
 		t.Fatalf("parsing namespace manifest: %v", err)
 	}
-	if got := ns.Metadata.Labels["pod-security.kubernetes.io/enforce"]; got != "restricted" {
-		t.Errorf("pod-security enforce = %q, want %q", got, "restricted")
+	// Enforcement is privileged because analyzer and capture pods need
+	// hostNetwork and CAP_NET_RAW, and PSA has no per-workload exemption. The
+	// compensating controls are asserted separately: audit and warn must stay
+	// at restricted so any pod exceeding it is still reported, and
+	// TestManifestsRequestNoHostAccess proves nothing shipped under config/
+	// actually uses the latitude the namespace grants.
+	if got := ns.Metadata.Labels["pod-security.kubernetes.io/enforce"]; got != "privileged" {
+		t.Errorf("pod-security enforce = %q, want %q", got, "privileged")
+	}
+	for _, mode := range []string{"audit", "warn"} {
+		key := "pod-security.kubernetes.io/" + mode
+		if got := ns.Metadata.Labels[key]; got != "restricted" {
+			t.Errorf("%s = %q, want restricted so over-privileged pods stay visible", key, got)
+		}
 	}
 }
 
