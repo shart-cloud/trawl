@@ -25,8 +25,10 @@ limitations under the License.
 package contract
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -34,6 +36,7 @@ import (
 
 	"sigs.k8s.io/yaml"
 
+	"trawl.cloud/trawl/internal/observation"
 	"trawl.cloud/trawl/internal/telemetry"
 )
 
@@ -272,4 +275,42 @@ func forEachManifest(t *testing.T, fn func(path string, content []byte)) {
 
 func splitYAML(s string) []string {
 	return strings.Split(s, "\n---\n")
+}
+
+func TestEmbeddedObservationSchemaMatchesContract(t *testing.T) {
+	// The sensor validates against a schema compiled into its binary, because a
+	// pod has no access to the repository and a schema loaded from a ConfigMap
+	// could drift from the code producing the records. That embedding is only
+	// safe if it cannot silently diverge from the published contract.
+	root := repoRoot(t)
+
+	contractPath := filepath.Join(root, "specs", "001-cloud-native-nsm",
+		"contracts", "observation.schema.json")
+	published, err := os.ReadFile(contractPath)
+	if err != nil {
+		t.Fatalf("reading published schema: %v", err)
+	}
+
+	var publishedDoc, embeddedDoc any
+	if err := json.Unmarshal(published, &publishedDoc); err != nil {
+		t.Fatalf("parsing published schema: %v", err)
+	}
+	if err := json.Unmarshal(observation.SchemaJSON(), &embeddedDoc); err != nil {
+		t.Fatalf("parsing embedded schema: %v", err)
+	}
+
+	// Compared as parsed documents rather than bytes, so reformatting the
+	// contract file does not fail the build while a semantic change does.
+	if !reflect.DeepEqual(publishedDoc, embeddedDoc) {
+		t.Error("the embedded observation schema differs from contracts/observation.schema.json; " +
+			"copy the contract into internal/observation/observation.schema.json")
+	}
+}
+
+func TestObservationSchemaCompiles(t *testing.T) {
+	// A schema that fails to compile would make every record unvalidatable at
+	// runtime, and the failure would surface in a sensor pod rather than here.
+	if _, err := observation.Schema(); err != nil {
+		t.Fatalf("embedded observation schema does not compile: %v", err)
+	}
 }
