@@ -107,6 +107,19 @@ linters:
           - gosec
           - noctx
         path: test/utils/
+      # Redaction tests must contain credential-shaped fixtures to prove the
+      # redaction works. G101 on those strings is the test doing its job.
+      # (AKIAIOSFODNN7EXAMPLE is AWS's published example key, not a real one.)
+      - linters:
+          - gosec
+        text: "G101"
+        path: _test\.go
+      # Table-driven tests repeat literals by design; extracting them into
+      # constants makes the cases harder to read, not easier.
+      - linters:
+          - goconst
+          - dupl
+        path: _test\.go
     paths:
       - third_party$
       - builtin$

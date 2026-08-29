@@ -52,16 +52,16 @@ test, and deployment primitives shared by all user stories.
 
 ### Foundational tests
 
-- [ ] T010 [P] Add table-driven tests for the configured system namespace, separate artifact/audit bucket profiles and credentials, 90–730d audit retention, audit mTLS identities, duration/quantity parsing, secret-safe validation errors, and immutable image references in `internal/config/config_test.go`
-- [ ] T011 [P] Add regression and fuzz tests that reject tokens, URLs, credentials, packet bytes, query strings, and raw dependency output from errors in `internal/sanitize/sanitize_test.go`
-- [ ] T012 [P] Add tests for observed-generation handling, stable reasons, transition times, and associative condition updates in `internal/status/conditions_test.go`
+- [X] T010 [P] Add table-driven tests for the configured system namespace, separate artifact/audit bucket profiles and credentials, 90–730d audit retention, audit mTLS identities, duration/quantity parsing, secret-safe validation errors, and immutable image references in `internal/config/config_test.go`
+- [X] T011 [P] Add regression and fuzz tests that reject tokens, URLs, credentials, packet bytes, query strings, and raw dependency output from errors in `internal/sanitize/sanitize_test.go`
+- [X] T012 [P] Add tests for observed-generation handling, stable reasons, transition times, and associative condition updates in `internal/status/conditions_test.go`
 - [ ] T013 [P] Add contract/unit tests for allowed metric labels, versioned audit intent/outcome fields, stable keys, idempotent/conflicting commits, replay cursors, bounded retention, backlog metrics, health endpoints, and high-cardinality rejection in `internal/telemetry/contract_test.go` and `internal/audit/sink_test.go`
 
 ### Foundational implementation
 
-- [ ] T014 Implement typed installation configuration for cluster identity, enforced system namespace, Loki, Hubble TLS, separate artifact/audit buckets and credentials, 90–730d audit retention, audit mTLS identities, capture retention ceiling, sensor-agent resource requests/limits defaults, upstream content feed URLs and analyzer refresh schedule, and service-account identities in `internal/config/config.go`
-- [ ] T015 Implement bounded error and audit-field sanitization used at every external boundary in `internal/sanitize/sanitize.go`
-- [ ] T016 Implement standard condition constructors, observed-generation checks, stable-reason enums, and merge helpers in `internal/status/conditions.go`
+- [X] T014 Implement typed installation configuration for cluster identity, enforced system namespace, Loki, Hubble TLS, separate artifact/audit buckets and credentials, 90–730d audit retention, audit mTLS identities, capture retention ceiling, sensor-agent resource requests/limits defaults, upstream content feed URLs and analyzer refresh schedule, and service-account identities in `internal/config/config.go`
+- [X] T015 Implement bounded error and audit-field sanitization used at every external boundary in `internal/sanitize/sanitize.go`
+- [X] T016 Implement standard condition constructors, observed-generation checks, stable-reason enums, and merge helpers in `internal/status/conditions.go`
 - [ ] T017 Implement structured logging, health/readiness registration, build information, and bounded Prometheus collectors in `internal/telemetry/telemetry.go`
 - [ ] T018 Implement shared private-S3 put/head/list primitives plus versioned sanitized intent/outcome audit records, stable idempotency keys, the mTLS audit client/sink, conditional put plus HEAD/version/write-once verification, conflict detection, persisted replay cursor/overlap, bounded ledger retention, and ledger-to-stdout replay in `internal/storage/s3.go`, `internal/audit/model.go`, `internal/audit/client.go`, and `internal/audit/sink.go`
 - [ ] T019 Create the shared controller-runtime envtest bootstrap, API scheme registration, fake clock, and isolated namespace lifecycle in `test/integration/suite_test.go`
