@@ -1,0 +1,24 @@
+# The internal audit sink.
+#
+# Admission, the reconcilers, the event worker, and the artifact gateway commit
+# audit records here over mTLS rather than writing to the ledger directly. Only
+# the controller manager holds ledger credentials, so a compromised gateway or
+# worker cannot write arbitrary history (ADR-0003).
+apiVersion: v1
+kind: Service
+metadata:
+  name: trawl-audit
+  namespace: trawl-system
+  labels:
+    app.kubernetes.io/name: trawl
+    app.kubernetes.io/component: audit-sink
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: trawl
+    app.kubernetes.io/component: controller-manager
+  ports:
+    - name: audit
+      port: 8443
+      targetPort: audit
+      protocol: TCP

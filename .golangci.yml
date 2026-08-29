@@ -120,6 +120,16 @@ linters:
           - gosec
         text: "G101"
         path: _test\.go
+      # Contract tests read repo files by a path they build themselves from the
+      # module root. G304 has no external input to warn about.
+      - linters:
+          - gosec
+        text: "G304"
+        path: _test\.go
+      - linters:
+          - gosec
+        text: "G122"
+        path: _test\.go
       # Table-driven tests repeat literals by design; extracting them into
       # constants makes the cases harder to read, not easier.
       - linters:

@@ -103,8 +103,30 @@ verify: verify-tools fmt vet ## Verify tool pins and fail on generated-artifact 
 	hack/verify-drift.sh
 
 .PHONY: test-integration
-test-integration: manifests generate fmt vet ## Run integration tests that need real service containers.
-	go test -tags=integration ./test/integration/... -timeout 20m
+test-integration: manifests generate fmt vet setup-envtest ## Run integration tests that need real service containers.
+	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" \
+		go test ./test/integration/... -timeout 20m
+
+.PHONY: manifest-security
+manifest-security: ## Fail on manifests that grant more than Trawl needs.
+	hack/verify-manifests.sh
+
+.PHONY: docker-build-all
+docker-build-all: ## Build every Trawl binary image from the shared Dockerfile.
+	@for binary in $$(ls cmd); do \
+		echo "building $$binary"; \
+		$(CONTAINER_TOOL) build \
+			--build-arg BINARY=$$binary \
+			--build-arg VERSION=$(VERSION) \
+			--build-arg COMMIT=$(COMMIT) \
+			-t $(IMAGE_REPO)/$$binary:$(VERSION) . || exit 1; \
+	done
+
+# Build identification stamped into images. VERSION must not be a mutable tag;
+# telemetry.NewBuildInfo rejects one at startup.
+VERSION ?= v0.0.0-dev
+COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+IMAGE_REPO ?= ghcr.io/trawl
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter

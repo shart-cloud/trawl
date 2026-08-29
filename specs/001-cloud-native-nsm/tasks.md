@@ -69,12 +69,12 @@ test, and deployment primitives shared by all user stories.
 - [X] T020a [P] Add table-driven tests for upstream feed configuration, OCI reference parsing, digest validation, merge-order precedence, and corrupt/missing custom artifact fallback in `internal/content/content_test.go`
 - [X] T021 Implement the admission webhook server, caller identity extraction, configured-namespace enforcement, durable-audit acknowledgement middleware, readiness, and fail-closed failure-policy wiring in `internal/admission/server.go`
 - [X] T022 Wire scheme registration, namespaced manager cache, leader election, probes, metrics, webhook startup, mTLS audit sink/replay/retention runnable and cursor ConfigMap, graceful shutdown, and separate controller runnables in `cmd/controller-manager/main.go`
-- [ ] T023 [P] Define the configured `trawl-system` namespace, Pod Security labels, common ConfigMaps, separately authorized artifact/audit Secret references, audit mTLS service/material and retention configuration, and base Kustomization in `config/default/kustomization.yaml`, `config/namespace/namespace.yaml`, and `config/audit/service.yaml`
-- [ ] T024 [P] Define namespaced least-privilege controller/webhook ServiceAccounts, Roles, RoleBindings, audit-sink client identities, and default-deny/allowlist NetworkPolicies in `config/rbac/controller-role.yaml` and `config/networkpolicy/control-plane.yaml`
-- [ ] T025 Create reproducible multi-stage build targets for all Trawl Go binaries with non-root runtime images and immutable build metadata in `Dockerfile`
-- [ ] T025a [P] Build the content-init image with suricata-update, Zeek package tooling, OCI pull capability, merge logic, and feed-timestamp/digest reporting, with no runtime Kubernetes API access in `images/content-init/Containerfile`
-- [ ] T026 Add `generate`, `manifests`, `verify`, `test`, `test-integration`, `build-installer`, and manifest-security targets in `Makefile`
-- [ ] T027 Add generated CRD/RBAC/example/dashboard drift, observation-schema embedding, and audit-ledger/telemetry contract synchronization checks in `test/contract/generated_artifacts_test.go`
+- [X] T023 [P] Define the configured `trawl-system` namespace, Pod Security labels, common ConfigMaps, separately authorized artifact/audit Secret references, audit mTLS service/material and retention configuration, and base Kustomization in `config/default/kustomization.yaml`, `config/namespace/namespace.yaml`, and `config/audit/service.yaml`
+- [X] T024 [P] Define namespaced least-privilege controller/webhook ServiceAccounts, Roles, RoleBindings, audit-sink client identities, and default-deny/allowlist NetworkPolicies in `config/rbac/controller-role.yaml` and `config/networkpolicy/control-plane.yaml`
+- [X] T025 Create reproducible multi-stage build targets for all Trawl Go binaries with non-root runtime images and immutable build metadata in `Dockerfile`
+- [X] T025a [P] Build the content-init image with suricata-update, Zeek package tooling, OCI pull capability, merge logic, and feed-timestamp/digest reporting, with no runtime Kubernetes API access in `images/content-init/Containerfile`
+- [X] T026 Add `generate`, `manifests`, `verify`, `test`, `test-integration`, `build-installer`, and manifest-security targets in `Makefile`
+- [X] T027 Add generated CRD/RBAC/example/dashboard drift, observation-schema embedding, and audit-ledger/telemetry contract synchronization checks in `test/contract/generated_artifacts_test.go`
 
 **Checkpoint**: Shared tests pass, the controller skeleton starts under the
 Restricted profile, and user-story code can be added without redefining common

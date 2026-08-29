@@ -1,0 +1,51 @@
+# content-init: the init container that resolves analyzer detection content
+# before an analyzer starts (ADR-0005, FR-041/FR-042).
+#
+# It runs twice in an analyzer pod. The first pass fetches upstream rules and
+# scripts; the second, present only when the NetworkTap declares a custom
+# content reference, pulls that OCI artifact and overlays it. Both write to a
+# shared emptyDir the analyzer containers mount read-only.
+#
+# It holds no Kubernetes API credentials. Its service-account token is
+# suppressed in the pod spec: it fetches from the network and writes to a
+# volume, and an API client would be reach it has no use for.
+
+FROM alpine:3.22 AS base
+
+# suricata-update is the upstream-supported path for ET Open rules and handles
+# the source list, fetch, and rule-file merge that Trawl would otherwise
+# reimplement. Zeek base scripts come from a git checkout pinned by the
+# installation's configured revision.
+#
+# oras pulls the custom content OCI artifact by digest.
+RUN apk add --no-cache \
+      ca-certificates \
+      git \
+      curl \
+      python3 \
+      py3-pip \
+      tar \
+    && python3 -m pip install --no-cache-dir --break-system-packages suricata-update==1.3.7 \
+    && rm -rf /var/cache/apk/*
+
+# oras is installed from a pinned release and checksum-verified. The binary that
+# fetches detection content is itself part of the supply chain.
+ARG ORAS_VERSION=1.2.3
+ARG ORAS_SHA256=b4efc97a91f471f323f193ea4b4d63d8ff443ca3aab514151a30751330852827
+RUN curl -fsSL -o /tmp/oras.tar.gz \
+      "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_linux_amd64.tar.gz" \
+    && echo "${ORAS_SHA256}  /tmp/oras.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/oras.tar.gz -C /usr/local/bin oras \
+    && rm /tmp/oras.tar.gz \
+    && chmod 0755 /usr/local/bin/oras
+
+# The Trawl content binary performs the merge, validates paths, and writes the
+# feed timestamp and custom digest that the sensor agent reports as status.
+COPY --from=trawl-build /workspace/trawl-content /usr/local/bin/trawl-content
+
+# Non-root. The only thing this container writes is the shared content volume,
+# which is mounted writable for it and read-only for the analyzers.
+RUN adduser -D -u 65532 trawl
+USER 65532:65532
+
+ENTRYPOINT ["/usr/local/bin/trawl-content"]

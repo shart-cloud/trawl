@@ -1,31 +1,62 @@
-# Build the manager binary
-FROM golang:1.26 AS builder
+# Reproducible build for every Trawl Go binary.
+#
+# One definition parameterized by BINARY rather than a Dockerfile per binary:
+# the build flags that matter for reproducibility and for the supply-chain
+# requirements (trimpath, stripped build ID, digest-pinned base) must be
+# identical everywhere, and duplicating them is how they drift.
+#
+# Base images are digest-pinned. A tag can be repointed after the review that
+# approved it, which the constitution's immutable-supply-chain rule forbids.
+
+FROM golang:1.26.7@sha256:dc2521c2a906db43073b8b4d99f491b6341cf15610b6ebbab187c45153f9959e AS builder
+
 ARG TARGETOS
 ARG TARGETARCH
 
+# BINARY selects which cmd/ package to build. Every Trawl image is produced from
+# this stage so they share one toolchain and one set of flags.
+ARG BINARY=controller-manager
+
+# Build identification, stamped into the binary and reported by the process.
+# These are required rather than defaulted: an unidentifiable build cannot be
+# correlated with the source that produced it.
+ARG VERSION
+ARG COMMIT
+
 WORKDIR /workspace
-# Copy the Go Modules manifests
+
+# Dependencies are resolved before the source is copied, so a source-only change
+# does not re-download the module graph.
 COPY go.mod go.mod
 COPY go.sum go.sum
-# cache deps before building and copying source so that we don't need to re-download as much
-# and so that source changes don't invalidate our downloaded layer
 RUN go mod download
 
-# Copy the Go source (relies on .dockerignore to filter)
 COPY . .
 
-# Build
-# the GOARCH has no default value to allow the binary to be built according to the host where the command
-# was called. For example, if we call make docker-build in a local env which has the Apple Silicon M1 SO
-# the docker BUILDPLATFORM arg will be linux/arm64 when for Apple x86 it will be linux/amd64. Therefore,
-# by leaving it empty we can ensure that the container and binary shipped on it will have the same platform.
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o manager ./cmd/controller-manager
+# CGO is disabled so the result is a static binary that runs on distroless.
+# -trimpath removes local filesystem paths, and -buildid= clears the build ID,
+# which together make the output byte-identical across machines for the same
+# inputs. That is what lets the drift check and the SBOM mean anything.
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+    go build \
+      -trimpath \
+      -ldflags="-s -w -buildid= \
+        -X main.version=${VERSION} \
+        -X main.commit=${COMMIT}" \
+      -o /workspace/trawl-binary \
+      ./cmd/${BINARY}
 
-# Use distroless as minimal base image to package the manager binary
-# Refer to https://github.com/GoogleContainerTools/distroless for more details
-FROM gcr.io/distroless/static:nonroot
+# distroless static: no shell, no package manager, no libc. There is nothing in
+# the image for a compromised process to execute, which matters most for the
+# components that hold storage credentials.
+FROM gcr.io/distroless/static:nonroot@sha256:1c2c046bc09ed40fad370b599a0b1ae7987f55b01e247cf27a7c27cd97e5bbc7
+
 WORKDIR /
-COPY --from=builder /workspace/manager .
+
+COPY --from=builder /workspace/trawl-binary /trawl
+
+# Non-root, matching the restricted Pod Security profile the control-plane
+# namespace enforces.
 USER 65532:65532
 
-ENTRYPOINT ["/manager"]
+ENTRYPOINT ["/trawl"]

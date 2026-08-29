@@ -63,7 +63,11 @@ spec:
         args:
           - --leader-elect
           - --health-probe-bind-address=:8081
-        image: controller:latest
+        # Placeholder digest, substituted by the release overlay. It is a
+        # digest rather than a tag on purpose: a floating tag here would ship in
+        # release manifests, which the constitution forbids, and would let the
+        # deployed image change without a manifest change.
+        image: ghcr.io/trawl/controller-manager@sha256:0000000000000000000000000000000000000000000000000000000000000000
         name: manager
         ports:
         - containerPort: 8081

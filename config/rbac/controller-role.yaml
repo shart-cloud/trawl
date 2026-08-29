@@ -1,0 +1,97 @@
+# Least-privilege role for the controller manager.
+#
+# Namespaced, not cluster-scoped. Trawl's CRDs are cluster-scoped in discovery,
+# but reconciliation happens only in the configured system namespace, and the
+# manager's cache is restricted to match (FR-001). A ClusterRole here would
+# contradict that restriction and grant reach the operator does not use.
+#
+# No wildcards. Every verb is one the reconciler actually calls; an unused verb
+# is attack surface with no benefit.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: trawl-controller-manager
+  namespace: trawl-system
+  labels:
+    app.kubernetes.io/name: trawl
+    app.kubernetes.io/component: controller-manager
+rules:
+  # Per-tap analyzer workloads.
+  - apiGroups: ["apps"]
+    resources: ["deployments", "daemonsets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Short-lived capture Jobs.
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  # Analyzer configuration and the audit replay cursor.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Generated per-tap and per-capture identities.
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  # Pod status feeds analyzer health; pods are never created directly, only
+  # through the workload controllers above.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  # Events for operator-visible reconciliation outcomes.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  # The reporter sidecar's Role is generated per capture and restricted by
+  # resourceNames, so the manager must be able to write Roles it owns.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+---
+# Node reads are genuinely cluster-scoped: resolving a tap's eligible targets
+# requires listing nodes, which have no namespace. Read-only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: trawl-node-reader
+  labels:
+    app.kubernetes.io/name: trawl
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: trawl-controller-manager
+  namespace: trawl-system
+subjects:
+  - kind: ServiceAccount
+    name: trawl-controller-manager
+    namespace: trawl-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: trawl-controller-manager
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: trawl-node-reader
+subjects:
+  - kind: ServiceAccount
+    name: trawl-controller-manager
+    namespace: trawl-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: trawl-node-reader
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: trawl-controller-manager
+  namespace: trawl-system
+  labels:
+    app.kubernetes.io/name: trawl
+    app.kubernetes.io/component: controller-manager
