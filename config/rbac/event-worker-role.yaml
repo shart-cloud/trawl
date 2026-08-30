@@ -23,7 +23,10 @@ rules:
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
     verbs: ["get", "create", "update"]
-    resourceNames: ["event-worker"]
+    # The Lease is created by the worker at runtime with the name in
+    # cmd/event-worker/main.go, not by kustomize, so namePrefix does not apply
+    # to it and this name carries the prefix literally.
+    resourceNames: ["trawl-event-worker"]
   # Creating the lease requires an unnamed create, since the name cannot be
   # checked before the object exists.
   - apiGroups: ["coordination.k8s.io"]
