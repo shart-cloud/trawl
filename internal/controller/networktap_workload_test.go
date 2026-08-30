@@ -18,6 +18,7 @@ package controller
 
 import (
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -592,6 +593,42 @@ func TestSensorArgsMatchTheSensorBinary(t *testing.T) {
 	for _, required := range []string{"suricata-log", "zeek-log-dir"} {
 		if !seen[required] {
 			t.Errorf("--%s is not passed, so the sensor treats that analyzer as absent and reads none of its output", required)
+		}
+	}
+}
+
+// The sensor pod is on the host network, so its probe port is the node's. The
+// binary defaults to :9100, which node_exporter almost always already holds:
+// the sensor lost the race and exited with "listen tcp :9100: bind: address
+// already in use" on a cluster that simply scrapes node metrics. The renderer
+// therefore has to set the port, and the probes have to agree with what it set
+// - a probe pointing at a port nothing serves would fail the pod just as surely.
+func TestSensorProbePortAvoidsNodeExporterAndMatchesTheProbes(t *testing.T) {
+	spec := renderer().PodSpec(testTap())
+	c := containerByName(spec, "sensor-agent")
+	if c == nil {
+		t.Fatal("no sensor-agent container rendered")
+	}
+
+	if sensorProbePort == 9100 {
+		t.Error("the sensor probe port is node_exporter's; on a host-network pod that is a collision waiting for any cluster with node metrics")
+	}
+
+	want := "--probe-addr=:" + strconv.Itoa(sensorProbePort)
+	if !slices.Contains(c.Args, want) {
+		t.Errorf("args do not carry %q, so the binary keeps its own default and the probes point elsewhere", want)
+	}
+
+	for name, probe := range map[string]*corev1.Probe{
+		"readiness": c.ReadinessProbe,
+		"liveness":  c.LivenessProbe,
+	} {
+		if probe == nil || probe.HTTPGet == nil {
+			t.Errorf("%s probe is not an HTTP GET", name)
+			continue
+		}
+		if got := probe.HTTPGet.Port.IntValue(); got != sensorProbePort {
+			t.Errorf("%s probe port = %d, want %d", name, got, sensorProbePort)
 		}
 	}
 }

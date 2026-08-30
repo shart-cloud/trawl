@@ -19,6 +19,7 @@ package controller
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -51,6 +52,14 @@ const (
 	// the hardening away for a writable path.
 	tmpVolume = "content-tmp"
 	tmpPath   = "/tmp"
+
+	// The sensor pod runs on the host network, so this is a port on the
+	// node, not a private one. cmd/sensor-agent defaults to :9100, which is
+	// node_exporter's well-known port - on any cluster that scrapes node
+	// metrics the sensor loses the race and exits with "listen tcp :9100:
+	// bind: address already in use". Chosen outside the Prometheus exporter
+	// range so it does not collide with the next exporter either.
+	sensorProbePort = 19100
 	// tokenPath is a mount path, not a credential; the token itself is
 	// projected by the kubelet and never appears in this repository.
 	tokenPath = "/var/run/secrets/trawl" //nolint:gosec // G101: mount path
@@ -387,6 +396,7 @@ func (r *WorkloadRenderer) sensorContainer(tap *trawlv1alpha1.NetworkTap, src *t
 		"--interface=" + src.Interface,
 		"--log-dir=" + logsPath,
 		"--content-dir=" + contentPath,
+		"--probe-addr=:" + strconv.Itoa(sensorProbePort),
 	}
 
 	// These are the switches that turn each reader on: cmd/sensor-agent treats
@@ -428,14 +438,14 @@ func (r *WorkloadRenderer) sensorContainer(tap *trawlv1alpha1.NetworkTap, src *t
 		},
 		ReadinessProbe: &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
-				HTTPGet: &corev1.HTTPGetAction{Path: "/readyz", Port: intstr.FromInt32(9100)},
+				HTTPGet: &corev1.HTTPGetAction{Path: "/readyz", Port: intstr.FromInt32(sensorProbePort)},
 			},
 			InitialDelaySeconds: 5,
 			PeriodSeconds:       10,
 		},
 		LivenessProbe: &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
-				HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstr.FromInt32(9100)},
+				HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstr.FromInt32(sensorProbePort)},
 			},
 			InitialDelaySeconds: 10,
 			PeriodSeconds:       20,
