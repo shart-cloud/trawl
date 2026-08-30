@@ -10,10 +10,46 @@
 #     authorization and retention boundary. A Suricata-side pcap log would write
 #     packet data outside that boundary with no retention and no audit trail.
 
+# The Emerging Threats ruleset refers to the standard Suricata variables by
+# name. Only HOME_NET and EXTERNAL_NET were defined here, so every rule
+# mentioning any of the others failed to parse:
+#
+#   E: rule-vars: Variable "HTTP_SERVERS" is not defined in configuration file
+#
+# Suricata still started and still reported a rule count, so the loss was
+# visible only as signatures that never fired. The remaining groups are defined
+# in terms of HOME_NET, which is the upstream default and keeps one place to
+# change when an installation's address space differs.
 vars:
   address-groups:
     HOME_NET: "[10.0.0.0/8,172.16.0.0/12,192.168.0.0/16]"
     EXTERNAL_NET: "!$HOME_NET"
+    HTTP_SERVERS: "$HOME_NET"
+    SMTP_SERVERS: "$HOME_NET"
+    SQL_SERVERS: "$HOME_NET"
+    DNS_SERVERS: "$HOME_NET"
+    TELNET_SERVERS: "$HOME_NET"
+    AIM_SERVERS: "$EXTERNAL_NET"
+    DC_SERVERS: "$HOME_NET"
+    DNP3_SERVER: "$HOME_NET"
+    DNP3_CLIENT: "$HOME_NET"
+    MODBUS_CLIENT: "$HOME_NET"
+    MODBUS_SERVER: "$HOME_NET"
+    ENIP_CLIENT: "$HOME_NET"
+    ENIP_SERVER: "$HOME_NET"
+
+  port-groups:
+    HTTP_PORTS: "80"
+    SHELLCODE_PORTS: "!80"
+    ORACLE_PORTS: 1521
+    SSH_PORTS: 22
+    DNP3_PORTS: 20000
+    MODBUS_PORTS: 502
+    FILE_DATA_PORTS: "[$HTTP_PORTS,110,143]"
+    FTP_PORTS: 21
+    GENEVE_PORTS: 6081
+    VXLAN_PORTS: 4789
+    TEREDO_PORTS: 3544
 
 default-rule-path: /var/lib/trawl/content/Suricata/rules
 rule-files:

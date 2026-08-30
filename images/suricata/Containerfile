@@ -43,6 +43,14 @@ RUN curl -fsSL -o suricata.tar.gz \
 # AF_PACKET is the capture path; nfqueue and prelude are deliberately not
 # built. nfqueue is the inline path, and an analyzer that cannot be built to
 # modify traffic cannot be configured into doing so by accident (Principle I).
+# make install ships the binaries only. classification.config and
+# reference.config carry the classtype and reference vocabularies every rule
+# uses; without them Suricata logs
+#   E: classification-config: please check the "classification-file" option
+# and loads the ruleset with no classifications attached, so any alert that
+# fired would reach the observation record stripped of its severity. They are
+# installed explicitly rather than by make install-conf, which would also drop
+# an upstream suricata.yaml over Trawl's.
 RUN ./configure \
       --prefix=/usr \
       --sysconfdir=/etc \
@@ -51,7 +59,10 @@ RUN ./configure \
       --disable-nfqueue \
       --disable-gccmarch-native \
  && make -j"$(nproc)" \
- && make DESTDIR=/rootfs install
+ && make DESTDIR=/rootfs install \
+ && install -Dm644 etc/classification.config /rootfs/etc/suricata/classification.config \
+ && install -Dm644 etc/reference.config /rootfs/etc/suricata/reference.config \
+ && install -Dm644 etc/threshold.config /rootfs/etc/suricata/threshold.config
 
 FROM ${BASE_IMAGE}
 
