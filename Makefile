@@ -197,7 +197,13 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
 	mkdir -p dist
-	cd config/manager && "$(KUSTOMIZE)" edit set image controller=${IMG}
+	# No `kustomize edit set image` here. The scaffold's version wrote an
+	# images: transformer into the tracked config/manager/kustomization.yaml on
+	# every run, naming a "controller" image that does not match Trawl's
+	# reference and carrying a floating tag. It was a no-op that dirtied the
+	# working tree and read as though release manifests pinned by tag, which
+	# the constitution forbids. manager.yaml carries a placeholder digest that
+	# the release overlay substitutes instead.
 	"$(KUSTOMIZE)" build config/default > dist/install.yaml
 
 ##@ Deployment
