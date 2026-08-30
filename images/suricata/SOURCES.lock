@@ -4,17 +4,26 @@
 # pin meaningful: a version alone can be re-cut upstream, and a compromised
 # mirror would otherwise be indistinguishable from the real one.
 #
-# Update procedure: change the version, obtain the checksum from the upstream
-# release signature, and record the review in the same commit.
+# Update procedure: change the version, download the tarball and its detached
+# signature, verify the signature against the signing key below, record the
+# resulting sha256 here, and note the verification in the same commit.
 
 suricata:
   version: 8.0.6
   url: https://www.openinfosecfoundation.org/download/suricata-8.0.6.tar.gz
-  # TODO(release): populate from the upstream signed release before the first
-  # image build. The build fails closed without it, so this cannot ship unset.
-  sha256: ""
+  sha256: b264584edda4a3b2b462050099c7c54f4f35ac0c7164e41084be9b216c090f8c
+  # Verified 2026-08-30 against suricata-8.0.6.tar.gz.sig from the same release:
+  #   gpg: Good signature from
+  #     "Open Information Security Foundation (OISF) <releases@openinfosecfoundation.org>"
+  #   Primary key fingerprint: B36F DAF2 607E 10E8 FFA8  9E5E 2BA9 C98C CDF1 E93A
+  #
+  # Retrieved from keys.openpgp.org, with the same caveat recorded in the Zeek
+  # lockfile: address ownership is established, project provenance is not.
+  # Confirm the fingerprint through a second channel before the first
+  # production build.
+  signing_key_fingerprint: B36FDAF2607E10E8FFA89E5E2BA9C98CCDF1E93A
+  signature_url: https://www.openinfosecfoundation.org/download/suricata-8.0.6.tar.gz.sig
 
 base_image:
   reference: docker.io/library/debian:12-slim
-  # Pinned by digest at build time via --build-arg; see the release workflow.
-  digest: ""
+  digest: sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171

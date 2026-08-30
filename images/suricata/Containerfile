@@ -55,6 +55,13 @@ COPY --from=builder /rootfs/ /
 # against rules that are not there.
 COPY suricata.yaml /etc/suricata/suricata.yaml
 
+# The controller renders one argument set for every analyzer, describing the tap
+# rather than the tool. Suricata spells all of them differently, so the
+# translation lives here rather than as a per-analyzer special case in the
+# controller.
+COPY entrypoint.sh /usr/local/bin/trawl-suricata
+RUN chmod 0755 /usr/local/bin/trawl-suricata
+
 # Runs as root because AF_PACKET needs CAP_NET_RAW, which the pod grants
 # explicitly. The pod drops every other capability (ADR-0004).
-ENTRYPOINT ["/usr/bin/suricata"]
+ENTRYPOINT ["/usr/local/bin/trawl-suricata"]

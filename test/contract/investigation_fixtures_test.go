@@ -91,8 +91,25 @@ func TestExactPivotFindsEveryRecordInASession(t *testing.T) {
 
 			// Pivot from every record in turn: SC-005 times attempts starting
 			// from each direction, so the property must hold from all of them.
+			flowless := 0
 			for i, subject := range records {
 				kind, matches := c.Candidates(subject, records)
+
+				// A record with no flow cannot be correlated, and saying so is
+				// the point. Zeek's x509.log carries no uid, no conn_id and no
+				// Community ID, so a certificate is reachable only through the
+				// fingerprint in ssl.log's cert_chain_fps. Asserting MatchNone
+				// here keeps that limitation visible: if correlation ever
+				// started returning a match for one of these, it would be
+				// inventing a link the evidence does not contain.
+				if subject.Flow == nil {
+					flowless++
+					if kind != observation.MatchNone {
+						t.Errorf("pivot from flowless record %d: kind = %q, want none", i, kind)
+					}
+					continue
+				}
+
 				if kind != observation.MatchExact {
 					t.Errorf("pivot from record %d: kind = %q, want exact", i, kind)
 				}
@@ -100,6 +117,11 @@ func TestExactPivotFindsEveryRecordInASession(t *testing.T) {
 					t.Errorf("pivot from record %d found %d matches, want %d",
 						i, len(matches), session.ExactMatches-1)
 				}
+			}
+
+			if flowless != session.FlowlessRecords {
+				t.Errorf("session produced %d flowless records, want %d",
+					flowless, session.FlowlessRecords)
 			}
 		})
 	}
@@ -192,15 +214,89 @@ func TestEveryObservationSubtypeAppearsAcrossTheFixtures(t *testing.T) {
 		}
 	}
 
+	// Every subtype a Zeek or Suricata sensor can emit. cluster_flow is absent
+	// by construction: it comes from Hubble, which these analyzer fixtures do
+	// not model, and it is exercised against a real Hubble relay instead.
 	for _, want := range []observation.ObservationType{
 		observation.TypeSignature,
 		observation.TypeConnection,
 		observation.TypeDNS,
 		observation.TypeHTTP,
 		observation.TypeTLS,
+		observation.TypeCertificate,
+		observation.TypeFile,
+		observation.TypeNotice,
+		observation.TypeWeird,
 	} {
 		if !seen[want] {
 			t.Errorf("no fixture produces a %q record", want)
 		}
+	}
+}
+
+func TestCertificateRecordsCarryTheirParsedFields(t *testing.T) {
+	// The x509 parser previously decoded a nested "certificate" object, which
+	// Zeek never writes: under the json-logs policy Trawl configures, a
+	// record-valued field is flattened to dotted keys, exactly as conn.log's
+	// "id.orig_h" is. The nested decode succeeded and produced a Certificate
+	// with every field empty, so the record validated, stored, and answered
+	// every query with blanks.
+	records := normalizeSession(t, fixtures.TLSSessionWithCertificate())
+
+	var cert *observation.Certificate
+	for _, obs := range records {
+		if obs.Details.Certificate != nil {
+			cert = obs.Details.Certificate
+		}
+	}
+	if cert == nil {
+		t.Fatal("the fixture produced no certificate record")
+	}
+
+	if cert.Subject == "" || cert.Issuer == "" || cert.Serial == "" {
+		t.Errorf("certificate fields were not parsed: %+v", cert)
+	}
+	if cert.NotValidBefore == nil || cert.NotValidAfter == nil {
+		t.Errorf("certificate validity window was not parsed: %+v", cert)
+	}
+	if cert.FingerprintSHA256 == "" {
+		t.Error("certificate has no fingerprint, so nothing can reach it from a flow")
+	}
+}
+
+func TestATLSRecordReachesItsCertificateByFingerprint(t *testing.T) {
+	// The only route from a flow to a certificate. x509.log has no uid, no
+	// conn_id and no Community ID, so without the chain fingerprints on the TLS
+	// record an observed certificate is unreachable from the handshake that
+	// presented it.
+	records := normalizeSession(t, fixtures.TLSSessionWithCertificate())
+
+	var tlsFingerprints []string
+	var certFingerprint string
+	for _, obs := range records {
+		if obs.Details.TLS != nil {
+			tlsFingerprints = obs.Details.TLS.CertificateFingerprints
+		}
+		if obs.Details.Certificate != nil {
+			certFingerprint = obs.Details.Certificate.FingerprintSHA256
+		}
+	}
+
+	if certFingerprint == "" {
+		t.Fatal("no certificate record")
+	}
+	if len(tlsFingerprints) == 0 {
+		t.Fatal("the TLS record carries no certificate fingerprints")
+	}
+
+	var found bool
+	for _, fp := range tlsFingerprints {
+		if fp == certFingerprint {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("TLS chain %v does not include the observed certificate %q",
+			tlsFingerprints, certFingerprint)
 	}
 }

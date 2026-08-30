@@ -106,7 +106,18 @@ type Flow struct {
 	// ZeekUID correlates Zeek records with each other within a connection.
 	ZeekUID string `json:"zeek_uid,omitempty"`
 
-	Protocol    string   `json:"protocol"`
+	// Protocol is the transport protocol, when the record states one.
+	//
+	// It is often absent. Zeek writes `proto` in conn.log and dns.log only;
+	// http.log, ssl.log and files.log describe a flow without naming its
+	// transport, because Zeek's `port` type carries the protocol internally and
+	// JSON renders a port as a bare number. Requiring it meant every record
+	// from those logs failed validation and the sensor dropped it as malformed.
+	//
+	// It is left empty rather than inferred. TLS over TCP is a near-certain
+	// guess, but a near-certain guess written into an evidence record cannot be
+	// told apart from something an analyzer actually observed.
+	Protocol    string   `json:"protocol,omitempty"`
 	VLAN        *int32   `json:"vlan,omitempty"`
 	Source      Endpoint `json:"source"`
 	Destination Endpoint `json:"destination"`
@@ -165,6 +176,15 @@ type TLS struct {
 	Resumed     *bool  `json:"resumed,omitempty"`
 	JA3         string `json:"ja3,omitempty"`
 	JA3S        string `json:"ja3s,omitempty"`
+
+	// CertificateFingerprints identifies the certificates presented in this
+	// handshake, in chain order.
+	//
+	// It is the only path from a flow to a certificate observation. Zeek's
+	// x509.log carries no uid, no conn_id and no Community ID, so a certificate
+	// record cannot be correlated by flow at all; an analyst reaches it by
+	// taking a fingerprint from here and querying for it.
+	CertificateFingerprints []string `json:"certificate_fingerprints,omitempty"`
 }
 
 // Certificate is an observed X.509 certificate.

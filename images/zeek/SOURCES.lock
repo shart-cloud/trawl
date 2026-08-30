@@ -2,14 +2,28 @@
 #
 # Every entry is pinned by version and checksum. A version alone can be re-cut
 # upstream; the checksum is what makes the pin meaningful.
+#
+# Update procedure: change the version, download the tarball and its detached
+# signature, verify the signature against the signing key below, record the
+# resulting sha256 here, and note the verification in the same commit.
 
 zeek:
   version: 8.0.10
   url: https://github.com/zeek/zeek/releases/download/v8.0.10/zeek-8.0.10.tar.gz
-  # TODO(release): populate from the upstream signed release before the first
-  # image build. The build fails closed without it, so this cannot ship unset.
-  sha256: ""
+  sha256: dbb1cb6c1eac27a8883ee4bd229a378b2f1253fa18e16cdeaaef8a00f124ddf1
+  # Verified 2026-08-30 against zeek-8.0.10.tar.gz.asc from the same release:
+  #   gpg: Good signature from "The Zeek Team <info@zeek.org>"
+  #   Primary key fingerprint: 962F D218 7ED5 A1DD 82FC  478A 33F1 5EAE F8CB 8019
+  #   Subkey used to sign:     E969 0B2B 7D8A C1A1 9F92  1C4A C68B 494D F56A CC7E
+  #
+  # The key was retrieved from keys.openpgp.org, which publishes a user ID only
+  # after the address controls it. That establishes the key belongs to
+  # info@zeek.org; it is not by itself proof the Zeek project uses this key for
+  # releases. Confirm the fingerprint through a second channel before the first
+  # production build.
+  signing_key_fingerprint: 962FD2187ED5A1DD82FC478A33F15EAEF8CB8019
+  signature_url: https://github.com/zeek/zeek/releases/download/v8.0.10/zeek-8.0.10.tar.gz.asc
 
 base_image:
   reference: docker.io/library/debian:12-slim
-  digest: ""
+  digest: sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171

@@ -49,16 +49,32 @@ type Session struct {
 	// asserts the pivot returns this many, so a normalizer that silently drops
 	// Community ID fails rather than quietly reducing recall.
 	ExactMatches int
+
+	// FlowlessRecords is how many of this session's records carry no flow at
+	// all, and so can never be correlated by Community ID or endpoint.
+	//
+	// This is a property of the evidence, not of Trawl. Zeek's X509::Info has
+	// no uid and no conn_id - a certificate is reported as an object the
+	// handshake referenced rather than as an event on the flow - so the only
+	// route from a flow to a certificate is the fingerprint carried in
+	// ssl.log's cert_chain_fps. Recording the count here keeps the pivot tests
+	// honest: they assert these records report no match rather than quietly
+	// excluding them.
+	FlowlessRecords int
 }
 
 // Zeek log type names used by the fixtures. They mirror
 // observation.ZeekLogType but stay plain strings so the fixture package does
 // not constrain what a test can construct.
 const (
-	logConn = "conn"
-	logDNS  = "dns"
-	logHTTP = "http"
-	logSSL  = "ssl"
+	logConn   = "conn"
+	logDNS    = "dns"
+	logHTTP   = "http"
+	logSSL    = "ssl"
+	logX509   = "x509"
+	logFiles  = "files"
+	logNotice = "notice"
+	logWeird  = "weird"
 )
 
 // ZeekLog pairs a log type with a raw JSON line.
@@ -179,6 +195,94 @@ func HTTPSessionWithCredentialInQuery() Session {
 	}
 }
 
+// TLSSessionWithCertificate covers the certificate subtype and the one place
+// the investigation path cannot use a flow pivot.
+//
+// The x509 line is shaped the way Zeek 8.0.10 actually writes it under the
+// json-logs policy Trawl configures: dotted keys flattened from the nested
+// X509::Certificate record, and no uid, conn_id or Community ID anywhere. The
+// ssl record reaches it only through cert_chain_fps.
+func TLSSessionWithCertificate() Session {
+	const cid = "1:EGhnat6tSLYJl6Absav9mrL445A="
+	const fingerprint = "e51dcbdb5041a9034cd463978f9d7769945c18081150abe9a20aab93ed6e58ed"
+
+	return Session{
+		Name:            "tls-session-with-certificate",
+		CommunityID:     cid,
+		ExactMatches:    2,
+		FlowlessRecords: 1,
+		ZeekLogs: []ZeekLog{
+			{logConn, fmt.Sprintf(`{"ts":%s,"uid":"CCertUid00001","community_id":%q,`+
+				`"id.orig_h":"10.3.3.5","id.orig_p":37816,"id.resp_h":"10.3.3.9","id.resp_p":443,`+
+				`"proto":"tcp","service":"ssl","duration":0.0041,"conn_state":"RSTO",`+
+				`"orig_bytes":358,"resp_bytes":2360,"missed_bytes":0}`, zeekTS(0), cid)},
+			{logSSL, fmt.Sprintf(`{"ts":%s,"uid":"CCertUid00001","community_id":%q,`+
+				`"id.orig_h":"10.3.3.5","id.orig_p":37816,"id.resp_h":"10.3.3.9","id.resp_p":443,`+
+				`"version":"TLSv12","cipher":"TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384","curve":"x25519",`+
+				`"server_name":"suspicious.example","resumed":false,"established":true,`+
+				`"cert_chain_fps":[%q],"sni_matches_cert":true}`, zeekTS(0), cid, fingerprint)},
+			{logX509, fmt.Sprintf(`{"ts":%s,"fingerprint":%q,`+
+				`"certificate.version":3,"certificate.serial":"638F18BD0AC7BAF03BD3E5458FE50AB7F8D679F4",`+
+				`"certificate.subject":"C=US,O=Trawl Fixture,CN=suspicious.example",`+
+				`"certificate.issuer":"C=US,O=Trawl Fixture,CN=suspicious.example",`+
+				`"certificate.not_valid_before":%d.0,"certificate.not_valid_after":%d.0,`+
+				`"certificate.key_alg":"rsaEncryption","certificate.sig_alg":"sha256WithRSAEncryption",`+
+				`"certificate.key_type":"rsa","certificate.key_length":2048,`+
+				`"basic_constraints.ca":true,"host_cert":true,"client_cert":false}`,
+				zeekTS(50*time.Millisecond), fingerprint,
+				BaseTime.Add(-24*time.Hour).Unix(), BaseTime.Add(48*time.Hour).Unix())},
+		},
+	}
+}
+
+// FileDownloadWithAnomalies covers the file, notice and weird subtypes.
+//
+// All four records carry a Community ID, including the files record: Zeek's
+// Files::Info has carried uid and conn_id since 5.1, so a file transfer is
+// reachable from the flow that carried it. The sha256 is present because
+// Trawl's image loads its own hashing script; Zeek's stock hash-all-files
+// computes MD5 and SHA1, neither of which Trawl stores.
+func FileDownloadWithAnomalies() Session {
+	const cid = "1:Yk4R2wd/Z5Ewhg08SPVFnW/THyM="
+	const sha = "ff67a9d764d6a2367a187734e697f6a53217db9a21c101d410a113ca871a299d"
+
+	return Session{
+		Name:         "file-download-with-anomalies",
+		CommunityID:  cid,
+		ExactMatches: 5,
+		ZeekLogs: []ZeekLog{
+			{logConn, fmt.Sprintf(`{"ts":%s,"uid":"CFileUid00001","community_id":%q,`+
+				`"id.orig_h":"10.4.4.5","id.orig_p":48512,"id.resp_h":"10.4.4.9","id.resp_p":80,`+
+				`"proto":"tcp","service":"http","conn_state":"SF","orig_bytes":220,"resp_bytes":4096,`+
+				`"missed_bytes":128}`, zeekTS(0), cid)},
+			{logHTTP, fmt.Sprintf(`{"ts":%s,"uid":"CFileUid00001","community_id":%q,`+
+				`"id.orig_h":"10.4.4.5","id.orig_p":48512,"id.resp_h":"10.4.4.9","id.resp_p":80,`+
+				`"method":"GET","host":"files.internal","uri":"/download/payload.zip",`+
+				`"status_code":200,"user_agent":"curl/8.5.0"}`, zeekTS(20*time.Millisecond), cid)},
+			{logFiles, fmt.Sprintf(`{"ts":%s,"fuid":"FFOx3k2GH9yIQca1Pi","uid":"CFileUid00001",`+
+				`"community_id":%q,"id.orig_h":"10.4.4.5","id.orig_p":48512,`+
+				`"id.resp_h":"10.4.4.9","id.resp_p":80,"source":"HTTP","depth":0,`+
+				`"analyzers":["SHA256"],"mime_type":"application/zip","filename":"payload.zip",`+
+				`"is_orig":false,"seen_bytes":4096,"missing_bytes":0,"sha256":%q}`,
+				zeekTS(120*time.Millisecond), cid, sha)},
+			{logNotice, fmt.Sprintf(`{"ts":%s,"uid":"CFileUid00001","community_id":%q,`+
+				`"id.orig_h":"10.4.4.5","id.orig_p":48512,"id.resp_h":"10.4.4.9","id.resp_p":80,`+
+				`"proto":"tcp","note":"Trawl::Suspicious_Download",`+
+				`"msg":"Archive retrieved from an internal host with no prior contact",`+
+				`"sub":"payload.zip","src":"10.4.4.5","dst":"10.4.4.9","p":80,"peer":"zeek"}`,
+				zeekTS(140*time.Millisecond), cid)},
+			// missed_bytes above and this weird are the analyzer reporting the
+			// limits of its own view. Both are preserved rather than dropped as
+			// noise (FR-039): an investigation that cannot see where the
+			// evidence is incomplete will read absence as absence of activity.
+			{logWeird, fmt.Sprintf(`{"ts":%s,"uid":"CFileUid00001","community_id":%q,`+
+				`"id.orig_h":"10.4.4.5","id.orig_p":48512,"id.resp_h":"10.4.4.9","id.resp_p":80,`+
+				`"name":"content_gap","notice":false,"peer":"zeek","source":"TCP"}`,
+				zeekTS(160*time.Millisecond), cid)},
+		},
+	}
+}
+
 // All returns every fixture session.
 func All() []Session {
 	return []Session{
@@ -186,5 +290,7 @@ func All() []Session {
 		DNSLookupSession(),
 		SessionWithoutCommunityID(),
 		HTTPSessionWithCredentialInQuery(),
+		TLSSessionWithCertificate(),
+		FileDownloadWithAnomalies(),
 	}
 }

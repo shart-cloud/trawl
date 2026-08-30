@@ -88,9 +88,22 @@ func TestZeekNormalizesEachSupportedLogType(t *testing.T) {
 					t.Errorf("established = %v", d.TLS.Established)
 				}
 			}},
-		{ZeekX509, `{"ts":1787054370.1,"fingerprint":"abababababababababababababababababababababababababababababababab","certificate":{"subject":"CN=example.com","issuer":"CN=CA","serial":"01","not_valid_before":1787054000.0,"not_valid_after":1790054000.0},"validation_status":"ok"}`,
+		// Flattened dotted keys, copied from a real x509.log written by Zeek
+		// 8.0.10 under the json-logs policy Trawl configures. The previous
+		// fixture used a nested "certificate" object, which Zeek never emits:
+		// it parsed cleanly into an empty Certificate, so the assertion below
+		// was the only thing standing between a broken parser and a stored
+		// record that described nothing.
+		{ZeekX509, `{"ts":1787054370.1,"fingerprint":"abababababababababababababababababababababababababababababababab",` +
+			`"certificate.version":3,"certificate.serial":"01","certificate.subject":"CN=example.com",` +
+			`"certificate.issuer":"CN=CA","certificate.not_valid_before":1787054000.0,` +
+			`"certificate.not_valid_after":1790054000.0,"certificate.key_alg":"rsaEncryption",` +
+			`"certificate.key_length":2048,"host_cert":true,"client_cert":false}`,
 			TypeCertificate, func(t *testing.T, d Details) {
 				if d.Certificate.Subject != "CN=example.com" {
+					t.Errorf("certificate = %+v", d.Certificate)
+				}
+				if d.Certificate.Issuer != "CN=CA" || d.Certificate.Serial != "01" {
 					t.Errorf("certificate = %+v", d.Certificate)
 				}
 				if d.Certificate.NotValidAfter == nil {

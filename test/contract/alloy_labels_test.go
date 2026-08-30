@@ -188,14 +188,29 @@ func TestAnalyzerConfigsAgreeOnCommunityIDSeed(t *testing.T) {
 	if !strings.Contains(string(suricata), "community-id-seed: 0") {
 		t.Error("Suricata does not pin the Community ID seed to 0")
 	}
-	if !strings.Contains(string(zeek), "Communityid::seed = 0") {
+	// CommunityID, with a capital ID, is the module Zeek actually defines. A
+	// redef of an unknown identifier is a fatal parse error, so the misspelling
+	// this assertion previously matched did not weaken correlation - it stopped
+	// Zeek from starting. Matching a string cannot tell a valid identifier from
+	// an invalid one; only loading the script can, which is why
+	// TestZeekConfigurationLoads exists alongside this.
+	if !strings.Contains(string(zeek), "CommunityID::seed = 0") {
 		t.Error("Zeek does not pin the Community ID seed to 0")
+	}
+	if strings.Contains(string(zeek), "Communityid::") {
+		t.Error("Zeek config uses the Communityid module, which does not exist; it is CommunityID")
 	}
 	if !strings.Contains(string(suricata), "community-id: true") {
 		t.Error("Suricata does not emit Community ID")
 	}
 	if !strings.Contains(string(zeek), "community-id-logging") {
 		t.Error("Zeek does not load Community ID logging")
+	}
+	// Stock community-id-logging adds the field to Conn::Info alone, while
+	// Suricata stamps it on every EVE event. Without the overlay the exact
+	// pivot reaches the connection record and nothing else.
+	if !strings.Contains(string(zeek), "community-id-all.zeek") {
+		t.Error("Zeek does not extend Community ID beyond conn.log")
 	}
 }
 

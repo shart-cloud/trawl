@@ -145,7 +145,14 @@ func (c *Correlator) window() time.Duration {
 // reports the connection's — and an analyst pivoting from one to the other
 // should not have to know which convention produced the record in front of them.
 func sameFlowAttributes(a, b *Flow) bool {
-	if !strings.EqualFold(a.Protocol, b.Protocol) {
+	// An absent protocol does not discriminate. Zeek names the transport in
+	// conn.log and dns.log but not in http.log, ssl.log or files.log, so
+	// treating "" as a value would make an HTTP record fail to match the
+	// connection it belongs to - ruling out a pairing on the strength of a
+	// field neither analyzer claimed to observe. The result is still reported
+	// as attribute-time rather than exact, so nothing here asserts more
+	// confidence than the endpoints and window support.
+	if a.Protocol != "" && b.Protocol != "" && !strings.EqualFold(a.Protocol, b.Protocol) {
 		return false
 	}
 	aLow, aHigh := normalizedPair(a)

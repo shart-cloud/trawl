@@ -34,9 +34,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /rootfs/ /
 ENV PATH="/usr/local/zeek/bin:${PATH}"
 
-# Base configuration only; it loads scripts from the mounted content volume.
+# Base configuration only; detection scripts arrive on the mounted content
+# volume. community-id-all.zeek is base configuration rather than content: the
+# exact pivot is a contract Trawl makes, not a rule an operator tunes.
 COPY local.zeek /usr/local/zeek/share/zeek/site/local.zeek
+COPY community-id-all.zeek /usr/local/zeek/share/zeek/site/community-id-all.zeek
+COPY file-hashing.zeek /usr/local/zeek/share/zeek/site/file-hashing.zeek
+
+# The controller renders one argument set for every analyzer, describing the tap
+# rather than the tool. Zeek spells all of them differently, so the translation
+# lives here rather than as a per-analyzer special case in the controller.
+COPY entrypoint.sh /usr/local/bin/trawl-zeek
+RUN chmod 0755 /usr/local/bin/trawl-zeek
 
 # Runs as root because libpcap capture needs CAP_NET_RAW, granted explicitly by
 # the pod, which drops every other capability (ADR-0004).
-ENTRYPOINT ["/usr/local/zeek/bin/zeek"]
+ENTRYPOINT ["/usr/local/bin/trawl-zeek"]

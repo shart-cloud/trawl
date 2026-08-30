@@ -210,51 +210,70 @@ func (n *ZeekNormalizer) ssl(line []byte) (Details, error) {
 		Resumed     *bool  `json:"resumed"`
 		JA3         string `json:"ja3"`
 		JA3S        string `json:"ja3s"`
+		// The chain's certificates are identified by fingerprint, and that is
+		// the only link between this record and the x509 records for the same
+		// handshake. x509.log carries no uid, no conn_id and no Community ID,
+		// so without this an observed certificate cannot be reached from the
+		// flow that presented it.
+		CertChainFPs []string `json:"cert_chain_fps"`
 	}
 	if err := json.Unmarshal(line, &rec); err != nil {
 		return Details{}, errors.New("malformed Zeek ssl record")
 	}
 	return Details{TLS: &TLS{
-		Version:     rec.Version,
-		Cipher:      rec.Cipher,
-		ServerName:  rec.ServerName,
-		ALPN:        rec.NextProto,
-		Established: rec.Established,
-		Resumed:     rec.Resumed,
-		JA3:         rec.JA3,
-		JA3S:        rec.JA3S,
+		Version:                 rec.Version,
+		Cipher:                  rec.Cipher,
+		ServerName:              rec.ServerName,
+		ALPN:                    rec.NextProto,
+		Established:             rec.Established,
+		Resumed:                 rec.Resumed,
+		JA3:                     rec.JA3,
+		JA3S:                    rec.JA3S,
+		CertificateFingerprints: rec.CertChainFPs,
 	}}, nil
 }
 
+// x509 decodes a Zeek x509.log record.
+//
+// The certificate fields are read from flattened dotted keys, not a nested
+// object. Zeek's json-logs policy renders a record-valued field as one key per
+// leaf, which is the same reason conn.log carries "id.orig_h" rather than a
+// nested "id". X509::Info declares `certificate: X509::Certificate`, so Zeek
+// writes "certificate.subject". Decoding a nested object here parsed without
+// error and produced a certificate with every field empty - schema-valid,
+// queryable, and describing nothing.
+//
+// There is also no validation_status: that field belongs to ssl.log under the
+// validate-certs policy, which Trawl does not load, so it is not read here
+// rather than read from a key that never exists.
 func (n *ZeekNormalizer) x509(line []byte) (Details, error) {
 	var rec struct {
-		Fingerprint string `json:"fingerprint"`
-		Certificate struct {
-			Subject        string   `json:"subject"`
-			Issuer         string   `json:"issuer"`
-			Serial         string   `json:"serial"`
-			NotValidBefore *float64 `json:"not_valid_before"`
-			NotValidAfter  *float64 `json:"not_valid_after"`
-		} `json:"certificate"`
-		ValidationStatus string `json:"validation_status"`
+		Fingerprint    string   `json:"fingerprint"`
+		Subject        string   `json:"certificate.subject"`
+		Issuer         string   `json:"certificate.issuer"`
+		Serial         string   `json:"certificate.serial"`
+		NotValidBefore *float64 `json:"certificate.not_valid_before"`
+		NotValidAfter  *float64 `json:"certificate.not_valid_after"`
 	}
 	if err := json.Unmarshal(line, &rec); err != nil {
 		return Details{}, errors.New("malformed Zeek x509 record")
 	}
+	if rec.Fingerprint == "" {
+		return Details{}, errors.New("malformed Zeek x509 record: missing fingerprint")
+	}
 	cert := &Certificate{
 		FingerprintSHA256: rec.Fingerprint,
-		Subject:           rec.Certificate.Subject,
-		Issuer:            rec.Certificate.Issuer,
-		Serial:            rec.Certificate.Serial,
-		ValidationStatus:  rec.ValidationStatus,
+		Subject:           rec.Subject,
+		Issuer:            rec.Issuer,
+		Serial:            rec.Serial,
 	}
-	if rec.Certificate.NotValidBefore != nil {
-		if t, err := zeekTime(*rec.Certificate.NotValidBefore); err == nil {
+	if rec.NotValidBefore != nil {
+		if t, err := zeekTime(*rec.NotValidBefore); err == nil {
 			cert.NotValidBefore = &t
 		}
 	}
-	if rec.Certificate.NotValidAfter != nil {
-		if t, err := zeekTime(*rec.Certificate.NotValidAfter); err == nil {
+	if rec.NotValidAfter != nil {
+		if t, err := zeekTime(*rec.NotValidAfter); err == nil {
 			cert.NotValidAfter = &t
 		}
 	}

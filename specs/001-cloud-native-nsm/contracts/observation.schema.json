@@ -339,7 +339,7 @@
     "flow": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["source", "destination", "protocol"],
+      "required": ["source", "destination"],
       "properties": {
         "community_id": {
           "type": "string",
@@ -473,7 +473,12 @@
         "established": {"type": "boolean"},
         "resumed": {"type": "boolean"},
         "ja3": {"type": "string", "maxLength": 128},
-        "ja3s": {"type": "string", "maxLength": 128}
+        "ja3s": {"type": "string", "maxLength": 128},
+        "certificate_fingerprints": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
       }
     },
     "certificate": {
