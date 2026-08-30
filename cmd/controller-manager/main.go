@@ -38,8 +38,10 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	"trawl.cloud/trawl/internal/admission"
 	"trawl.cloud/trawl/internal/audit"
 	"trawl.cloud/trawl/internal/config"
+	"trawl.cloud/trawl/internal/controller"
 	"trawl.cloud/trawl/internal/sanitize"
 	"trawl.cloud/trawl/internal/storage"
 	"trawl.cloud/trawl/internal/telemetry"
@@ -237,6 +239,36 @@ func main() {
 	})
 	if err != nil {
 		setupLog.Error(sanitize.Error(err), "Failed to create the audit sink")
+		os.Exit(1)
+	}
+
+	// Nothing above this point serves a request. The manager started, took
+	// leadership and reported healthy while reconciling no taps at all, and
+	// because both webhook configurations are failurePolicy: Fail, every
+	// NetworkTap create was rejected by an admission server that was never
+	// listening. The reconciler and the webhook were both implemented and unit
+	// tested; only this registration was missing.
+	if err := (&controller.NetworkTapReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Config:   installCfg,
+		Renderer: &controller.WorkloadRenderer{Config: installCfg},
+		Metrics:  trawlMetrics,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to set up the NetworkTap controller")
+		os.Exit(1)
+	}
+
+	// The gate holds the audit sink because FR-036 makes a durable audit commit
+	// a precondition of admission, not a side effect of it.
+	if err := (&admission.NetworkTapWebhook{
+		Gate: &admission.Gate{
+			SystemNamespace: installCfg.SystemNamespace,
+			Audit:           auditSink,
+			Metrics:         trawlMetrics,
+		},
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to set up the NetworkTap webhook")
 		os.Exit(1)
 	}
 
