@@ -96,6 +96,11 @@ spec:
             capabilities:
               drop: ["ALL"]
           env:
+            # mc writes its alias configuration to $HOME/.mc. The pod runs as
+            # UID 1000 with no passwd entry, so HOME is / and the write is
+            # denied - the job fails at the alias step before it touches MinIO.
+            - name: MC_CONFIG_DIR
+              value: /tmp/.mc
             - name: ROOT_ACCESS
               value: ${ROOT_ACCESS}
             - name: ROOT_SECRET

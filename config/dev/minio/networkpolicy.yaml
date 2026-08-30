@@ -1,0 +1,44 @@
+# MinIO's own allowlist.
+#
+# config/networkpolicy installs a default-deny that selects every pod in
+# trawl-system, including ones it does not know about. MinIO is one of those: it
+# is added by this development overlay, so the control-plane policy set has no
+# rule for it, and without this the manager's egress to :9000 is permitted while
+# MinIO's ingress is refused - the readiness probe fails on the audit ledger and
+# the manager never becomes ready.
+#
+# The overlay that adds the pod brings the rule that admits it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: minio
+  namespace: trawl-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: trawl
+      app.kubernetes.io/component: dev-storage
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Only Trawl's own components. The buckets hold evidence and the record of
+    # how it was handled; nothing else in the namespace has a reason to reach
+    # them.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: trawl
+      ports:
+        - port: 9000
+          protocol: TCP
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
