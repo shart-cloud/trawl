@@ -38,6 +38,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	trawlv1alpha1 "trawl.cloud/trawl/api/v1alpha1"
 	"trawl.cloud/trawl/internal/admission"
 	"trawl.cloud/trawl/internal/audit"
 	"trawl.cloud/trawl/internal/config"
@@ -54,7 +55,19 @@ var (
 )
 
 func init() {
-	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	registerSchemes(scheme)
+}
+
+// registerSchemes adds every group the manager serves.
+//
+// Separate from init so a test can assert the result. Trawl's own group was
+// missing here: the scaffold registers client-go's types and nothing else, and
+// nothing needed NetworkTap until the controller and webhook were wired in. The
+// manager then failed at startup with "no kind is registered for the type
+// v1alpha1.NetworkTap" - a runtime error for something knowable at build time.
+func registerSchemes(s *runtime.Scheme) {
+	utilruntime.Must(clientgoscheme.AddToScheme(s))
+	utilruntime.Must(trawlv1alpha1.AddToScheme(s))
 
 	// +kubebuilder:scaffold:scheme
 }
