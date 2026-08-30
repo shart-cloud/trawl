@@ -13,10 +13,20 @@ metadata:
     app.kubernetes.io/name: trawl
     app.kubernetes.io/component: event-worker
 spec:
-  # Two replicas for availability; leader election ensures only one consumes the
-  # stream. From US4 onward two consumers would create duplicate captures for
-  # one event, so the election is not optional.
-  replicas: 2
+  # One replica. Leader election is still what guarantees a single consumer -
+  # from US4 onward two consumers would create duplicate captures for one event,
+  # so the election is not optional - but a standby replica cannot be run here.
+  # Readiness requires a connected flow stream, and only the leader connects, so
+  # a second pod would sit unready forever and hold the Deployment at
+  # Available=False.
+  replicas: 1
+  # Recreate, for the same reason. Under RollingUpdate the incoming pod waits
+  # for readiness it cannot reach until it holds the lease, and the outgoing
+  # leader is not removed until the incoming pod is ready: the rollout deadlocks
+  # and the worker keeps serving from its old image. Terminating first releases
+  # the lease and costs a short, visible gap in cluster-flow collection.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: trawl
