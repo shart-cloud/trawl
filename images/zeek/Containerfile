@@ -14,7 +14,8 @@ ARG ZEEK_VERSION=8.0.10
 ARG ZEEK_SHA256
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      build-essential ca-certificates cmake ninja-build curl flex bison \
+      build-essential ca-certificates cmake ninja-build curl \
+      flex libfl-dev bison \
       libpcap-dev libssl-dev python3-dev swig zlib1g-dev git \
     && rm -rf /var/lib/apt/lists/*
 
