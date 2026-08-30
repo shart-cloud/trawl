@@ -1,0 +1,273 @@
+name: Images
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      analyzers:
+        description: "Also build the analyzer images (Zeek and Suricata compile from source and take ~40 minutes)"
+        type: boolean
+        default: true
+
+permissions: {}
+
+env:
+  REGISTRY: ghcr.io
+  # One repository per image, under the project's namespace.
+  NAMESPACE: shart-cloud/trawl
+  GOTOOLCHAIN: auto
+
+jobs:
+  # Everything downstream needs the same version string and the same verified
+  # checksums. Deriving them once means an analyzer image and a binary image
+  # from one commit cannot disagree about which build they are.
+  meta:
+    name: Build metadata
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      commit: ${{ steps.version.outputs.commit }}
+      zeek_sha256: ${{ steps.locks.outputs.zeek_sha256 }}
+      suricata_sha256: ${{ steps.locks.outputs.suricata_sha256 }}
+      base_image: ${{ steps.locks.outputs.base_image }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Derive version and commit
+        id: version
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse --short HEAD)"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            version="${GITHUB_REF_NAME}"
+          else
+            # Never a mutable tag: telemetry.NewBuildInfo rejects one at
+            # startup, because "which version is running" must have an answer
+            # that stays true.
+            version="v0.0.0-dev.${commit}"
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "commit=${commit}" >> "$GITHUB_OUTPUT"
+          echo "Building ${version} (${commit})"
+
+      - name: Read verified checksums from the lockfiles
+        id: locks
+        run: |
+          set -euo pipefail
+          # The lockfiles are the record of what was verified against an
+          # upstream signature. Reading them here, rather than restating the
+          # digests in this workflow, keeps one source of truth: a checksum
+          # updated in only one of two places would build something nobody
+          # reviewed.
+          zeek="$(awk '/^zeek:/{f=1} f&&/^  sha256:/{print $2; exit}' images/zeek/SOURCES.lock)"
+          suricata="$(awk '/^suricata:/{f=1} f&&/^  sha256:/{print $2; exit}' images/suricata/SOURCES.lock)"
+          base="$(awk '/^base_image:/{f=1} f&&/^  digest:/{print $2; exit}' images/zeek/SOURCES.lock)"
+          base_ref="$(awk '/^base_image:/{f=1} f&&/^  reference:/{print $2; exit}' images/zeek/SOURCES.lock)"
+
+          for pair in "zeek:$zeek" "suricata:$suricata" "base:$base"; do
+            name="${pair%%:*}"; value="${pair#*:}"
+            if [ -z "$value" ]; then
+              echo "::error::${name} checksum is empty in SOURCES.lock; the build fails closed rather than fetching an unverified source"
+              exit 1
+            fi
+          done
+
+          echo "zeek_sha256=${zeek}" >> "$GITHUB_OUTPUT"
+          echo "suricata_sha256=${suricata}" >> "$GITHUB_OUTPUT"
+          echo "base_image=${base_ref%:*}@${base}" >> "$GITHUB_OUTPUT"
+
+  # The Go service binaries. They come from the shared Dockerfile and differ
+  # only by which cmd/ package is built, so they fan out.
+  binaries:
+    name: ${{ matrix.binary }}
+    runs-on: ubuntu-latest
+    needs: meta
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        binary: [controller-manager, sensor-agent, event-worker]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          build-args: |
+            BINARY=${{ matrix.binary }}
+            VERSION=${{ needs.meta.outputs.version }}
+            COMMIT=${{ needs.meta.outputs.commit }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ matrix.binary }}:${{ needs.meta.outputs.version }}
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ matrix.binary }}:${{ needs.meta.outputs.commit }}
+          cache-from: type=gha,scope=${{ matrix.binary }}
+          cache-to: type=gha,scope=${{ matrix.binary }},mode=max
+
+  # content-init is deliberately not in the matrix above. It is not a plain Go
+  # image: the resolver binary has to sit inside an Alpine carrying
+  # suricata-update, git and oras, because it fetches detection content rather
+  # than serving traffic. A distroless build of the same package would push
+  # under the same name and produce an init container that cannot resolve
+  # anything.
+  content-init-image:
+    name: content-init
+    runs-on: ubuntu-latest
+    needs: meta
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract the content resolver binary
+        run: |
+          set -euo pipefail
+          docker build --build-arg BINARY=content-init \
+            --build-arg VERSION="${{ needs.meta.outputs.version }}" \
+            --build-arg COMMIT="${{ needs.meta.outputs.commit }}" \
+            --target builder -t trawl-content-builder .
+          container="$(docker create trawl-content-builder)"
+          docker cp "${container}:/workspace/trawl-binary" images/content-init/trawl-content
+          docker rm "${container}"
+
+      - uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: images/content-init
+          file: images/content-init/Containerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/content-init:${{ needs.meta.outputs.version }}
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/content-init:${{ needs.meta.outputs.commit }}
+
+  # Zeek and Suricata are compiled from verified upstream source, so these are
+  # the slow jobs. They are separated from the binaries so a Go change does not
+  # wait forty minutes on an analyzer that did not change.
+  analyzers:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    needs: meta
+    if: github.event_name != 'workflow_dispatch' || inputs.analyzers
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: zeek
+            context: images/zeek
+            sha_arg: ZEEK_SHA256
+          - name: suricata
+            context: images/suricata
+            sha_arg: SURICATA_SHA256
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Select the verified checksum
+        id: sha
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.name }}" = "zeek" ]; then
+            echo "value=${{ needs.meta.outputs.zeek_sha256 }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${{ needs.meta.outputs.suricata_sha256 }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.context }}/Containerfile
+          push: true
+          build-args: |
+            ${{ matrix.sha_arg }}=${{ steps.sha.outputs.value }}
+            BASE_IMAGE=${{ needs.meta.outputs.base_image }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ matrix.name }}:${{ needs.meta.outputs.version }}
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ matrix.name }}:${{ needs.meta.outputs.commit }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,scope=${{ matrix.name }},mode=max
+
+  # Trawl's config references images by digest, so the digests have to be
+  # readable somewhere other than the build log.
+  digests:
+    name: Record image digests
+    runs-on: ubuntu-latest
+    needs: [meta, binaries, content-init-image, analyzers]
+    if: always() && needs.binaries.result == 'success'
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve digests
+        run: |
+          set -euo pipefail
+          version="${{ needs.meta.outputs.version }}"
+          : > digests.txt
+          for image in controller-manager sensor-agent event-worker content-init \
+                       zeek suricata; do
+            ref="${REGISTRY}/${NAMESPACE}/${image}:${version}"
+            if digest="$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"')"; then
+              echo "${image}=${REGISTRY}/${NAMESPACE}/${image}@${digest}" | tee -a digests.txt
+            else
+              echo "${image}=<not built in this run>" | tee -a digests.txt
+            fi
+          done
+          {
+            echo '### Image digests'
+            echo
+            echo '```'
+            cat digests.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: image-digests
+          path: digests.txt

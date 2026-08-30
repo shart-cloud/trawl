@@ -4,7 +4,10 @@
 # mounted content volume at startup (ADR-0005), so a script change does not
 # require an image rebuild.
 
-FROM docker.io/library/debian:12-slim AS builder
+# Pinned by digest from SOURCES.lock, passed by the release workflow. A tag
+# can be re-cut upstream; the digest is what makes the base reproducible.
+ARG BASE_IMAGE=docker.io/library/debian:12-slim
+FROM ${BASE_IMAGE} AS builder
 
 ARG ZEEK_VERSION=8.0.10
 # Checksum from SOURCES.lock; the tarball is verified before it is unpacked.
@@ -25,7 +28,7 @@ RUN curl -fsSL -o zeek.tar.gz \
 RUN ./configure --prefix=/usr/local/zeek --generator=Ninja --build-type=Release \
  && cd build && ninja && DESTDIR=/rootfs ninja install
 
-FROM docker.io/library/debian:12-slim
+FROM ${BASE_IMAGE}
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       libpcap0.8 libssl3 python3 zlib1g \

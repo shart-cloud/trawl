@@ -5,7 +5,10 @@
 # ET Open update does not require an image rebuild and the image digest keeps
 # meaning "this software" rather than "this software and that day's rules".
 
-FROM docker.io/library/debian:12-slim AS builder
+# Pinned by digest from SOURCES.lock, passed by the release workflow. A tag
+# can be re-cut upstream; the digest is what makes the base reproducible.
+ARG BASE_IMAGE=docker.io/library/debian:12-slim
+FROM ${BASE_IMAGE} AS builder
 
 ARG SURICATA_VERSION=8.0.6
 # Checksum from SOURCES.lock. The tarball is verified before it is unpacked:
@@ -41,7 +44,7 @@ RUN ./configure \
  && make -j"$(nproc)" \
  && make DESTDIR=/rootfs install
 
-FROM docker.io/library/debian:12-slim
+FROM ${BASE_IMAGE}
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       libpcap0.8 libnet1 libyaml-0-2 libjansson4 libcap-ng0 \
