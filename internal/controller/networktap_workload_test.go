@@ -568,6 +568,7 @@ func TestSensorArgsMatchTheSensorBinary(t *testing.T) {
 		"probe-addr":    true,
 		"suricata-log":  true,
 		"zeek-log-dir":  true,
+		"token-dir":     true,
 	}
 
 	spec := renderer().PodSpec(testTap())
@@ -630,5 +631,40 @@ func TestSensorProbePortAvoidsNodeExporterAndMatchesTheProbes(t *testing.T) {
 		if got := probe.HTTPGet.Port.IntValue(); got != sensorProbePort {
 			t.Errorf("%s probe port = %d, want %d", name, got, sensorProbePort)
 		}
+	}
+}
+
+// automountServiceAccountToken is off, so the standard bundle at
+// /var/run/secrets/kubernetes.io/serviceaccount does not exist in this pod. A
+// token without the CA beside it produces a client that cannot verify the API
+// server, and the sensor could not report its status at all - the tap said "no
+// sensor has reported yet" while the sensor was reading records normally.
+func TestSensorTokenProjectionCarriesTheCA(t *testing.T) {
+	spec := renderer().PodSpec(testTap())
+
+	var projected *corev1.ProjectedVolumeSource
+	for _, v := range spec.Volumes {
+		if v.Name == tokenVolume {
+			projected = v.Projected
+		}
+	}
+	if projected == nil {
+		t.Fatalf("volume %q is not a projected volume", tokenVolume)
+	}
+
+	var hasToken, hasCA bool
+	for _, src := range projected.Sources {
+		if src.ServiceAccountToken != nil {
+			hasToken = true
+		}
+		if src.ConfigMap != nil && src.ConfigMap.Name == "kube-root-ca.crt" {
+			hasCA = true
+		}
+	}
+	if !hasToken {
+		t.Error("no service account token is projected")
+	}
+	if !hasCA {
+		t.Error("no CA is projected; a client built from the token cannot verify the API server")
 	}
 }

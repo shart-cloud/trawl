@@ -58,6 +58,7 @@ func main() {
 		probeAddr    = flag.String("probe-addr", ":9100", "Address for health and metrics endpoints.")
 		suricataLog  = flag.String("suricata-log", "", "Suricata EVE JSON path; empty disables Suricata.")
 		zeekLogDir   = flag.String("zeek-log-dir", "", "Zeek JSON log directory; empty disables Zeek.")
+		tokenDir     = flag.String("token-dir", "/var/run/secrets/trawl", "Directory holding the projected API token and CA.")
 	)
 	flag.Parse()
 
@@ -204,7 +205,7 @@ func main() {
 			},
 		}
 		wg.Go(func() {
-			if err := publishStatus(ctx, reporter, *tapNamespace, *tapName); err != nil {
+			if err := publishStatus(ctx, reporter, *tapNamespace, *tapName, *tokenDir); err != nil {
 				fmt.Fprintf(os.Stderr, "status reporter: %v\n", sanitize.Error(err))
 			}
 		})

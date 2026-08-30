@@ -277,6 +277,17 @@ func (r *WorkloadRenderer) volumes(configMapName string) []corev1.Volume {
 							Path:              "token",
 							ExpirationSeconds: ptr.To(tokenExpirationSeconds),
 						},
+					}, {
+						// The API server's CA. automountServiceAccountToken is
+						// off, so the usual bundle at
+						// /var/run/secrets/kubernetes.io/serviceaccount is
+						// absent and a client built from this token has nothing
+						// to verify the API server against. kube-root-ca.crt is
+						// published into every namespace by the cluster.
+						ConfigMap: &corev1.ConfigMapProjection{
+							LocalObjectReference: corev1.LocalObjectReference{Name: "kube-root-ca.crt"},
+							Items:                []corev1.KeyToPath{{Key: "ca.crt", Path: "ca.crt"}},
+						},
 					}},
 				},
 			},
@@ -397,6 +408,9 @@ func (r *WorkloadRenderer) sensorContainer(tap *trawlv1alpha1.NetworkTap, src *t
 		"--log-dir=" + logsPath,
 		"--content-dir=" + contentPath,
 		"--probe-addr=:" + strconv.Itoa(sensorProbePort),
+		// Where the projected token and CA are mounted. Passed rather than
+		// assumed so the renderer and the binary cannot disagree silently.
+		"--token-dir=" + tokenPath,
 	}
 
 	// These are the switches that turn each reader on: cmd/sensor-agent treats

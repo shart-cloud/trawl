@@ -3,13 +3,15 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
+	"path/filepath"
 	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	ctrl "sigs.k8s.io/controller-runtime"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	trawlv1alpha1 "trawl.cloud/trawl/api/v1alpha1"
@@ -40,13 +42,13 @@ const fieldOwner = client.FieldOwner("trawl-sensor")
 // sensor beside it was reading records normally. The RBAC for this - scoped by
 // resourceNames to the one tap - was already rendered by the controller and
 // bound to the sensor's ServiceAccount.
-func publishStatus(ctx context.Context, r *sensor.StatusReporter, namespace, name string) error {
+func publishStatus(ctx context.Context, r *sensor.StatusReporter, namespace, name, tokenDir string) error {
 	scheme := runtime.NewScheme()
 	utilruntime.Must(trawlv1alpha1.AddToScheme(scheme))
 
-	cfg, err := ctrl.GetConfig()
+	cfg, err := restConfig(tokenDir)
 	if err != nil {
-		return sanitize.Errorf("loading in-cluster configuration: %v", err)
+		return err
 	}
 	c, err := client.New(cfg, client.Options{Scheme: scheme})
 	if err != nil {
@@ -70,6 +72,35 @@ func publishStatus(ctx context.Context, r *sensor.StatusReporter, namespace, nam
 		case <-ticker.C:
 		}
 	}
+}
+
+// restConfig builds an API client configuration from the sensor's own projected
+// token.
+//
+// rest.InClusterConfig, which ctrl.GetConfig falls back to, reads the token and
+// CA from /var/run/secrets/kubernetes.io/serviceaccount. The sensor pod sets
+// automountServiceAccountToken: false and projects a short-lived token
+// elsewhere on purpose, so that directory does not exist and the client failed
+// with "no configuration has been provided" - correct behaviour by a helper
+// asked the wrong question.
+//
+// BearerTokenFile rather than a read token: the projection is short-lived and
+// rotated in place, and a token read once would stop working part-way through
+// the sensor's life.
+func restConfig(tokenDir string) (*rest.Config, error) {
+	host, port := os.Getenv("KUBERNETES_SERVICE_HOST"), os.Getenv("KUBERNETES_SERVICE_PORT")
+	if host == "" || port == "" {
+		return nil, sanitize.Errorf(
+			"KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT are not set; this is not running in a cluster")
+	}
+
+	return &rest.Config{
+		Host:            "https://" + net.JoinHostPort(host, port),
+		BearerTokenFile: filepath.Join(tokenDir, "token"),
+		TLSClientConfig: rest.TLSClientConfig{
+			CAFile: filepath.Join(tokenDir, "ca.crt"),
+		},
+	}, nil
 }
 
 func applyStatus(ctx context.Context, c client.Client, r *sensor.StatusReporter, namespace, name string) error {
