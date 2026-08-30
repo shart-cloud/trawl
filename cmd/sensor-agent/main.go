@@ -121,6 +121,24 @@ func main() {
 	}
 
 	if *zeekLogDir != "" {
+		// Zeek's output was never read. The directory was checked for
+		// readability and nothing tailed it, so Zeek observed the interface,
+		// wrote conn, dns, ssl and the rest, and every record stopped at the
+		// disk. The normalizer and the tailer both already existed; only this
+		// loop was missing.
+		//
+		// One tailer per log, because Zeek writes a file per protocol rather
+		// than one stream, and creates each only when it first has something to
+		// record - which is why Tailer waits for a file that is not there yet
+		// instead of treating it as an error.
+		n := &observation.ZeekNormalizer{Tap: tap, Target: target}
+		for _, tailer := range zeekTailers(*zeekLogDir, n, emitter.emit, metrics) {
+			wg.Go(func() {
+				if err := tailer.Run(ctx); err != nil {
+					fmt.Fprintf(os.Stderr, "zeek tailer %s: %v\n", tailer.Path, sanitize.Error(err))
+				}
+			})
+		}
 		health.AddReadinessCheck("zeek-logs", dirReadable(*zeekLogDir))
 	}
 
@@ -155,6 +173,50 @@ func main() {
 	defer cancel()
 	_ = server.Shutdown(shutdownCtx)
 	wg.Wait()
+}
+
+// zeekLogTypes are the logs Trawl reads. Zeek writes a file per protocol rather
+// than one stream, and creates each only when it first has something to record.
+var zeekLogTypes = []observation.ZeekLogType{
+	observation.ZeekConn,
+	observation.ZeekDNS,
+	observation.ZeekHTTP,
+	observation.ZeekSSL,
+	observation.ZeekX509,
+	observation.ZeekFiles,
+	observation.ZeekNotice,
+	observation.ZeekWeird,
+}
+
+// zeekTailers builds one tailer per Zeek log.
+//
+// Separate from main so a test can assert it builds any at all. Nothing tailed
+// Zeek's output: the directory was checked for readability and left at that, so
+// Zeek observed the interface, wrote conn, dns, ssl and the rest, and every
+// record stopped at the disk. The normalizer and the tailer both already
+// existed; only the construction was missing.
+func zeekTailers(
+	dir string,
+	n *observation.ZeekNormalizer,
+	emit sensor.EmitFunc,
+	metrics *telemetry.Metrics,
+) []*sensor.Tailer {
+	out := make([]*sensor.Tailer, 0, len(zeekLogTypes))
+	for _, logType := range zeekLogTypes {
+		out = append(out, &sensor.Tailer{
+			Path: filepath.Join(dir, string(logType)+".log"),
+			Parse: func(line []byte) (*observation.Observation, error) {
+				return n.Normalize(logType, line)
+			},
+			Emit:       emit,
+			Duplicates: sensor.NewDuplicateCache(sensor.MaxFingerprints),
+			OnReject: func(result sensor.RecordResult, _ string) {
+				metrics.SensorRecordsTotal.
+					WithLabelValues(telemetry.AnalyzerZeek, string(logType), string(result)).Inc()
+			},
+		})
+	}
+	return out
 }
 
 // emitter serializes observations to stdout.

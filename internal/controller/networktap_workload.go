@@ -410,7 +410,8 @@ func (r *WorkloadRenderer) sensorContainer(tap *trawlv1alpha1.NetworkTap, src *t
 	for _, name := range enabledAnalyzers(tap) {
 		switch name {
 		case trawlv1alpha1.AnalyzerZeek:
-			args = append(args, "--zeek-log-dir="+logsPath)
+			// Matches where images/zeek/entrypoint.sh chdirs to.
+			args = append(args, "--zeek-log-dir="+logsPath+"/zeek")
 		case trawlv1alpha1.AnalyzerSuricata:
 			args = append(args, "--suricata-log="+logsPath+"/suricata/eve.json")
 		}

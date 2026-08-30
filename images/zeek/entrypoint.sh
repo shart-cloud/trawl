@@ -35,8 +35,13 @@ fi
 
 # Zeek writes its logs to the working directory, and has no flag to redirect
 # them. The sensor tails this directory, so the two must agree.
-mkdir -p "$log_dir"
-cd "$log_dir"
+#
+# The zeek/ subdirectory matters: Suricata already namespaces its output under
+# suricata/, and cmd/sensor-agent defaults to <log-dir>/zeek. Writing to the
+# root left Zeek's files beside Suricata's directory and one step away from
+# where the sensor looks by default.
+mkdir -p "$log_dir/zeek"
+cd "$log_dir/zeek"
 
 # local.zeek loads the site overlay from an absolute path, because Zeek resolves
 # @load at parse time and cannot read it from the environment. That path and the
