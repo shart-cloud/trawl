@@ -34,6 +34,7 @@ jobs:
       zeek_sha256: ${{ steps.locks.outputs.zeek_sha256 }}
       suricata_sha256: ${{ steps.locks.outputs.suricata_sha256 }}
       base_image: ${{ steps.locks.outputs.base_image }}
+      rust_builder_image: ${{ steps.locks.outputs.rust_builder_image }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -82,6 +83,10 @@ jobs:
           echo "suricata_sha256=${suricata}" >> "$GITHUB_OUTPUT"
           echo "base_image=${base_ref%:*}@${base}" >> "$GITHUB_OUTPUT"
 
+          rust_ref="$(awk '/^builder_image:/{f=1} f&&/^  reference:/{print $2; exit}' images/suricata/SOURCES.lock)"
+          rust_digest="$(awk '/^builder_image:/{f=1} f&&/^  digest:/{print $2; exit}' images/suricata/SOURCES.lock)"
+          echo "rust_builder_image=${rust_ref%:*}@${rust_digest}" >> "$GITHUB_OUTPUT"
+
   # The Go service binaries. They come from the shared Dockerfile and differ
   # only by which cmd/ package is built, so they fan out.
   binaries:
@@ -94,7 +99,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        binary: [controller-manager, sensor-agent, event-worker]
+        binary: [controller-manager, sensor-agent, event-worker, capture-runner]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -222,6 +227,7 @@ jobs:
           build-args: |
             ${{ matrix.sha_arg }}=${{ steps.sha.outputs.value }}
             BASE_IMAGE=${{ needs.meta.outputs.base_image }}
+            RUST_BUILDER_IMAGE=${{ needs.meta.outputs.rust_builder_image }}
           tags: |
             ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ matrix.name }}:${{ needs.meta.outputs.version }}
             ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ matrix.name }}:${{ needs.meta.outputs.commit }}
@@ -250,8 +256,8 @@ jobs:
           set -euo pipefail
           version="${{ needs.meta.outputs.version }}"
           : > digests.txt
-          for image in controller-manager sensor-agent event-worker content-init \
-                       zeek suricata; do
+          for image in controller-manager sensor-agent event-worker capture-runner \
+                       content-init zeek suricata; do
             ref="${REGISTRY}/${NAMESPACE}/${image}:${version}"
             if digest="$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"')"; then
               echo "${image}=${REGISTRY}/${NAMESPACE}/${image}@${digest}" | tee -a digests.txt

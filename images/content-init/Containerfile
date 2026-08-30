@@ -25,7 +25,7 @@ RUN apk add --no-cache \
       python3 \
       py3-pip \
       tar \
-    && python3 -m pip install --no-cache-dir --break-system-packages suricata-update==1.3.7 \
+    && python3 -m pip install --no-cache-dir --break-system-packages suricata-update==1.3.3 \
     && rm -rf /var/cache/apk/*
 
 # oras is installed from a pinned release and checksum-verified. The binary that

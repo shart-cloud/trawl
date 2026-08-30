@@ -27,3 +27,15 @@ suricata:
 base_image:
   reference: docker.io/library/debian:12-slim
   digest: sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
+
+# Build-only. Suricata 8 needs Rust 1.75 or newer and Debian 12 ships 1.63, so
+# the builder stage carries a toolchain the runtime image never sees.
+builder_image:
+  reference: docker.io/library/rust:1-bookworm
+  digest: sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922
+
+cbindgen:
+  version: 0.29.4
+  # Installed from crates.io by cargo, which verifies the registry checksum for
+  # the exact version and its locked dependency set.
+  source: https://crates.io/crates/cbindgen

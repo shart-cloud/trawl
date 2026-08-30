@@ -8,7 +8,12 @@
 # Pinned by digest from SOURCES.lock, passed by the release workflow. A tag
 # can be re-cut upstream; the digest is what makes the base reproducible.
 ARG BASE_IMAGE=docker.io/library/debian:12-slim
-FROM ${BASE_IMAGE} AS builder
+# Suricata 8 requires Rust 1.75 or newer for its detection and protocol code.
+# Debian 12 ships 1.63, so building on the runtime base fails at configure with
+# "ERROR: Rust 1.75.0 or newer required". Only the builder needs a toolchain;
+# the runtime stage stays on the slim base with no compiler in it.
+ARG RUST_BUILDER_IMAGE=docker.io/library/rust:1-bookworm
+FROM ${RUST_BUILDER_IMAGE} AS builder
 
 ARG SURICATA_VERSION=8.0.6
 # Checksum from SOURCES.lock. The tarball is verified before it is unpacked:
@@ -20,8 +25,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential ca-certificates curl \
       libpcap-dev libnet1-dev libyaml-dev libjansson-dev \
       libcap-ng-dev libmagic-dev libpcre2-dev liblz4-dev \
-      zlib1g-dev pkg-config rustc cargo python3 \
+      zlib1g-dev pkg-config python3 \
     && rm -rf /var/lib/apt/lists/*
+
+# cbindgen generates the C headers for Suricata's Rust code. It is not packaged
+# for Debian, and configure fails without it.
+ARG CBINDGEN_VERSION=0.29.4
+RUN cargo install cbindgen --version "${CBINDGEN_VERSION}" --locked
 
 WORKDIR /build
 RUN curl -fsSL -o suricata.tar.gz \
@@ -39,7 +49,6 @@ RUN ./configure \
       --localstatedir=/var \
       --enable-af-packet \
       --disable-nfqueue \
-      --disable-prelude \
       --disable-gccmarch-native \
  && make -j"$(nproc)" \
  && make DESTDIR=/rootfs install
