@@ -154,5 +154,18 @@ func Normalize(obs *Observation) error {
 		return fmt.Errorf("observation_type %q does not match the %q details body",
 			obs.ObservationType, inferred)
 	}
+
+	// A zero time marshals to 0001-01-01T00:00:00Z, which is a syntactically
+	// valid date-time, so the schema accepts it. The record would then sit in
+	// Loki dated year 1: invisible to every dashboard range query, and
+	// impossible to place in a timeline. JSON Schema cannot express "a
+	// plausible timestamp", so it is checked here.
+	if obs.EventTime.IsZero() {
+		return errors.New("observation has no event time")
+	}
+	if obs.ObservedAt.IsZero() {
+		return errors.New("observation has no observation time")
+	}
+
 	return nil
 }

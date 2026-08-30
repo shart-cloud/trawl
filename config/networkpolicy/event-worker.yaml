@@ -1,0 +1,55 @@
+# Egress allowlist for the event worker.
+#
+# It talks to exactly three things: DNS, the Kubernetes API for leader election
+# and tap lookups, and Hubble Relay. Nothing else, and no ingress except probes
+# and metrics scraping.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: trawl-event-worker
+  namespace: trawl-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: trawl
+      app.kubernetes.io/component: event-worker
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - ports:
+        - port: 9110
+          protocol: TCP
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Hubble Relay.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: hubble-relay
+      ports:
+        - port: 4245
+          protocol: TCP
+    # Kubernetes API. Expressed as a CIDR because the apiserver endpoint is not
+    # a labelled pod on Talos.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - port: 6443
+          protocol: TCP

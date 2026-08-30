@@ -1,0 +1,102 @@
+# trawl-event-worker.
+#
+# Separate from the controller manager so its failure cannot stop tap
+# reconciliation. Consuming a live gRPC stream has a different availability
+# profile from reconciling declarative state, and the constitution requires one
+# component's failure not to take out independent monitoring.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trawl-event-worker
+  namespace: trawl-system
+  labels:
+    app.kubernetes.io/name: trawl
+    app.kubernetes.io/component: event-worker
+spec:
+  # Two replicas for availability; leader election ensures only one consumes the
+  # stream. From US4 onward two consumers would create duplicate captures for
+  # one event, so the election is not optional.
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: trawl
+      app.kubernetes.io/component: event-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: trawl
+        app.kubernetes.io/component: event-worker
+    spec:
+      serviceAccountName: trawl-event-worker
+      # Restricted-compatible: this workload never touches the packet path, so
+      # it needs no capability, no host namespace, and no writable root.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: event-worker
+          # Placeholder digest, substituted by the release overlay. A tag here
+          # would let the deployed image change without a manifest change.
+          image: ghcr.io/trawl/event-worker@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          args:
+            - --config=/etc/trawl/config.yaml
+            - --leader-elect=true
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: TRAWL_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          ports:
+            - name: probes
+              containerPort: 9110
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: probes
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          readinessProbe:
+            # Readiness follows the flow stream. A worker reporting ready while
+            # disconnected would hide that denied-flow evidence is not being
+            # collected.
+            httpGet:
+              path: /readyz
+              port: probes
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: config
+              mountPath: /etc/trawl
+              readOnly: true
+            - name: hubble-tls
+              mountPath: /etc/hubble
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: trawl-config
+        - name: hubble-tls
+          secret:
+            # Hubble Relay serves every connection in the cluster, so the client
+            # certificate is what stops this from being an unauthenticated
+            # cluster-wide traffic disclosure.
+            secretName: trawl-hubble-client
+            defaultMode: 0400

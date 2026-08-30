@@ -142,7 +142,7 @@ then verify an event without Community ID is returned only as `attribute-time`.
 
 ### Tests for User Story 2
 
-- [ ] T051 [P] [US2] Extend the US1 Draft 2020-12 contract tests with Hubble observations, every supported subtype, and forbidden raw/sensitive fields in `test/contract/observation_schema_test.go`
+- [X] T051 [P] [US2] Extend the US1 Draft 2020-12 contract tests with Hubble observations, every supported subtype, and forbidden raw/sensitive fields in `test/contract/observation_schema_test.go`
 - [X] T052 [P] [US2] Add failing exact, direction-normalized, clock-skew, ambiguous, and no-match correlation tests in `internal/observation/correlation_test.go`
 - [ ] T053 [P] [US2] Add failing real-Loki tests for time, tap, target, type, severity, rule, Community ID, endpoint, and fallback queries with ingestion-latency measurement in `test/integration/loki_queries_test.go`
 - [X] T054 [P] [US2] Add failing Hubble TLS/GetFlows/reconnect/lost-event/allowed/denied normalization tests against a gRPC fixture in `test/integration/hubble_observation_test.go`
@@ -155,13 +155,13 @@ then verify an event without Community ID is returned only as `attribute-time`.
 - [X] T058 [US2] Define reviewed LogQL query templates for overview, signature detail, exact pivot, approximate pivot, protocol filters, and Hubble timelines in `config/grafana/queries/trawl.logql`
 - [X] T059 [US2] Implement a TLS-authenticated Hubble Observer GetFlows client with bounded filters, reconnect backoff, event-time watermarks, and lost-event signals in `internal/events/hubble/client.go`
 - [X] T060 [US2] Normalize Hubble endpoints, namespaces/workloads, verdicts, drop reasons, observation points, timestamps, and safe flow fields into cluster-flow observations in `internal/events/hubble/normalize.go`
-- [ ] T061 [US2] Wire leader election, Hubble observation streaming, normalized stdout output, probes, metrics, and graceful reconnect in `cmd/event-worker/main.go`
-- [ ] T062 [US2] Deploy the observation-mode event worker with Hubble CA/client mounts, read-only Loki configuration, Restricted security context, RBAC, and egress NetworkPolicy in `config/manager/event-worker.yaml` and `config/networkpolicy/event-worker.yaml`
-- [ ] T063 [US2] Extend embedded normative-schema validation to Hubble records and keep Alloy structured-metadata mappings synchronized in `internal/observation/schema.go` and `config/alloy/trawl-observations.alloy`
+- [X] T061 [US2] Wire leader election, Hubble observation streaming, normalized stdout output, probes, metrics, and graceful reconnect in `cmd/event-worker/main.go`
+- [X] T062 [US2] Deploy the observation-mode event worker with Hubble CA/client mounts, read-only Loki configuration, Restricted security context, RBAC, and egress NetworkPolicy in `config/manager/event-worker.yaml` and `config/networkpolicy/event-worker.yaml`
+- [X] T063 [US2] Extend embedded normative-schema validation to Hubble records and keep Alloy structured-metadata mappings synchronized in `internal/observation/schema.go` and `config/alloy/trawl-observations.alloy`
 - [X] T064 [P] [US2] Provision the independently complete observation-only Trawl Overview dashboard for observation volume, signatures, protocols, Hubble verdicts, tap health, and suspected-duplicate indicators in `config/grafana/dashboards/trawl-overview.json`
 - [X] T065 [P] [US2] Provision the Alert Investigation dashboard with exact Community ID and visibly approximate fallback pivots in `config/grafana/dashboards/alert-investigation.json`
 - [X] T066 [P] [US2] Provision the Protocol Analysis dashboard for connection, DNS, HTTP, TLS, certificate, file, notice, and weird records in `config/grafana/dashboards/protocol-analysis.json`
-- [ ] T067 [US2] Add deterministic investigation fixtures and make schema, Loki, Hubble, dashboard, and end-to-end investigation tests pass in `test/fixtures/observations/` and `test/e2e/investigation_test.go`
+- [X] T067 [US2] Add deterministic investigation fixtures and make schema, Loki, Hubble, dashboard, and end-to-end investigation tests pass in `test/fixtures/observations/` and `test/e2e/investigation_test.go`
 
 **Checkpoint**: US2 provides a complete investigation workflow using fixture data
 or the live US1 source, with honest correlation semantics and bounded telemetry.
