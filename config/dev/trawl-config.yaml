@@ -29,7 +29,11 @@ data:
       endpoint: http://loki.monitoring.svc.cluster.local:3100
 
     hubble:
-      endpoint: hubble-relay.kube-system.svc.cluster.local:80
+      # Port 443, not 80: enabling relay.tls.server in the Cilium values moves
+      # the service off the plaintext port. The name is dialled over TLS, so a
+      # stale :80 here fails as a connection refusal rather than as a silent
+      # downgrade, but it fails.
+      endpoint: hubble-relay.kube-system.svc.cluster.local:443
       # Mounted from the trawl-hubble-client secret, which cert-manager issues
       # from the Hubble CA (config/hubble/certificate.yaml). Relay requires a
       # client certificate, so these are what make cluster-flow observation
@@ -50,13 +54,13 @@ data:
     artifacts:
       endpoint: minio.trawl-system.svc.cluster.local:9000
       bucket: trawl-artifacts
-      credentialsPath: /etc/trawl/credentials/artifacts
+      credentialsPath: /var/run/secrets/trawl/artifacts
       useTLS: false
 
     auditLedger:
       endpoint: minio.trawl-system.svc.cluster.local:9000
       bucket: trawl-audit-ledger
-      credentialsPath: /etc/trawl/credentials/audit
+      credentialsPath: /var/run/secrets/trawl/audit
       useTLS: false
 
     # Must exceed captureRetentionCeiling: if audit records expired first, the
@@ -82,12 +86,11 @@ data:
       refreshInterval: 24h
 
     images:
-      suricata: ghcr.io/shart-cloud/trawl/suricata@sha256:d7ed4a3051aa13c64366437f4cdac3c1bf8ffd95b839d45a2f743a67111c484c
-      # zeek: filled in once the analyzer image publishes.
-      zeek: ghcr.io/shart-cloud/trawl/zeek@sha256:0000000000000000000000000000000000000000000000000000000000000000
-      sensorAgent: ghcr.io/shart-cloud/trawl/sensor-agent@sha256:acc3d3e5ff57b765a16bc9b93919866a1f65194480937229751c7f051a7565ab
-      contentInit: ghcr.io/shart-cloud/trawl/content-init@sha256:ff824cd45e9edc2ca931c37b53c5f6c1f7e6a174540d837fddc1ebcfb5ef1dca
+      suricata: ghcr.io/shart-cloud/trawl/suricata@sha256:5270cebebc6da9694cc148e2919eb18844df64b9ad37772a28b3c8848f739942
+      zeek: ghcr.io/shart-cloud/trawl/zeek@sha256:d55351adaf406615ed08b4c70e2c8f81e515d1f777deb70a3a2ccc68b09e2f66
+      sensorAgent: ghcr.io/shart-cloud/trawl/sensor-agent@sha256:44d2997489e5335c2a89d6631d81aff01f010a406ac849725f507f971957ba11
+      contentInit: ghcr.io/shart-cloud/trawl/content-init@sha256:c2cfb708350444ddba7176f3c8e273813d33bd3ddc1ff207996f84e6e50a72a8
       # Not implemented until US3. The stub image exists so this required field
       # names something that resolves and refuses, rather than something that
       # resolves and does another component's job.
-      captureRunner: ghcr.io/shart-cloud/trawl/capture-runner@sha256:79d1b9865e002760b3b46bd584a72175190e1d8c659dc3a5a682e78c6c6746e1
+      captureRunner: ghcr.io/shart-cloud/trawl/capture-runner@sha256:02a421389b385dbd435ac5934e61c56ecfbd50d3c9a3a5386eded23c7301542e

@@ -142,7 +142,9 @@ docker-build-all: ## Build every Trawl binary image from the shared Dockerfile.
 # telemetry.NewBuildInfo rejects one at startup.
 VERSION ?= v0.0.0-dev
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
-IMAGE_REPO ?= ghcr.io/trawl
+# Must match NAMESPACE in .github/workflows/images.yml. A default that names a
+# repository nothing publishes to produces manifests that cannot pull.
+IMAGE_REPO ?= ghcr.io/shart-cloud/trawl
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
@@ -202,8 +204,8 @@ build-installer: manifests generate kustomize ## Generate a consolidated YAML wi
 	# every run, naming a "controller" image that does not match Trawl's
 	# reference and carrying a floating tag. It was a no-op that dirtied the
 	# working tree and read as though release manifests pinned by tag, which
-	# the constitution forbids. manager.yaml carries a placeholder digest that
-	# the release overlay substitutes instead.
+	# the constitution forbids. manager.yaml pins a real digest directly, which
+	# is refreshed for the commit being deployed.
 	"$(KUSTOMIZE)" build config/default > dist/install.yaml
 
 ##@ Deployment
