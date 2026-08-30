@@ -64,7 +64,7 @@ func embeddedFiles(t *testing.T, root string) map[string]string {
 			return err
 		}
 		for _, m := range embedDirective.FindAllStringSubmatch(string(data), -1) {
-			for _, pattern := range strings.Fields(m[1]) {
+			for pattern := range strings.FieldsSeq(m[1]) {
 				// Patterns are relative to the file's own directory.
 				rel, err := filepath.Rel(root, filepath.Join(filepath.Dir(path), pattern))
 				if err != nil {
@@ -94,8 +94,8 @@ func TestEveryEmbeddedFileSurvivesDockerignore(t *testing.T) {
 	var reincludes []string
 	for line := range strings.SplitSeq(string(data), "\n") {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "!") {
-			reincludes = append(reincludes, strings.TrimPrefix(line, "!"))
+		if rule, ok := strings.CutPrefix(line, "!"); ok {
+			reincludes = append(reincludes, rule)
 		}
 	}
 
@@ -122,8 +122,8 @@ func TestEveryEmbeddedFileSurvivesDockerignore(t *testing.T) {
 				covered = true
 				break
 			}
-			if strings.HasPrefix(rule, "**/") {
-				if ok, _ := filepath.Match(strings.TrimPrefix(rule, "**/"), filepath.Base(file)); ok {
+			if bare, isGlobstar := strings.CutPrefix(rule, "**/"); isGlobstar {
+				if ok, _ := filepath.Match(bare, filepath.Base(file)); ok {
 					covered = true
 					break
 				}
