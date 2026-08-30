@@ -42,6 +42,15 @@ const (
 	// tokenVolume carries the sensor's projected service-account token. Only
 	// the sensor gets one; the analyzers get none.
 	tokenVolume = "sensor-token"
+
+	// Scratch space for the content fetchers. They run with a read-only
+	// root filesystem, and suricata-update needs somewhere to unpack to:
+	// without it the fetch fails with "No usable temporary directory found
+	// in ['/tmp', '/var/tmp', '/usr/tmp', '/']" and the sensor never starts.
+	// An emptyDir keeps the root filesystem read-only rather than trading
+	// the hardening away for a writable path.
+	tmpVolume = "content-tmp"
+	tmpPath   = "/tmp"
 	// tokenPath is a mount path, not a credential; the token itself is
 	// projected by the kubelet and never appears in this repository.
 	tokenPath = "/var/run/secrets/trawl" //nolint:gosec // G101: mount path
@@ -60,6 +69,9 @@ var contentVolumeSize = resource.MustParse("512Mi")
 // logVolumeSize bounds in-flight analyzer logs. The sensor tails and forwards
 // them continuously, so this only needs to absorb a downstream stall.
 var logVolumeSize = resource.MustParse("1Gi")
+
+// Bounded so a malformed feed cannot fill the node's memory.
+var tmpVolumeSize = resource.MustParse("256Mi")
 
 // WorkloadRenderer builds the Kubernetes objects for one NetworkTap.
 //
@@ -234,6 +246,12 @@ func (r *WorkloadRenderer) volumes(configMapName string) []corev1.Volume {
 			},
 		},
 		{
+			Name: tmpVolume,
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: &tmpVolumeSize},
+			},
+		},
+		{
 			Name: "analyzer-config",
 			VolumeSource: corev1.VolumeSource{
 				ConfigMap: &corev1.ConfigMapVolumeSource{
@@ -286,6 +304,7 @@ func (r *WorkloadRenderer) contentInitContainers(tap *trawlv1alpha1.NetworkTap) 
 			Resources:       contentInitResources(),
 			VolumeMounts: []corev1.VolumeMount{
 				{Name: contentVolume, MountPath: contentPath},
+				{Name: tmpVolume, MountPath: tmpPath},
 			},
 		})
 
@@ -306,6 +325,7 @@ func (r *WorkloadRenderer) contentInitContainers(tap *trawlv1alpha1.NetworkTap) 
 				Resources:       contentInitResources(),
 				VolumeMounts: []corev1.VolumeMount{
 					{Name: contentVolume, MountPath: contentPath},
+					{Name: tmpVolume, MountPath: tmpPath},
 				},
 			})
 		}

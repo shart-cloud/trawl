@@ -493,3 +493,55 @@ func TestPodTemplateRecordsTheRenderedGeneration(t *testing.T) {
 		t.Errorf("spec-generation annotation = %q, want 3", got)
 	}
 }
+
+// The content fetchers run with a read-only root filesystem, which is correct,
+// but suricata-update unpacks the feed to a temporary directory. With nowhere
+// writable it failed with "No usable temporary directory found in ['/tmp',
+// '/var/tmp', '/usr/tmp', '/']" and the init container crash-looped, so the
+// sensor never started and the tap sat in Pending reporting no packets. The
+// answer is a scratch volume, not a writable root.
+func TestContentInitContainersHaveWritableScratch(t *testing.T) {
+	tap := testTap()
+	spec := renderer().PodSpec(tap)
+
+	if len(spec.InitContainers) == 0 {
+		t.Fatal("no content init containers rendered")
+	}
+
+	for _, c := range spec.InitContainers {
+		t.Run(c.Name, func(t *testing.T) {
+			if c.SecurityContext == nil || c.SecurityContext.ReadOnlyRootFilesystem == nil ||
+				!*c.SecurityContext.ReadOnlyRootFilesystem {
+				t.Error("the root filesystem should stay read-only; the scratch mount is what makes that possible")
+			}
+
+			var mount *corev1.VolumeMount
+			for i := range c.VolumeMounts {
+				if c.VolumeMounts[i].MountPath == tmpPath {
+					mount = &c.VolumeMounts[i]
+					break
+				}
+			}
+			if mount == nil {
+				t.Fatalf("no writable mount at %s; the content fetch cannot unpack anywhere", tmpPath)
+			}
+			if mount.ReadOnly {
+				t.Errorf("the scratch mount at %s is read-only", tmpPath)
+			}
+
+			// An unbounded emptyDir on a sensor node is a memory-pressure
+			// eviction waiting for a large feed.
+			for _, v := range spec.Volumes {
+				if v.Name != mount.Name {
+					continue
+				}
+				if v.EmptyDir == nil {
+					t.Fatalf("volume %q backing %s is not an emptyDir", v.Name, tmpPath)
+				}
+				if v.EmptyDir.SizeLimit == nil {
+					t.Errorf("volume %q has no size limit", v.Name)
+				}
+			}
+		})
+	}
+}

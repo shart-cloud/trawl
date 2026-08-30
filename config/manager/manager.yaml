@@ -5,6 +5,21 @@ metadata:
     control-plane: controller-manager
     app.kubernetes.io/name: trawl
     app.kubernetes.io/managed-by: kustomize
+    # Sensors observe a host interface, so they need hostNetwork and NET_RAW /
+    # NET_ADMIN. That is the workload's whole purpose, not a shortcut: a tap
+    # that cannot open a raw socket cannot see a packet. FR-001 confines those
+    # privileged workloads to this namespace precisely because they cannot be
+    # made unprivileged.
+    #
+    # Without this the namespace inherits the cluster's default, and every
+    # sensor pod is refused - "violates PodSecurity baseline:latest" - while the
+    # DaemonSet, the tap and the controller all report success. The tap sits in
+    # Pending with no packets and nothing says why.
+    #
+    # audit stays at restricted so the control-plane workloads, which are
+    # restricted-compatible, still have any regression recorded.
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/audit: restricted
   name: system
 ---
 apiVersion: apps/v1
@@ -77,7 +92,7 @@ spec:
         # in release manifests, which the constitution forbids, and would let
         # the deployed image change without a manifest change. Refresh it with
         # the digest CI records for the commit being deployed.
-        image: ghcr.io/shart-cloud/trawl/controller-manager@sha256:bb2f3543b3775270e6ac3ce8d839bce4b33366297a0f328a32c1a3f4884cf193
+        image: ghcr.io/shart-cloud/trawl/controller-manager@sha256:a757cf64ec9bc4e07342db3c2a1bbd473113bd4c1087d9b851e95919200409d4
         name: manager
         ports:
         - containerPort: 8081
