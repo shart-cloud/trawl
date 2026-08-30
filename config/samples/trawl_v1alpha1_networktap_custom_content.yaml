@@ -21,8 +21,15 @@ spec:
   analyzers:
     suricata:
       enabled: true
+      # Sized for the full Emerging Threats open ruleset, which is what
+      # content.suricataFeedURL points at by default: roughly 45MB of rules and
+      # tens of thousands of signatures, which Suricata expands well past a
+      # gigabyte once compiled. At 1Gi it is OOMKilled during startup, before it
+      # has inspected a single packet, and the tap reports a workload that will
+      # not become ready without saying why. Lower this only alongside a
+      # narrower ruleset.
       resources:
-        requests: {cpu: 500m, memory: 512Mi}
-        limits: {cpu: "1", memory: 1Gi}
+        requests: {cpu: 500m, memory: 1Gi}
+        limits: {cpu: "1", memory: 3Gi}
       customContent:
         reference: registry.example.com/trawl/custom-suricata@sha256:0000000000000000000000000000000000000000000000000000000000000000
