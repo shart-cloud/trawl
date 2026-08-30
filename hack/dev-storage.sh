@@ -81,6 +81,13 @@ spec:
   backoffLimit: 3
   ttlSecondsAfterFinished: 300
   template:
+    metadata:
+      # Labelled so the namespace default-deny can be given a rule for it, and
+      # so MinIO's own policy admits it: without these the job cannot resolve
+      # DNS and dies at "lookup minio: i/o timeout".
+      labels:
+        app.kubernetes.io/name: trawl
+        app.kubernetes.io/component: storage-init
     spec:
       restartPolicy: OnFailure
       securityContext:
@@ -120,7 +127,27 @@ spec:
               mc alias set local http://minio:9000 "\$ROOT_ACCESS" "\$ROOT_SECRET"
 
               mc mb --ignore-existing local/${ARTIFACT_BUCKET}
-              mc mb --ignore-existing local/${AUDIT_BUCKET}
+
+              # The audit ledger must be created with object locking. The sink
+              # writes with a retention header, and MinIO rejects that with
+              # "Bucket is missing ObjectLockConfiguration" on a bucket that
+              # does not have it - so admission failed closed on every mutation,
+              # which is correct behaviour against a ledger that cannot hold a
+              # write-once guarantee. Locking cannot be added afterwards, so a
+              # bucket made without it has to be replaced.
+              if ! mc stat local/${AUDIT_BUCKET} >/dev/null 2>&1; then
+                mc mb --with-lock local/${AUDIT_BUCKET}
+              elif ! mc retention info local/${AUDIT_BUCKET} >/dev/null 2>&1; then
+                if [ -z "\$(mc ls -r local/${AUDIT_BUCKET} 2>/dev/null)" ]; then
+                  echo "audit bucket has no object lock and is empty; recreating"
+                  mc rb --force local/${AUDIT_BUCKET}
+                  mc mb --with-lock local/${AUDIT_BUCKET}
+                else
+                  # Never silently discard a ledger that holds records.
+                  echo "ERROR: ${AUDIT_BUCKET} has no object lock and is not empty; it must be migrated by hand" >&2
+                  exit 1
+                fi
+              fi
 
               # Neither bucket is public. An artifact is evidence and reaches a
               # reader through the gateway's authorization, never through an
@@ -128,9 +155,8 @@ spec:
               mc anonymous set none local/${ARTIFACT_BUCKET}
               mc anonymous set none local/${AUDIT_BUCKET}
 
-              # The audit ledger is write-once. Object locking cannot be added
-              # to an existing bucket, so this is best-effort on a re-run and
-              # the failure is reported rather than swallowed.
+              # Object locking implies versioning, so this is already on for a
+              # bucket created above. Kept for a bucket made by an older run.
               mc version enable local/${AUDIT_BUCKET} || echo "WARNING: could not enable versioning on ${AUDIT_BUCKET}"
 
               cat >/tmp/artifact.json <<'POLICY'
@@ -141,9 +167,19 @@ spec:
               # No DeleteObject. The ledger records how evidence was handled; a
               # credential that could erase it would defeat the separation
               # ADR-0003 requires.
+              #
+              # The retention actions are what make the write-once guarantee
+              # usable: the sink puts every record in Compliance mode
+              # (internal/storage/s3.go), and without PutObjectRetention MinIO
+              # refuses the write with a bare "Access Denied" - so admission
+              # failed closed on a permission, not on a ledger problem.
+              # BypassGovernanceRetention is deliberately absent: the point of
+              # the mode is that this credential cannot shorten it.
               cat >/tmp/audit.json <<'POLICY'
               {"Version":"2012-10-17","Statement":[{"Effect":"Allow",
-                "Action":["s3:GetObject","s3:PutObject","s3:ListBucket","s3:GetBucketLocation"],
+                "Action":["s3:GetObject","s3:PutObject","s3:ListBucket","s3:GetBucketLocation",
+                          "s3:PutObjectRetention","s3:GetObjectRetention",
+                          "s3:GetBucketObjectLockConfiguration"],
                 "Resource":["arn:aws:s3:::${AUDIT_BUCKET}","arn:aws:s3:::${AUDIT_BUCKET}/*"]}]}
               POLICY
 
