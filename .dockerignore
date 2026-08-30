@@ -9,3 +9,13 @@
 # Re-include Go module files
 !go.mod
 !go.sum
+
+# Re-include files the Go build embeds. Without these the build fails at
+# compile time with "pattern <file>: no matching files found", because an
+# ignored file is absent from the context rather than merely unused - so no
+# binary image could be built at all.
+#
+# internal/observation/schema.go embeds the normative observation schema: a
+# sensor pod has no repository to read it from, and a schema loaded from a
+# ConfigMap could drift from the code producing the records.
+!internal/observation/observation.schema.json
