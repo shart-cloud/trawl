@@ -380,18 +380,36 @@ func (r *WorkloadRenderer) containers(tap *trawlv1alpha1.NetworkTap, src *trawlv
 // privilege have no API reach, and the container with API reach has no
 // privilege (ADR-0004 applies the same split to capture).
 func (r *WorkloadRenderer) sensorContainer(tap *trawlv1alpha1.NetworkTap, src *trawlv1alpha1.InterfaceSource) corev1.Container {
+	args := []string{
+		"--tap-namespace=" + tap.Namespace,
+		"--tap-name=" + tap.Name,
+		"--tap-uid=" + string(tap.UID),
+		"--interface=" + src.Interface,
+		"--log-dir=" + logsPath,
+		"--content-dir=" + contentPath,
+	}
+
+	// These are the switches that turn each reader on: cmd/sensor-agent treats
+	// an empty value as "this analyzer is not present". Without them the sensor
+	// starts, tails nothing and reports no observations, which is
+	// indistinguishable from an interface with no traffic on it.
+	//
+	// The paths are where the analyzers actually write. Zeek has no flag to
+	// redirect its output, so its entrypoint chdirs into the log directory;
+	// Suricata's eve-log filename is set in images/suricata/suricata.yaml.
+	for _, name := range enabledAnalyzers(tap) {
+		switch name {
+		case trawlv1alpha1.AnalyzerZeek:
+			args = append(args, "--zeek-log-dir="+logsPath)
+		case trawlv1alpha1.AnalyzerSuricata:
+			args = append(args, "--suricata-log="+logsPath+"/suricata/eve.json")
+		}
+	}
+
 	return corev1.Container{
 		Name:  "sensor-agent",
 		Image: r.Config.Images.SensorAgent,
-		Args: []string{
-			"--tap-namespace=" + tap.Namespace,
-			"--tap-name=" + tap.Name,
-			"--tap-uid=" + string(tap.UID),
-			"--interface=" + src.Interface,
-			"--log-dir=" + logsPath,
-			"--content-dir=" + contentPath,
-			"--token-file=" + tokenPath + "/token",
-		},
+		Args:  args,
 		Env: []corev1.EnvVar{{
 			Name: "TRAWL_NODE_NAME",
 			ValueFrom: &corev1.EnvVarSource{

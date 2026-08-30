@@ -545,3 +545,53 @@ func TestContentInitContainersHaveWritableScratch(t *testing.T) {
 		})
 	}
 }
+
+// The renderer and cmd/sensor-agent have to agree on the command line, and
+// nothing made them. The renderer passed --token-file, which the binary has
+// never defined, so the sensor exited 2 printing its usage before doing
+// anything. It also never passed --suricata-log or --zeek-log-dir, which are
+// what tell the sensor an analyzer is present at all: had the flag error been
+// fixed alone, the sensor would have started, tailed nothing, and reported no
+// observations - indistinguishable from an interface carrying no traffic.
+//
+// knownSensorFlags mirrors the flags declared in cmd/sensor-agent/main.go. A
+// flag added here without being added there is the defect this test exists for.
+func TestSensorArgsMatchTheSensorBinary(t *testing.T) {
+	knownSensorFlags := map[string]bool{
+		"tap-namespace": true,
+		"tap-name":      true,
+		"tap-uid":       true,
+		"interface":     true,
+		"log-dir":       true,
+		"content-dir":   true,
+		"probe-addr":    true,
+		"suricata-log":  true,
+		"zeek-log-dir":  true,
+	}
+
+	spec := renderer().PodSpec(testTap())
+	c := containerByName(spec, "sensor-agent")
+	if c == nil {
+		t.Fatal("no sensor-agent container rendered")
+	}
+
+	seen := map[string]bool{}
+	for _, arg := range c.Args {
+		name, _, ok := strings.Cut(strings.TrimPrefix(arg, "--"), "=")
+		if !ok {
+			t.Errorf("argument %q is not a --name=value flag", arg)
+			continue
+		}
+		if !knownSensorFlags[name] {
+			t.Errorf("--%s is passed to the sensor but cmd/sensor-agent does not define it; the binary exits 2 on an unknown flag", name)
+		}
+		seen[name] = true
+	}
+
+	// testTap enables both analyzers, so both readers must be switched on.
+	for _, required := range []string{"suricata-log", "zeek-log-dir"} {
+		if !seen[required] {
+			t.Errorf("--%s is not passed, so the sensor treats that analyzer as absent and reads none of its output", required)
+		}
+	}
+}

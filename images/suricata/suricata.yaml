@@ -58,6 +58,19 @@ outputs:
   - stats:
       enabled: no
 
+# Distinct from the stats output above, and easy to mistake for it. This is the
+# global counter collection; the entry under outputs is the separate stats.log
+# file. eve-log's stats type needs this one on, and without it Suricata refuses
+# to start at all:
+#
+#   E: output-json-stats: eve.stats: stats are disabled globally
+#   E: runmodes: unable to initialize sub-module eve-log.stats
+#
+# So the counters FR-039 reports target health from were also what stopped the
+# analyzer from running.
+stats:
+  enabled: yes
+
 logging:
   default-log-level: notice
   outputs:
