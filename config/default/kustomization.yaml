@@ -22,6 +22,9 @@ resources:
 # crd/kustomization.yaml
 - ../webhook
 - ../certmanager
+# Default-deny plus per-component allowlists. Without this the namespace
+# holding the audit and storage credentials is open to every pod.
+- ../networkpolicy
 # [CERTMANAGER] To enable cert-manager, uncomment all sections with 'CERTMANAGER'. 'WEBHOOK' components are required.
 #- ../certmanager
 # [PROMETHEUS] To enable prometheus monitor, uncomment all sections with 'PROMETHEUS'.
@@ -41,6 +44,11 @@ patches:
 - path: manager_metrics_patch.yaml
   target:
     kind: Deployment
+    # Scoped by name: these are manager-specific. Unscoped, they also
+    # patched the event worker - injecting an image-less "manager"
+    # container into it and rewriting its args - so the Deployment was
+    # rejected with containers[0].image: Required value.
+    name: controller-manager
 
 # Uncomment the patches line if you enable Metrics and CertManager
 # [METRICS-WITH-CERTS] To enable metrics protected with certManager, uncomment the following line.
@@ -54,6 +62,11 @@ patches:
 - path: manager_webhook_patch.yaml
   target:
     kind: Deployment
+    # Scoped by name: these are manager-specific. Unscoped, they also
+    # patched the event worker - injecting an image-less "manager"
+    # container into it and rewriting its args - so the Deployment was
+    # rejected with containers[0].image: Required value.
+    name: controller-manager
 
 # Appended rather than merged: see the comment in manager_webhook_patch.yaml.
 - target:

@@ -6,7 +6,7 @@
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: trawl-event-worker
+  name: event-worker
   namespace: trawl-system
   labels:
     app.kubernetes.io/name: trawl
@@ -15,7 +15,7 @@ metadata:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: trawl-event-worker
+  name: event-worker
   namespace: trawl-system
 rules:
   # Leader election. Scoped to the worker's own lease by name so a compromised
@@ -23,7 +23,7 @@ rules:
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
     verbs: ["get", "create", "update"]
-    resourceNames: ["trawl-event-worker"]
+    resourceNames: ["event-worker"]
   # Creating the lease requires an unnamed create, since the name cannot be
   # checked before the object exists.
   - apiGroups: ["coordination.k8s.io"]
@@ -37,13 +37,13 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: trawl-event-worker
+  name: event-worker
   namespace: trawl-system
 subjects:
   - kind: ServiceAccount
-    name: trawl-event-worker
+    name: event-worker
     namespace: trawl-system
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: trawl-event-worker
+  name: event-worker

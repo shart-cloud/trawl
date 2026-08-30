@@ -7,7 +7,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: trawl-event-worker
+  name: event-worker
   namespace: trawl-system
   labels:
     app.kubernetes.io/name: trawl
@@ -27,19 +27,22 @@ spec:
         app.kubernetes.io/name: trawl
         app.kubernetes.io/component: event-worker
     spec:
-      serviceAccountName: trawl-event-worker
+      serviceAccountName: event-worker
       # Restricted-compatible: this workload never touches the packet path, so
       # it needs no capability, no host namespace, and no writable root.
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
+        # Group-owns the mounted secret so the 0440 Hubble key is readable by
+        # this process and by nothing else.
+        fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: event-worker
           # Placeholder digest, substituted by the release overlay. A tag here
           # would let the deployed image change without a manifest change.
-          image: ghcr.io/trawl/event-worker@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          image: ghcr.io/shart-cloud/trawl/event-worker@sha256:1a2366015d36bdcd98477b363c40cc6156427e749b6b16c081d8d0ee669c9bcb
           args:
             - --config=/etc/trawl/config.yaml
             - --leader-elect=true
@@ -99,4 +102,10 @@ spec:
             # certificate is what stops this from being an unauthenticated
             # cluster-wide traffic disclosure.
             secretName: trawl-hubble-client
-            defaultMode: 0400
+            # 0440 with the fsGroup below, not 0400: secret files are owned by
+            # root, so 0400 is readable only by root while this container runs
+            # as 65532. The worker exited with "open /etc/hubble/tls.crt:
+            # permission denied" before reaching Hubble at all. fsGroup makes
+            # the volume group-owned by the runtime user, so group read is
+            # enough and the key stays unreadable to everyone else.
+            defaultMode: 0440
