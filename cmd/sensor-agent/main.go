@@ -40,6 +40,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	trawlv1alpha1 "trawl.cloud/trawl/api/v1alpha1"
 	"trawl.cloud/trawl/internal/observation"
 	"trawl.cloud/trawl/internal/sanitize"
 	"trawl.cloud/trawl/internal/sensor"
@@ -98,13 +99,19 @@ func main() {
 	emitter := newEmitter()
 	var wg sync.WaitGroup
 
+	// Kept so the status reporter can read their counters. The reporter
+	// describes the analyzers, and the tailers are what observed them.
+	var suricataTailer *sensor.Tailer
+	var zeekTailerSet []*sensor.Tailer
+	var observers []sensor.AnalyzerObserver
+
 	if *suricataLog != "" {
 		n := &observation.SuricataNormalizer{
 			Tap:     tap,
 			Target:  target,
 			Version: analyzerVersion(filepath.Join(filepath.Dir(*suricataLog), ".version")),
 		}
-		tailer := &sensor.Tailer{
+		suricataTailer = &sensor.Tailer{
 			Path: *suricataLog,
 			Parse: func(line []byte) (*observation.Observation, error) {
 				obs, _, err := n.Normalize(line)
@@ -112,17 +119,28 @@ func main() {
 			},
 			Emit:       emitter.emit,
 			Duplicates: sensor.NewDuplicateCache(sensor.MaxFingerprints),
+			OnAccept: func() {
+				metrics.SensorRecordsTotal.
+					WithLabelValues(telemetry.AnalyzerSuricata, "signature", string(sensor.ResultAccepted)).Inc()
+			},
 			OnReject: func(result sensor.RecordResult, _ string) {
 				metrics.SensorRecordsTotal.
 					WithLabelValues(telemetry.AnalyzerSuricata, "unknown", string(result)).Inc()
 			},
 		}
+		tailer := suricataTailer
 		wg.Go(func() {
 			if err := tailer.Run(ctx); err != nil {
 				fmt.Fprintf(os.Stderr, "suricata tailer: %v\n", sanitize.Error(err))
 			}
 		})
 		health.AddReadinessCheck("suricata-log", fileReadable(*suricataLog))
+		observers = append(observers, &analyzerObserver{
+			name:       trawlv1alpha1.AnalyzerSuricata,
+			version:    n.Version,
+			contentDir: filepath.Join(*contentDir, string(trawlv1alpha1.AnalyzerSuricata)),
+			tailers:    []*sensor.Tailer{suricataTailer},
+		})
 	}
 
 	if *zeekLogDir != "" {
@@ -141,7 +159,8 @@ func main() {
 			Target:  target,
 			Version: analyzerVersion(filepath.Join(*zeekLogDir, ".version")),
 		}
-		for _, tailer := range zeekTailers(*zeekLogDir, n, emitter.emit, metrics) {
+		zeekTailerSet = zeekTailers(*zeekLogDir, n, emitter.emit, metrics)
+		for _, tailer := range zeekTailerSet {
 			wg.Go(func() {
 				if err := tailer.Run(ctx); err != nil {
 					fmt.Fprintf(os.Stderr, "zeek tailer %s: %v\n", tailer.Path, sanitize.Error(err))
@@ -149,6 +168,12 @@ func main() {
 			})
 		}
 		health.AddReadinessCheck("zeek-logs", dirReadable(*zeekLogDir))
+		observers = append(observers, &analyzerObserver{
+			name:       trawlv1alpha1.AnalyzerZeek,
+			version:    n.Version,
+			contentDir: filepath.Join(*contentDir, string(trawlv1alpha1.AnalyzerZeek)),
+			tailers:    zeekTailerSet,
+		})
 	}
 
 	// Content currency is read from the file the init container wrote, so the
@@ -159,6 +184,31 @@ func main() {
 		}
 		return nil
 	})
+
+	// The tap reported "no sensor has reported yet" for as long as the sensor
+	// existed, because StatusReporter had no caller. Started only when there is
+	// an analyzer to describe: a sensor with neither would otherwise publish an
+	// empty target and claim to be observing nothing on purpose.
+	if len(observers) > 0 {
+		reporter := &sensor.StatusReporter{
+			NodeName:   nodeName,
+			Interface:  *iface,
+			InstanceID: os.Getenv("POD_NAME"),
+			Analyzers:  observers,
+			Packets: func() sensor.PacketCounters {
+				// Packet counters come from the capture boundary, which this
+				// sensor does not read yet. Reporting accepted records as
+				// packets would overstate what was measured, so the field is
+				// left unset and the status says so rather than guessing.
+				return sensor.PacketCounters{}
+			},
+		}
+		wg.Go(func() {
+			if err := publishStatus(ctx, reporter, *tapNamespace, *tapName); err != nil {
+				fmt.Fprintf(os.Stderr, "status reporter: %v\n", sanitize.Error(err))
+			}
+		})
+	}
 
 	mux := http.NewServeMux()
 	mux.Handle("/healthz", health.HealthzHandler())

@@ -426,6 +426,14 @@ func (r *WorkloadRenderer) sensorContainer(tap *trawlv1alpha1.NetworkTap, src *t
 			ValueFrom: &corev1.EnvVarSource{
 				FieldRef: &corev1.ObjectFieldSelector{FieldPath: "spec.nodeName"},
 			},
+		}, {
+			// The status reporter uses this to identify the sensor process.
+			// Counters restart with the pod, and without knowing the instance
+			// changed a reader would see the reset as traffic having stopped.
+			Name: "POD_NAME",
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"},
+			},
 		}},
 		SecurityContext: restrictedSecurityContext(),
 		// Resources come from installation config, never the NetworkTap: an
