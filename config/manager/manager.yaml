@@ -29,6 +29,12 @@ spec:
       labels:
         control-plane: controller-manager
         app.kubernetes.io/name: trawl
+        # The webhook Service selects on this label (config/webhook/service.yaml),
+        # and it is the convention the sensor pods and the Alloy discovery rules
+        # already use. Without it the Service has no endpoints, every admission
+        # call fails, and no NetworkTap can be created at all - the manager runs
+        # and the API is still closed.
+        app.kubernetes.io/component: controller-manager
     spec:
       # TODO(user): Uncomment the following code to configure the nodeAffinity expression
       # according to the platforms which are supported by your solution.
@@ -58,16 +64,20 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       containers:
+        # The image installs the binary at /trawl and declares it as ENTRYPOINT
+        # (see Dockerfile). The scaffold's /manager was never renamed to match,
+        # so the container exited 128 at create time - "stat /manager: no such
+        # file or directory" - before any of its own code ran.
       - command:
-        - /manager
+        - /trawl
         args:
           - --leader-elect
           - --health-probe-bind-address=:8081
-        # Placeholder digest, substituted by the release overlay. It is a
-        # digest rather than a tag on purpose: a floating tag here would ship in
-        # release manifests, which the constitution forbids, and would let the
-        # deployed image change without a manifest change.
-        image: ghcr.io/trawl/controller-manager@sha256:0000000000000000000000000000000000000000000000000000000000000000
+        # A digest rather than a tag on purpose: a floating tag here would ship
+        # in release manifests, which the constitution forbids, and would let
+        # the deployed image change without a manifest change. Refresh it with
+        # the digest CI records for the commit being deployed.
+        image: ghcr.io/shart-cloud/trawl/controller-manager@sha256:bb2f3543b3775270e6ac3ce8d839bce4b33366297a0f328a32c1a3f4884cf193
         name: manager
         ports:
         - containerPort: 8081
@@ -109,9 +119,34 @@ spec:
           - name: config
             mountPath: /etc/trawl
             readOnly: true
+          # storage.NewS3Store reads accessKeyID and secretAccessKey as files
+          # from the credentialsPath directories in that configuration, so
+          # these mounts are what let the manager reach object storage at all.
+          # They deliberately sit outside /etc/trawl rather than nested inside
+          # the ConfigMap mount: a volume mounted under another volume's mount
+          # point depends on kubelet ordering, and a credential is a poor place
+          # to rely on that.
+          - name: audit-credentials
+            mountPath: /var/run/secrets/trawl/audit
+            readOnly: true
+          # Declared by the installation configuration and provisioned by
+          # hack/dev-storage.sh. Nothing constructs the artifact store until
+          # US3 adds capture, so this mount is present for the credential
+          # separation ADR-0003 requires, not because it is read yet.
+          - name: artifact-credentials
+            mountPath: /var/run/secrets/trawl/artifacts
+            readOnly: true
       volumes:
         - name: config
           configMap:
             name: trawl-config
+        # Two secrets, not one. The credential that writes evidence must not be
+        # able to rewrite the record of how that evidence was handled.
+        - name: audit-credentials
+          secret:
+            secretName: trawl-audit-ledger
+        - name: artifact-credentials
+          secret:
+            secretName: trawl-artifact-storage
       serviceAccountName: controller-manager
       terminationGracePeriodSeconds: 10

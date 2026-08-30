@@ -1,0 +1,16 @@
+# Teaches kustomize that a Certificate's issuerRef.name names an Issuer, so
+# namePrefix rewrites both sides together.
+#
+# Without this, config/default's `namePrefix: trawl-` renames the Issuer to
+# trawl-selfsigned-issuer but leaves the Certificate pointing at
+# selfsigned-issuer. cert-manager then files a CertificateRequest against an
+# issuer that does not exist, webhook-server-cert is never created, and the
+# manager sits in ContainerCreating unable to mount it - the installer applies
+# cleanly and the deployment still never starts.
+nameReference:
+  - kind: Issuer
+    group: cert-manager.io
+    fieldSpecs:
+      - kind: Certificate
+        group: cert-manager.io
+        path: spec/issuerRef/name
