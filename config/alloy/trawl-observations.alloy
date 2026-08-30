@@ -10,24 +10,31 @@
 // filters on becomes structured metadata, which is indexed without multiplying
 // streams (contracts/telemetry.md).
 
-discovery.kubernetes "trawl_sensors" {
+discovery.kubernetes "trawl_observations" {
   role = "pod"
 
+  // Every Trawl pod, not just the sensors. Observations come from two
+  // workloads: the sensor reads what Zeek and Suricata write on the node, and
+  // the event worker reads the Hubble flow stream. Selecting on the component
+  // label here would collect one of them and silently discard the other, and
+  // because the generic pod_logs path deliberately skips both containers, the
+  // discarded one would not be stored anywhere at all.
   selectors {
     role  = "pod"
-    label = "app.kubernetes.io/name=trawl,app.kubernetes.io/component=sensor"
+    label = "app.kubernetes.io/name=trawl"
   }
 }
 
-discovery.relabel "trawl_sensors" {
-  targets = discovery.kubernetes.trawl_sensors.targets
+discovery.relabel "trawl_observations" {
+  targets = discovery.kubernetes.trawl_observations.targets
 
-  // Only the sensor container's stdout carries observations. The analyzer
-  // containers write files that the sensor reads; collecting them here as well
-  // would duplicate every record in a different shape.
+  // The two containers that write observation envelopes to stdout. The
+  // analyzer containers write files that the sensor reads, and the controller
+  // manager writes ordinary logs; collecting either here would store records
+  // in a shape no investigation query matches.
   rule {
     source_labels = ["__meta_kubernetes_pod_container_name"]
-    regex         = "sensor-agent"
+    regex         = "sensor-agent|event-worker"
     action        = "keep"
   }
 
@@ -37,8 +44,8 @@ discovery.relabel "trawl_sensors" {
   }
 }
 
-loki.source.kubernetes "trawl_sensors" {
-  targets    = discovery.relabel.trawl_sensors.output
+loki.source.kubernetes "trawl_observations" {
+  targets    = discovery.relabel.trawl_observations.output
   forward_to = [loki.process.trawl_observations.receiver]
 }
 

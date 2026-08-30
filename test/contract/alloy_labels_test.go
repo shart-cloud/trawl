@@ -23,6 +23,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"trawl.cloud/trawl/internal/observation"
 )
 
 // Loki creates a stream per distinct label combination. Promoting an IP, a rule
@@ -253,6 +255,94 @@ func TestSourcesAreCheckedBeforeUnpacking(t *testing.T) {
 		}
 		if !strings.Contains(string(data), "sha256sum -c") {
 			t.Errorf("%s does not verify its source tarball checksum", path)
+		}
+	}
+}
+
+// alloyBlock returns the body of a named Alloy component block.
+func alloyBlock(t *testing.T, path, header string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), path))
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	idx := strings.Index(string(data), header)
+	if idx < 0 {
+		t.Fatalf("%s has no %s block", path, header)
+	}
+	rest := string(data)[idx:]
+	depth := 0
+	for i, r := range rest {
+		switch r {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return rest[:i]
+			}
+		}
+	}
+	t.Fatalf("%s: %s block is unterminated", path, header)
+	return ""
+}
+
+var (
+	podSelectorRE = regexp.MustCompile(`label\s*=\s*"([^"]*)"`)
+	keepRuleRE    = regexp.MustCompile(`(?s)rule\s*\{` +
+		`[^}]*?__meta_kubernetes_pod_container_name` +
+		`[^}]*?regex\s*=\s*"([^"]*)"` +
+		`[^}]*?action\s*=\s*"keep"`)
+)
+
+func TestObservationPipelineCollectsEveryEmitter(t *testing.T) {
+	// Trawl's observations are produced by two different workloads. The sensor
+	// reads what Zeek and Suricata write on the node; the event worker reads
+	// the Hubble flow stream. Both write the same envelope to stdout, and the
+	// pipeline below is the only thing that turns either into a queryable
+	// record.
+	//
+	// This is asserted against observation.SourceKind rather than a list
+	// written here, so that adding a source to the schema without teaching the
+	// pipeline where it comes from fails at this test rather than in Loki. The
+	// failure mode being guarded is the one that costs the most to find: the
+	// emitter is healthy, its records are well-formed, and nothing collects
+	// them, so an investigation returns fewer results with no error anywhere.
+	emitters := map[observation.SourceKind]struct{ component, container string }{
+		observation.SourceZeek:     {"sensor", "sensor-agent"},
+		observation.SourceSuricata: {"sensor", "sensor-agent"},
+		observation.SourceHubble:   {"event-worker", "event-worker"},
+	}
+
+	const path = "config/alloy/trawl-observations.alloy"
+
+	discovery := alloyBlock(t, path, `discovery.kubernetes "trawl_observations"`)
+	selector := ""
+	if m := podSelectorRE.FindStringSubmatch(discovery); m != nil {
+		selector = m[1]
+	}
+
+	keep := keepRuleRE.FindStringSubmatch(alloyBlock(t, path, `discovery.relabel "trawl_observations"`))
+	if keep == nil {
+		t.Fatalf("%s does not filter targets by container name", path)
+	}
+	// Alloy anchors relabel regexes at both ends.
+	container, err := regexp.Compile(`^(?:` + keep[1] + `)$`)
+	if err != nil {
+		t.Fatalf("keep regex %q does not compile: %v", keep[1], err)
+	}
+
+	for kind, emitter := range emitters {
+		// A selector pinned to one component silently excludes the others. It
+		// is not enough for the container filter to name them.
+		if strings.Contains(selector, "component=") &&
+			!strings.Contains(selector, "component="+emitter.component) {
+			t.Errorf("%s observations come from the %q component, which the pod selector %q excludes",
+				kind, emitter.component, selector)
+		}
+		if !container.MatchString(emitter.container) {
+			t.Errorf("%s observations are written by the %q container, which the keep regex %q does not match",
+				kind, emitter.container, keep[1])
 		}
 	}
 }
