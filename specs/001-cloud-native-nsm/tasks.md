@@ -143,18 +143,18 @@ then verify an event without Community ID is returned only as `attribute-time`.
 ### Tests for User Story 2
 
 - [ ] T051 [P] [US2] Extend the US1 Draft 2020-12 contract tests with Hubble observations, every supported subtype, and forbidden raw/sensitive fields in `test/contract/observation_schema_test.go`
-- [ ] T052 [P] [US2] Add failing exact, direction-normalized, clock-skew, ambiguous, and no-match correlation tests in `internal/observation/correlation_test.go`
+- [X] T052 [P] [US2] Add failing exact, direction-normalized, clock-skew, ambiguous, and no-match correlation tests in `internal/observation/correlation_test.go`
 - [ ] T053 [P] [US2] Add failing real-Loki tests for time, tap, target, type, severity, rule, Community ID, endpoint, and fallback queries with ingestion-latency measurement in `test/integration/loki_queries_test.go`
-- [ ] T054 [P] [US2] Add failing Hubble TLS/GetFlows/reconnect/lost-event/allowed/denied normalization tests against a gRPC fixture in `test/integration/hubble_observation_test.go`
+- [X] T054 [P] [US2] Add failing Hubble TLS/GetFlows/reconnect/lost-event/allowed/denied normalization tests against a gRPC fixture in `test/integration/hubble_observation_test.go`
 - [ ] T055 [P] [US2] Add failing dashboard contract tests for bounded labels, required panels, exact/approximate badges, safe links, query ranges, and supported schema fields in `test/contract/grafana_dashboards_test.go`
 - [ ] T056 [US2] Add a failing end-to-end investigation test covering the observation-only overview, exact pivot in both directions, fallback pivot, every protocol subtype, Hubble context, and 30-second searchability in `test/e2e/investigation_test.go`
 
 ### Implementation for User Story 2
 
-- [ ] T057 [US2] Implement exact Community ID and direction-normalized time/attribute correlation classification with explicit ambiguity results in `internal/observation/correlation.go`
+- [X] T057 [US2] Implement exact Community ID and direction-normalized time/attribute correlation classification with explicit ambiguity results in `internal/observation/correlation.go`
 - [ ] T058 [US2] Define reviewed LogQL query templates for overview, signature detail, exact pivot, approximate pivot, protocol filters, and Hubble timelines in `config/grafana/queries/trawl.logql`
-- [ ] T059 [US2] Implement a TLS-authenticated Hubble Observer GetFlows client with bounded filters, reconnect backoff, event-time watermarks, and lost-event signals in `internal/events/hubble/client.go`
-- [ ] T060 [US2] Normalize Hubble endpoints, namespaces/workloads, verdicts, drop reasons, observation points, timestamps, and safe flow fields into cluster-flow observations in `internal/events/hubble/normalize.go`
+- [X] T059 [US2] Implement a TLS-authenticated Hubble Observer GetFlows client with bounded filters, reconnect backoff, event-time watermarks, and lost-event signals in `internal/events/hubble/client.go`
+- [X] T060 [US2] Normalize Hubble endpoints, namespaces/workloads, verdicts, drop reasons, observation points, timestamps, and safe flow fields into cluster-flow observations in `internal/events/hubble/normalize.go`
 - [ ] T061 [US2] Wire leader election, Hubble observation streaming, normalized stdout output, probes, metrics, and graceful reconnect in `cmd/event-worker/main.go`
 - [ ] T062 [US2] Deploy the observation-mode event worker with Hubble CA/client mounts, read-only Loki configuration, Restricted security context, RBAC, and egress NetworkPolicy in `config/manager/event-worker.yaml` and `config/networkpolicy/event-worker.yaml`
 - [ ] T063 [US2] Extend embedded normative-schema validation to Hubble records and keep Alloy structured-metadata mappings synchronized in `internal/observation/schema.go` and `config/alloy/trawl-observations.alloy`
