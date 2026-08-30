@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -406,5 +407,49 @@ func waitFor(t *testing.T, cond func() bool) {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// Rejections had a callback and acceptances did not, so
+// trawl_sensor_records_total only ever counted failures. The counter went
+// silent exactly when the sensor started working, which is the wrong way round
+// for a metric an operator uses to confirm records are flowing.
+func TestTailerReportsAcceptancesAndLastRecord(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "in.log")
+	if err := os.WriteFile(path, []byte("one\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var accepted atomic.Int64
+	n := SuricataNormalizerFor(t)
+	tl := &Tailer{
+		Path: path,
+		Parse: func(line []byte) (*observation.Observation, error) {
+			obs, _, err := n.Normalize(line)
+			return obs, err
+		},
+		Emit:     func(*observation.Observation, string) error { return nil },
+		OnAccept: func() { accepted.Add(1) },
+	}
+
+	if _, ok := tl.LastRecord(); ok {
+		t.Error("a tailer that has read nothing reports a last-record time")
+	}
+
+	tl.process([]byte(validAlert))
+
+	if got := accepted.Load(); got != 1 {
+		t.Errorf("OnAccept called %d times, want 1", got)
+	}
+	if got := tl.Counters().Accepted; got != 1 {
+		t.Errorf("Accepted = %d, want 1", got)
+	}
+	ts, ok := tl.LastRecord()
+	if !ok {
+		t.Fatal("no last-record time after accepting a record")
+	}
+	if time.Since(ts) > time.Minute {
+		t.Errorf("last-record time %v is not recent", ts)
 	}
 }

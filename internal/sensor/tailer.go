@@ -77,6 +77,12 @@ type counters struct {
 	accepted    atomic.Int64
 	unsupported atomic.Int64
 	malformed   atomic.Int64
+
+	// Unix nanoseconds of the last accepted record, 0 for none. The status
+	// reporter needs to distinguish an analyzer that has produced nothing from
+	// one that produced something a while ago; a zero time would claim the
+	// former for both.
+	lastRecord atomic.Int64
 }
 
 // Tailer follows one analyzer log file and emits normalized observations.
@@ -90,6 +96,13 @@ type Tailer struct {
 
 	// Parse converts a line to an observation.
 	Parse ParseFunc
+
+	// OnAccept is called for each accepted record.
+	//
+	// Rejections had a callback and acceptances did not, so
+	// trawl_sensor_records_total only ever counted failures - a record
+	// counter that went silent precisely when everything was working.
+	OnAccept func()
 
 	// Emit receives accepted observations.
 	Emit EmitFunc
@@ -109,6 +122,17 @@ type Tailer struct {
 //
 // Safe to call from another goroutine while Run is active; the status reporter
 // does exactly that on every heartbeat.
+// LastRecord reports when this tailer last accepted a record.
+//
+// The boolean distinguishes "nothing yet" from a zero time.
+func (t *Tailer) LastRecord() (time.Time, bool) {
+	ns := t.counters.lastRecord.Load()
+	if ns == 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(0, ns), true
+}
+
 func (t *Tailer) Counters() Counters {
 	return Counters{
 		Accepted:    t.counters.accepted.Load(),
@@ -240,6 +264,10 @@ func (t *Tailer) process(line []byte) {
 		}
 	}
 	t.counters.accepted.Add(1)
+	t.counters.lastRecord.Store(time.Now().UnixNano())
+	if t.OnAccept != nil {
+		t.OnAccept()
+	}
 }
 
 func (t *Tailer) reject(result RecordResult, fingerprint string) {
