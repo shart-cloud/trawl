@@ -25,7 +25,13 @@ RUN curl -fsSL -o zeek.tar.gz \
  && tar -xzf zeek.tar.gz --strip-components=1 \
  && rm zeek.tar.gz
 
+# The ZeroMQ cluster backend is deliberately not built. Trawl runs one Zeek per
+# tapped interface, in its own pod, reading a single live interface - there is
+# no cluster for it to join. Building it would add a dependency and a network
+# listener to an image whose only inbound path should be the packets it
+# observes, and Zeek 8 requires ZeroMQ 4.3 at configure time purely for it.
 RUN ./configure --prefix=/usr/local/zeek --generator=Ninja --build-type=Release \
+      --disable-cluster-backend-zeromq \
  && cd build && ninja && DESTDIR=/rootfs ninja install
 
 FROM ${BASE_IMAGE}

@@ -1,0 +1,36 @@
+# Trawl's client identity for Hubble Relay.
+#
+# The relay requires client certificates signed by the Hubble CA
+# (hubble.relay.tls.server.mtls in the cluster's Cilium values). Trawl is issued
+# its own certificate rather than mounting a copy of hubble-relay's or
+# hubble-ui's, so that a flow read by Trawl is distinguishable from one read by
+# Cilium's own components in anything that later inspects who connected.
+#
+# The issuer is a ClusterIssuer because the CA lives in cert-manager's namespace
+# while this certificate is consumed in trawl-system.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: trawl-hubble-client
+  namespace: trawl-system
+spec:
+  secretName: trawl-hubble-client-certs
+  commonName: trawl.hubble-relay.cilium.io
+  duration: 2160h # 90 days
+  # cert-manager rewrites the secret in place, and the event worker reloads it
+  # rather than restarting, so a renewal is not a restart.
+  renewBefore: 720h # 30 days
+  privateKey:
+    algorithm: ECDSA
+    size: 384
+    rotationPolicy: Always
+  # Client authentication only. This certificate identifies a reader of flows;
+  # it must not be usable to stand up something that serves them.
+  usages:
+    - digital signature
+    - key encipherment
+    - client auth
+  issuerRef:
+    name: hubble-ca
+    kind: ClusterIssuer
+    group: cert-manager.io
