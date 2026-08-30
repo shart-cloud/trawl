@@ -100,7 +100,18 @@ spec:
           requests:
             cpu: 10m
             memory: 64Mi
-        volumeMounts: []
-      volumes: []
+        # The manager reads its installation configuration from
+        # /etc/trawl/config.yaml (cmd/controller-manager/main.go). Without this
+        # mount it starts, fails to read the file, and exits - so the mount is
+        # not optional, and an empty list here meant the deployment could never
+        # have run.
+        volumeMounts:
+          - name: config
+            mountPath: /etc/trawl
+            readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: trawl-config
       serviceAccountName: controller-manager
       terminationGracePeriodSeconds: 10

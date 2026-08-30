@@ -29,6 +29,7 @@ limitations under the License.
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -84,14 +85,14 @@ type Config struct {
 	AuditLedger BucketConfig `json:"auditLedger"`
 
 	// AuditRetention is how long ledger objects are kept, within 90-730 days.
-	AuditRetention time.Duration `json:"auditRetention,omitempty"`
+	AuditRetention Duration `json:"auditRetention,omitempty"`
 
 	// AuditClientIdentities are the mTLS client identities permitted to commit
 	// audit records to the sink.
 	AuditClientIdentities []string `json:"auditClientIdentities"`
 
 	// CaptureRetentionCeiling is the longest retention any capture may request.
-	CaptureRetentionCeiling time.Duration `json:"captureRetentionCeiling,omitempty"`
+	CaptureRetentionCeiling Duration `json:"captureRetentionCeiling,omitempty"`
 
 	// SensorAgentResources are the requests and limits the operator renders for
 	// the sensor sidecar in every analyzer pod. Deliberately not a NetworkTap
@@ -141,9 +142,9 @@ type ResourceRequirements struct {
 
 // ContentConfig configures the two-layer analyzer content model (ADR-0005).
 type ContentConfig struct {
-	SuricataFeedURL string        `json:"suricataFeedURL"`
-	ZeekScriptRepo  string        `json:"zeekScriptRepo"`
-	RefreshInterval time.Duration `json:"refreshInterval,omitempty"`
+	SuricataFeedURL string   `json:"suricataFeedURL"`
+	ZeekScriptRepo  string   `json:"zeekScriptRepo"`
+	RefreshInterval Duration `json:"refreshInterval,omitempty"`
 }
 
 // ImageConfig holds digest-pinned references for every image Trawl renders.
@@ -163,6 +164,48 @@ var digestRE = regexp.MustCompile(`^[^@\s]+@sha256:[0-9a-f]{64}$`)
 
 // durationRE additionally accepts a day suffix, which Go's ParseDuration does not.
 var durationRE = regexp.MustCompile(`^(\d+)d$`)
+
+// Duration is a time.Duration that reads as a string in configuration.
+//
+// The plain time.Duration marshals as an integer count of nanoseconds, so an
+// operator writing `auditRetention: 90d` - the form this file's own
+// documentation uses - got "cannot unmarshal string into Go struct field of
+// type time.Duration" and the only accepted spelling was 7776000000000000.
+// ParseDuration existed for exactly this and nothing called it.
+type Duration time.Duration
+
+// UnmarshalJSON accepts either a duration string or a raw nanosecond count.
+//
+// The number is still accepted because it is what previously-written
+// configurations contain, and rejecting them would turn this fix into a
+// breaking change for anyone who worked around the bug.
+func (d *Duration) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		parsed, err := ParseDuration(s)
+		if err != nil {
+			return err
+		}
+		*d = Duration(parsed)
+		return nil
+	}
+
+	var n int64
+	if err := json.Unmarshal(data, &n); err != nil {
+		return errors.New("duration must be a string such as \"90d\" or a nanosecond count")
+	}
+	*d = Duration(n)
+	return nil
+}
+
+// MarshalJSON writes the string form, so a round-trip does not silently convert
+// a readable configuration into nanoseconds.
+func (d Duration) MarshalJSON() ([]byte, error) {
+	return json.Marshal(time.Duration(d).String())
+}
+
+// Duration returns the value as a time.Duration.
+func (d Duration) Duration() time.Duration { return time.Duration(d) }
 
 // ParseDuration parses a Go duration, extended with a `d` (day) unit so
 // retention can be written as `30d` rather than `720h`.
@@ -195,13 +238,13 @@ func (c *Config) ApplyDefaults() {
 		c.SystemNamespace = DefaultSystemNamespace
 	}
 	if c.AuditRetention == 0 {
-		c.AuditRetention = DefaultAuditRetention
+		c.AuditRetention = Duration(DefaultAuditRetention)
 	}
 	if c.CaptureRetentionCeiling == 0 {
-		c.CaptureRetentionCeiling = DefaultCaptureRetentionCeiling
+		c.CaptureRetentionCeiling = Duration(DefaultCaptureRetentionCeiling)
 	}
 	if c.Content.RefreshInterval == 0 {
-		c.Content.RefreshInterval = DefaultContentRefreshInterval
+		c.Content.RefreshInterval = Duration(DefaultContentRefreshInterval)
 	}
 }
 
@@ -267,9 +310,9 @@ func (c *Config) Validate() error {
 	switch {
 	case c.AuditRetention <= 0:
 		errs = append(errs, "auditRetention must be positive")
-	case c.AuditRetention < MinAuditRetention:
+	case c.AuditRetention.Duration() < MinAuditRetention:
 		errs = append(errs, "auditRetention must be at least 90d")
-	case c.AuditRetention > MaxAuditRetention:
+	case c.AuditRetention.Duration() > MaxAuditRetention:
 		errs = append(errs, "auditRetention must be at most 730d")
 	}
 

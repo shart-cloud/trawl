@@ -1,0 +1,93 @@
+# Installation configuration for a development cluster.
+#
+# This is the ConfigMap the controller manager and event worker both mount at
+# /etc/trawl, and it is the file config.Validate checks before either will
+# start. It is a worked example against a homelab cluster, not a release
+# artifact: the image digests, the Loki endpoint and the storage endpoint are
+# all specific to one installation.
+#
+# Every image reference is a digest. A tag would let the software running in a
+# cluster change without any manifest changing, which is the property image
+# pinning exists to prevent.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trawl-config
+  namespace: trawl-system
+data:
+  config.yaml: |
+    # A Loki and metric label, so it has to stay low-cardinality.
+    clusterID: homelab
+
+    # The single namespace in which Trawl resources are accepted and privileged
+    # workloads are created. Admission rejects Trawl resources anywhere else.
+    systemNamespace: trawl-system
+
+    loki:
+      # The cluster's existing Loki. Trawl writes observations through Alloy and
+      # reads them back for investigation; it does not own this store.
+      endpoint: http://loki.monitoring.svc.cluster.local:3100
+
+    hubble:
+      endpoint: hubble-relay.kube-system.svc.cluster.local:80
+      # Mounted from the trawl-hubble-client secret, which cert-manager issues
+      # from the Hubble CA (config/hubble/certificate.yaml). Relay requires a
+      # client certificate, so these are what make cluster-flow observation
+      # possible at all rather than an optional hardening step.
+      caFile: /etc/hubble/ca.crt
+      certFile: /etc/hubble/tls.crt
+      keyFile: /etc/hubble/tls.key
+      # Must match a SAN on the relay's serving certificate. The Cilium values
+      # add this name explicitly; the chart's default certificate covers only
+      # *.hubble-relay.cilium.io, which is not the name anything in the cluster
+      # actually dials.
+      serverName: hubble-relay.kube-system.svc.cluster.local
+
+    # Two buckets, two credentials. The separation is the point: the credential
+    # that can write evidence must not be able to rewrite the record of how that
+    # evidence was handled (ADR-0003). Validation rejects a config where either
+    # the buckets or the credential paths match.
+    artifacts:
+      endpoint: minio.trawl-system.svc.cluster.local:9000
+      bucket: trawl-artifacts
+      credentialsPath: /etc/trawl/credentials/artifacts
+      useTLS: false
+
+    auditLedger:
+      endpoint: minio.trawl-system.svc.cluster.local:9000
+      bucket: trawl-audit-ledger
+      credentialsPath: /etc/trawl/credentials/audit
+      useTLS: false
+
+    # Must exceed captureRetentionCeiling: if audit records expired first, the
+    # evidence would outlive its own provenance.
+    auditRetention: 90d
+    captureRetentionCeiling: 7d
+
+    auditClientIdentities:
+      - trawl-controller-manager.trawl-system.svc
+      - trawl-event-worker.trawl-system.svc
+
+    # Not a NetworkTap field on purpose: an under-provisioned sensor drops
+    # observations silently, so it is not something a tap author can get wrong.
+    sensorAgentResources:
+      requestsCPU: 50m
+      requestsMemory: 64Mi
+      limitsCPU: 500m
+      limitsMemory: 512Mi
+
+    content:
+      suricataFeedURL: https://rules.emergingthreats.net/open/suricata-8.0/emerging.rules.tar.gz
+      zeekScriptRepo: https://github.com/zeek/packages
+      refreshInterval: 24h
+
+    images:
+      suricata: ghcr.io/shart-cloud/trawl/suricata@sha256:d7ed4a3051aa13c64366437f4cdac3c1bf8ffd95b839d45a2f743a67111c484c
+      # zeek: filled in once the analyzer image publishes.
+      zeek: ghcr.io/shart-cloud/trawl/zeek@sha256:0000000000000000000000000000000000000000000000000000000000000000
+      sensorAgent: ghcr.io/shart-cloud/trawl/sensor-agent@sha256:acc3d3e5ff57b765a16bc9b93919866a1f65194480937229751c7f051a7565ab
+      contentInit: ghcr.io/shart-cloud/trawl/content-init@sha256:ff824cd45e9edc2ca931c37b53c5f6c1f7e6a174540d837fddc1ebcfb5ef1dca
+      # Not implemented until US3. The stub image exists so this required field
+      # names something that resolves and refuses, rather than something that
+      # resolves and does another component's job.
+      captureRunner: ghcr.io/shart-cloud/trawl/capture-runner@sha256:79d1b9865e002760b3b46bd584a72175190e1d8c659dc3a5a682e78c6c6746e1

@@ -233,7 +233,7 @@ func main() {
 	auditSink, err := audit.NewSink(audit.Options{
 		Store:     auditStore,
 		Prefix:    audit.DefaultPrefix,
-		Retention: installCfg.AuditRetention,
+		Retention: installCfg.AuditRetention.Duration(),
 	})
 	if err != nil {
 		setupLog.Error(sanitize.Error(err), "Failed to create the audit sink")
@@ -260,8 +260,8 @@ func main() {
 	setupLog.Info("Trawl configuration loaded",
 		"systemNamespace", installCfg.SystemNamespace,
 		"cluster", installCfg.ClusterID,
-		"auditRetention", installCfg.AuditRetention.String(),
-		"captureRetentionCeiling", installCfg.CaptureRetentionCeiling.String())
+		"auditRetention", installCfg.AuditRetention.Duration().String(),
+		"captureRetentionCeiling", installCfg.CaptureRetentionCeiling.Duration().String())
 
 	setupLog.Info("Starting manager")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {

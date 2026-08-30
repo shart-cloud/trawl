@@ -20,6 +20,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"sigs.k8s.io/yaml"
 )
 
 // valid returns a configuration that passes validation, so each test can mutate
@@ -50,11 +52,11 @@ func valid() *Config {
 			CredentialsPath: "/etc/trawl/audit",
 			UseTLS:          true,
 		},
-		AuditRetention: 365 * 24 * time.Hour,
+		AuditRetention: Duration(365 * 24 * time.Hour),
 		AuditClientIdentities: []string{
 			"trawl-controller-manager", "trawl-event-worker", "trawl-artifact-gateway",
 		},
-		CaptureRetentionCeiling: 30 * 24 * time.Hour,
+		CaptureRetentionCeiling: Duration(30 * 24 * time.Hour),
 		SensorAgentResources: ResourceRequirements{
 			RequestsCPU:    "50m",
 			RequestsMemory: "64Mi",
@@ -64,7 +66,7 @@ func valid() *Config {
 		Content: ContentConfig{
 			SuricataFeedURL: "https://rules.emergingthreats.net/open/suricata-8.0/emerging.rules.tar.gz",
 			ZeekScriptRepo:  "https://github.com/zeek/packages",
-			RefreshInterval: 24 * time.Hour,
+			RefreshInterval: Duration(24 * time.Hour),
 		},
 		Images: ImageConfig{
 			Suricata:      "ghcr.io/example/suricata@sha256:" + strings.Repeat("a", 64),
@@ -111,13 +113,13 @@ func TestDefaultsFillSystemNamespaceAndRetention(t *testing.T) {
 	if c.SystemNamespace != DefaultSystemNamespace {
 		t.Errorf("SystemNamespace = %q, want %q", c.SystemNamespace, DefaultSystemNamespace)
 	}
-	if c.AuditRetention != DefaultAuditRetention {
+	if c.AuditRetention.Duration() != DefaultAuditRetention {
 		t.Errorf("AuditRetention = %v, want %v", c.AuditRetention, DefaultAuditRetention)
 	}
-	if c.CaptureRetentionCeiling != DefaultCaptureRetentionCeiling {
+	if c.CaptureRetentionCeiling.Duration() != DefaultCaptureRetentionCeiling {
 		t.Errorf("CaptureRetentionCeiling = %v, want %v", c.CaptureRetentionCeiling, DefaultCaptureRetentionCeiling)
 	}
-	if c.Content.RefreshInterval != DefaultContentRefreshInterval {
+	if c.Content.RefreshInterval.Duration() != DefaultContentRefreshInterval {
 		t.Errorf("Content.RefreshInterval = %v, want %v", c.Content.RefreshInterval, DefaultContentRefreshInterval)
 	}
 }
@@ -160,7 +162,7 @@ func TestAuditRetentionBounds(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			c := valid()
-			c.AuditRetention = tc.d
+			c.AuditRetention = Duration(tc.d)
 			err := c.Validate()
 			if tc.wantErr != (err != nil) {
 				t.Errorf("AuditRetention %v: err = %v, wantErr %v", tc.d, err, tc.wantErr)
@@ -173,8 +175,8 @@ func TestAuditRetentionMustExceedCaptureRetention(t *testing.T) {
 	// plan.md: audit objects outlive the captures they describe, or the record
 	// of a capture's handling disappears before the capture does.
 	c := valid()
-	c.AuditRetention = 90 * 24 * time.Hour
-	c.CaptureRetentionCeiling = 120 * 24 * time.Hour
+	c.AuditRetention = Duration(90 * 24 * time.Hour)
+	c.CaptureRetentionCeiling = Duration(120 * 24 * time.Hour)
 	if err := c.Validate(); err == nil {
 		t.Error("Validate accepted audit retention shorter than capture retention")
 	}
@@ -306,14 +308,14 @@ func TestParseDurationAcceptsDayUnits(t *testing.T) {
 func TestLoadRejectsUnknownFields(t *testing.T) {
 	// A typo in an installation ConfigMap must fail loudly rather than leave a
 	// security-relevant setting at its default.
-	yaml := []byte("clusterID: homelab\nsystemNamesapce: trawl-system\n")
-	if _, err := Load(yaml); err == nil {
+	doc := []byte("clusterID: homelab\nsystemNamesapce: trawl-system\n")
+	if _, err := Load(doc); err == nil {
 		t.Error("Load accepted an unknown field")
 	}
 }
 
 func TestLoadAppliesDefaultsThenValidates(t *testing.T) {
-	yaml := []byte(`
+	doc := []byte(`
 clusterID: homelab
 loki:
   endpoint: http://loki:3100
@@ -347,14 +349,59 @@ images:
   captureRunner: ghcr.io/e/runner@sha256:` + strings.Repeat("d", 64) + `
   contentInit: ghcr.io/e/content@sha256:` + strings.Repeat("e", 64) + `
 `)
-	c, err := Load(yaml)
+	c, err := Load(doc)
 	if err != nil {
 		t.Fatalf("Load failed: %v", err)
 	}
 	if c.SystemNamespace != DefaultSystemNamespace {
 		t.Errorf("default system namespace not applied: %q", c.SystemNamespace)
 	}
-	if c.AuditRetention != DefaultAuditRetention {
+	if c.AuditRetention.Duration() != DefaultAuditRetention {
 		t.Errorf("default audit retention not applied: %v", c.AuditRetention)
+	}
+}
+
+func TestDurationsAreWrittenAsStrings(t *testing.T) {
+	// The documented spelling. Before Duration existed, Load rejected this with
+	// "cannot unmarshal string into Go struct field ... of type time.Duration",
+	// and the only accepted form was a raw nanosecond count - which no operator
+	// writes correctly and which the comments in this file never suggested.
+	// ParseDuration had handled the `d` suffix all along; nothing called it.
+	c := valid()
+	raw, err := yaml.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Marshalling produces the string form; confirm that is what is on the wire
+	// before asserting Load can read it back.
+	if !strings.Contains(string(raw), "auditRetention: 8760h0m0s") {
+		t.Fatalf("durations did not marshal as strings:\n%s", raw)
+	}
+
+	withDays := strings.ReplaceAll(string(raw), "auditRetention: 8760h0m0s", "auditRetention: 90d")
+	withDays = strings.ReplaceAll(withDays, "captureRetentionCeiling: 720h0m0s", "captureRetentionCeiling: 7d")
+
+	loaded, err := Load([]byte(withDays))
+	if err != nil {
+		t.Fatalf("Load rejected string durations: %v", err)
+	}
+	if got := loaded.AuditRetention.Duration(); got != 90*24*time.Hour {
+		t.Errorf("auditRetention = %v, want 90d", got)
+	}
+	if got := loaded.CaptureRetentionCeiling.Duration(); got != 7*24*time.Hour {
+		t.Errorf("captureRetentionCeiling = %v, want 7d", got)
+	}
+}
+
+func TestDurationRoundTripsAsAString(t *testing.T) {
+	// A config read and written back must stay readable, rather than turning
+	// into nanoseconds the next person has to decode.
+	d := Duration(90 * 24 * time.Hour)
+	out, err := d.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != `"2160h0m0s"` {
+		t.Errorf("marshalled to %s, want a duration string", out)
 	}
 }

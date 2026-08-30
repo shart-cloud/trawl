@@ -14,7 +14,7 @@ metadata:
   name: trawl-hubble-client
   namespace: trawl-system
 spec:
-  secretName: trawl-hubble-client-certs
+  secretName: trawl-hubble-client
   commonName: trawl.hubble-relay.cilium.io
   duration: 2160h # 90 days
   # cert-manager rewrites the secret in place, and the event worker reloads it
