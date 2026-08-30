@@ -1,0 +1,39 @@
+# Serving certificate for the admission webhook.
+#
+# The webhook fails closed (failurePolicy: Fail), so this certificate is on the
+# path of every NetworkTap create and update: without it the API server cannot
+# reach admission and rejects the request. That is the correct direction to
+# fail - an unvalidated tap is a tap that may point at the wrong namespace or
+# an unparseable filter - but it does mean this is not an optional add-on.
+#
+# It is self-signed rather than issued by a cluster CA because the only party
+# that must trust it is the API server, and it trusts it through the caBundle
+# kustomize injects into the webhook configurations from this same certificate.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: selfsigned-issuer
+  namespace: system
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: serving-cert
+  namespace: system
+spec:
+  # SERVICE_NAME and SERVICE_NAMESPACE are replaced by kustomize from the
+  # webhook Service, so the names here cannot drift from the Service the API
+  # server actually dials.
+  dnsNames:
+    - SERVICE_NAME.SERVICE_NAMESPACE.svc
+    - SERVICE_NAME.SERVICE_NAMESPACE.svc.cluster.local
+  issuerRef:
+    kind: Issuer
+    name: selfsigned-issuer
+  secretName: webhook-server-cert
+  privateKey:
+    algorithm: ECDSA
+    size: 384
+    rotationPolicy: Always

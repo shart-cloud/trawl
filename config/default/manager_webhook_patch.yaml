@@ -1,0 +1,33 @@
+# Wires the admission webhook into the controller manager.
+#
+# The manager only starts a webhook server when --webhook-cert-path is set
+# (cmd/controller-manager/main.go), so the flag and the mount have to arrive
+# together: either alone yields a manager that looks healthy while the API
+# server cannot reach admission.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: controller-manager
+  namespace: system
+spec:
+  template:
+    spec:
+      containers:
+        # --webhook-cert-path is appended by a JSON patch in kustomization.yaml,
+        # not here: a strategic merge replaces a plain string list wholesale,
+        # which would silently drop --leader-elect and the probe address. The
+        # mounts below do merge correctly, because volumeMounts and volumes are
+        # keyed by name.
+        - name: manager
+          ports:
+            - containerPort: 9443
+              name: webhook-server
+              protocol: TCP
+          volumeMounts:
+            - name: webhook-certs
+              mountPath: /tmp/k8s-webhook-server/serving-certs
+              readOnly: true
+      volumes:
+        - name: webhook-certs
+          secret:
+            secretName: webhook-server-cert
