@@ -28,6 +28,19 @@ import (
 	"trawl.cloud/trawl/internal/sanitize"
 )
 
+// Content is public upstream detection rules, not a secret, and the analyzers
+// that must read it run as root with every capability dropped - so they have
+// no CAP_DAC_OVERRIDE and the permission bits are enforced against them like
+// anyone else. Written by UID 65532 at 0750/0600, the directories were
+// unreadable to the analyzers: Suricata reported "no rules were loaded" and
+// the fetched Zeek packages could not be opened either. The content is
+// world-readable so the readers can actually read it; nothing here is
+// sensitive, and the write side stays owned by the fetcher.
+const (
+	DirMode  = 0o755
+	FileMode = 0o644
+)
+
 // Fetcher retrieves one content layer.
 //
 // Upstream feeds and OCI artifacts are fetched by external tooling
@@ -111,7 +124,8 @@ func Write(merged Merged, dir string) error {
 	if err := os.RemoveAll(staging); err != nil {
 		return sanitize.Errorf("clearing content staging directory: %v", err)
 	}
-	if err := os.MkdirAll(staging, 0o750); err != nil {
+	//nolint:gosec // G301: see DirMode below.
+	if err := os.MkdirAll(staging, DirMode); err != nil {
 		return sanitize.Errorf("creating content staging directory: %v", err)
 	}
 
@@ -123,13 +137,15 @@ func Write(merged Merged, dir string) error {
 			return err
 		}
 		target := filepath.Join(staging, name)
-		if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
+		//nolint:gosec // G301: see DirMode.
+		if err := os.MkdirAll(filepath.Dir(target), DirMode); err != nil {
 			return sanitize.Errorf("creating content directory: %v", err)
 		}
 		// 0600: the init container writes as uid 65532 and the analyzer reads
 		// as uid 0, which is unaffected by the mode. Nothing else in the pod
 		// needs these bytes, so no group or world access is granted.
-		if err := os.WriteFile(target, body, 0o600); err != nil {
+		//nolint:gosec // G306: see FileMode.
+		if err := os.WriteFile(target, body, FileMode); err != nil {
 			return sanitize.Errorf("writing content file: %v", err)
 		}
 	}
@@ -191,7 +207,8 @@ func WriteStatus(dir string, st Status) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, StatusFile), data, 0o600); err != nil {
+	//nolint:gosec // G306: see FileMode.
+	if err := os.WriteFile(filepath.Join(dir, StatusFile), data, FileMode); err != nil {
 		return sanitize.Errorf("writing content status: %v", err)
 	}
 	return nil

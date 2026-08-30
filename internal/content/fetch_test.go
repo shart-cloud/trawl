@@ -254,3 +254,21 @@ func TestResolveRequiresAnUpstreamFetcher(t *testing.T) {
 		t.Fatal("Resolve succeeded with no upstream fetcher configured")
 	}
 }
+
+// The analyzers read this content as root with every capability dropped, so
+// they have no CAP_DAC_OVERRIDE and the permission bits are enforced against
+// them. Written at 0750/0600 by UID 65532, the tree was unreadable to them:
+// Suricata started and reported "no rules were loaded", which is the detection
+// half of the product silently doing nothing.
+func TestFetchedContentIsReadableByTheAnalyzers(t *testing.T) {
+	if DirMode&0o005 != 0o005 {
+		t.Errorf("directory mode %#o does not allow other read+execute; the analyzers cannot traverse the content tree", DirMode)
+	}
+	if FileMode&0o004 != 0o004 {
+		t.Errorf("file mode %#o does not allow other read; the analyzers cannot open the rules", FileMode)
+	}
+	// Nothing here should be writable by anyone but the fetcher.
+	if DirMode&0o022 != 0 || FileMode&0o022 != 0 {
+		t.Errorf("content is group- or world-writable (dir %#o, file %#o); only the fetcher should write it", DirMode, FileMode)
+	}
+}

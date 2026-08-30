@@ -191,7 +191,7 @@ type suricataUpdateFetcher struct{ feedURL string }
 
 func (f *suricataUpdateFetcher) Fetch(ctx context.Context, dir string) (content.Layer, error) {
 	staging := dir + ".fetch"
-	if err := os.MkdirAll(staging, 0o750); err != nil {
+	if err := os.MkdirAll(staging, content.DirMode); err != nil {
 		return content.Layer{}, sanitize.Errorf("creating fetch directory: %v", err)
 	}
 	defer func() { _ = os.RemoveAll(staging) }()
@@ -245,7 +245,7 @@ type orasFetcher struct{ ref content.Reference }
 
 func (f *orasFetcher) Fetch(ctx context.Context, dir string) (content.Layer, error) {
 	staging := dir + ".custom"
-	if err := os.MkdirAll(staging, 0o750); err != nil {
+	if err := os.MkdirAll(staging, content.DirMode); err != nil {
 		return content.Layer{}, sanitize.Errorf("creating custom content directory: %v", err)
 	}
 	defer func() { _ = os.RemoveAll(staging) }()
