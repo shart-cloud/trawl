@@ -50,7 +50,9 @@ RUN curl -fsSL -o suricata.tar.gz \
 # and loads the ruleset with no classifications attached, so any alert that
 # fired would reach the observation record stripped of its severity. They are
 # installed explicitly rather than by make install-conf, which would also drop
-# an upstream suricata.yaml over Trawl's.
+# an upstream suricata.yaml over Trawl's. Suricata 8 ships no
+# etc/threshold.config, so an empty one is written rather than installed:
+# absent, it produces a warning on every start that says nothing useful.
 RUN ./configure \
       --prefix=/usr \
       --sysconfdir=/etc \
@@ -62,7 +64,8 @@ RUN ./configure \
  && make DESTDIR=/rootfs install \
  && install -Dm644 etc/classification.config /rootfs/etc/suricata/classification.config \
  && install -Dm644 etc/reference.config /rootfs/etc/suricata/reference.config \
- && install -Dm644 etc/threshold.config /rootfs/etc/suricata/threshold.config
+ && install -d /rootfs/etc/suricata \
+ && printf '%s\n' '# No thresholds or suppressions are configured.' '# Suricata warns on every start if this file is absent.' > /rootfs/etc/suricata/threshold.config
 
 FROM ${BASE_IMAGE}
 
