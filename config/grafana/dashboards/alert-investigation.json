@@ -1,0 +1,170 @@
+{
+  "uid": "trawl-alert-investigation",
+  "title": "Trawl Alert Investigation",
+  "description": "Pivot from a detection to the records describing the same flow. Exact and approximate matches are shown separately and must not be read as equivalent.",
+  "tags": [
+    "trawl"
+  ],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Loki",
+        "type": "datasource",
+        "query": "loki",
+        "current": {},
+        "options": []
+      },
+      {
+        "name": "cluster",
+        "label": "Cluster",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "${datasource}"
+        },
+        "query": {
+          "label": "cluster",
+          "stream": "{service_name=\"trawl-observation\"}",
+          "type": 1
+        },
+        "refresh": 1,
+        "current": {},
+        "options": []
+      },
+      {
+        "name": "community_id",
+        "label": "Community ID",
+        "type": "textbox",
+        "current": {},
+        "options": []
+      },
+      {
+        "name": "source_ip",
+        "label": "Source IP",
+        "type": "textbox",
+        "current": {},
+        "options": []
+      },
+      {
+        "name": "destination_ip",
+        "label": "Destination IP",
+        "type": "textbox",
+        "current": {},
+        "options": []
+      },
+      {
+        "name": "protocol",
+        "label": "Protocol",
+        "type": "textbox",
+        "current": {},
+        "options": []
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "How to read this dashboard",
+      "gridPos": {
+        "h": 4,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**Exact match** means both analyzers computed the same Community ID from the same packets. It is evidence that these records describe one flow.\n\n**Approximate match** means the endpoints, protocol and time align but no Community ID was available. It can include a different connection that reused the same tuple inside the window. Do not treat an approximate match as confirmation."
+      }
+    },
+    {
+      "id": 2,
+      "title": "Detections",
+      "type": "logs",
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 4
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service_name=\"trawl-observation\", cluster=\"$cluster\", observation_type=\"signature\"}",
+          "queryType": "range",
+          "datasource": {
+            "type": "loki",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "description": "Signature detections in range. Start a pivot by copying a Community ID from a record."
+    },
+    {
+      "id": 3,
+      "title": "EXACT match — same Community ID",
+      "type": "logs",
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 14
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service_name=\"trawl-observation\", cluster=\"$cluster\"} | community_id = \"$community_id\"",
+          "queryType": "range",
+          "datasource": {
+            "type": "loki",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "description": "Every record sharing this Community ID. Both analyzers derived it independently from the same packets, so this is a confirmed pairing."
+    },
+    {
+      "id": 4,
+      "title": "APPROXIMATE match — endpoints and time only",
+      "type": "logs",
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 14
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service_name=\"trawl-observation\", cluster=\"$cluster\"} | protocol = \"$protocol\" | (source_ip = \"$source_ip\" and destination_ip = \"$destination_ip\") or (source_ip = \"$destination_ip\" and destination_ip = \"$source_ip\")",
+          "queryType": "range",
+          "datasource": {
+            "type": "loki",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "description": "Records matching by endpoint pair and protocol, in either direction. No Community ID confirmed these. A different connection reusing the same tuple within the window will appear here."
+    }
+  ]
+}

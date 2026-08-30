@@ -1,0 +1,172 @@
+# Reviewed LogQL templates for Trawl's investigation views.
+#
+# Every query filters on the four indexed labels first and only then on
+# structured metadata. That order matters: Loki selects streams by label before
+# it reads anything, so a query that starts from a metadata predicate scans
+# every stream in the range. On a homelab that is slow; on a busy cluster it is
+# an outage for whoever else is using Loki.
+#
+# $__range, $tap, $node and similar are Grafana variables. Variables are always
+# used as structured-metadata predicates, never interpolated into the stream
+# selector, so a variable value cannot widen the label set a query touches.
+
+# --- Overview ---------------------------------------------------------------
+
+# observation_volume: records per source, for the overview's traffic panel.
+sum by (source_kind) (
+  count_over_time({service_name="trawl-observation", cluster="$cluster"}[$__interval])
+)
+
+# signature_severity: detections by severity. Severity is structured metadata,
+# so this filters after stream selection rather than multiplying streams.
+sum by (severity) (
+  count_over_time(
+    {service_name="trawl-observation", cluster="$cluster", observation_type="signature"}
+      | severity != ""
+    [$__interval]
+  )
+)
+
+# top_signatures: the noisiest rules in range. Presented as counts of
+# observations, never as incident counts - one incident can produce hundreds of
+# records, and labelling these "incidents" would inflate every number an
+# operator reports upward.
+topk(10,
+  sum by (rule_id, category) (
+    count_over_time(
+      {service_name="trawl-observation", cluster="$cluster", observation_type="signature"}[$__range]
+    )
+  )
+)
+
+# cluster_flow_verdicts: allowed versus denied cluster traffic.
+sum by (verdict) (
+  count_over_time(
+    {service_name="trawl-observation", cluster="$cluster", source_kind="Hubble"}
+      | json verdict="details.cluster_flow.verdict"
+    [$__interval]
+  )
+)
+
+# denied_flows_by_reason: what is being blocked and why.
+topk(10,
+  sum by (drop_reason) (
+    count_over_time(
+      {service_name="trawl-observation", cluster="$cluster", source_kind="Hubble"}
+        | json verdict="details.cluster_flow.verdict", drop_reason="details.cluster_flow.drop_reason"
+        | verdict = "DROPPED"
+      [$__range]
+    )
+  )
+)
+
+# suspected_duplicates: how much of the observation volume is suspected
+# duplication. Displayed alongside volume so an operator reading a spike can
+# tell a traffic increase from a mirror duplicating packets.
+sum by (target_node) (
+  count_over_time(
+    {service_name="trawl-observation", cluster="$cluster"}
+      | duplication = "Suspected"
+    [$__interval]
+  )
+)
+
+# rejected_records: malformed and unsupported analyzer records (FR-016). A
+# non-zero rate here means evidence is being lost, so it belongs on the
+# overview rather than buried in a debug view.
+sum by (source_kind) (
+  count_over_time(
+    {service_name="trawl-observation", cluster="$cluster"} |= "rejected"
+    [$__interval]
+  )
+)
+
+# --- Alert investigation ----------------------------------------------------
+
+# signature_detail: one detection with its full record.
+{service_name="trawl-observation", cluster="$cluster", observation_type="signature"}
+  | rule_id = "$rule_id"
+  | tap_uid = "$tap_uid"
+
+# exact_pivot: every record sharing a Community ID.
+#
+# This is the SC-005 path: one query, no tuple reconstruction, and the result is
+# exact because both analyzers derived the ID from the same packets.
+{service_name="trawl-observation", cluster="$cluster"}
+  | community_id = "$community_id"
+
+# approximate_pivot: correlation when no Community ID is available.
+#
+# Endpoints are matched in both directions because the analyzers disagree about
+# which side originated a flow. Results from this query must be labelled
+# approximate in the UI - they can include a different connection that reused
+# the same tuple within the window (FR-015).
+{service_name="trawl-observation", cluster="$cluster"}
+  | protocol = "$protocol"
+  | (source_ip = "$source_ip" and destination_ip = "$destination_ip")
+    or (source_ip = "$destination_ip" and destination_ip = "$source_ip")
+
+# flow_timeline: everything Trawl saw for one flow, ordered by event time.
+{service_name="trawl-observation", cluster="$cluster"}
+  | community_id = "$community_id" or zeek_uid = "$zeek_uid"
+
+# --- Protocol analysis ------------------------------------------------------
+
+# dns_queries: DNS activity, for the SEC503-style protocol view.
+{service_name="trawl-observation", cluster="$cluster", observation_type="dns"}
+  | json query="details.dns.query", rcode="details.dns.rcode"
+
+# http_requests: HTTP metadata. The stored record carries the path only; query
+# strings are stripped at the sensor because they routinely carry session
+# tokens, so no query here can recover one.
+{service_name="trawl-observation", cluster="$cluster", observation_type="http"}
+  | json method="details.http.method", host="details.http.host", uri_path="details.http.uri_path", status="details.http.status_code"
+
+# tls_handshakes: TLS metadata including JA3, for fingerprinting clients.
+{service_name="trawl-observation", cluster="$cluster", observation_type="tls"}
+  | json server_name="details.tls.server_name", version="details.tls.version", ja3="details.tls.ja3"
+
+# certificates: observed X.509 certificates and their validation status.
+{service_name="trawl-observation", cluster="$cluster", observation_type="certificate"}
+  | json subject="details.certificate.subject", issuer="details.certificate.issuer", validation="details.certificate.validation_status"
+
+# file_transfers: file metadata and hashes. Content is never stored, so this
+# supports hash lookup rather than extraction.
+{service_name="trawl-observation", cluster="$cluster", observation_type="file"}
+  | json mime="details.file.mime_type", sha256="details.file.sha256", size="details.file.size_bytes"
+
+# notices_and_weird: Zeek's own anomaly reporting.
+{service_name="trawl-observation", cluster="$cluster"}
+  | observation_type =~ "notice|weird"
+
+# connections: connection summaries, including Zeek's missed_bytes, which is the
+# analyzer admitting its own view was incomplete.
+{service_name="trawl-observation", cluster="$cluster", observation_type="connection"}
+  | json service="details.connection.service", state="details.connection.state", missed="details.connection.missed_bytes"
+
+# --- Tap health -------------------------------------------------------------
+
+# observations_per_tap: which taps are producing evidence. A tap that has gone
+# quiet looks identical to a quiet network here, which is why this panel is read
+# alongside NetworkTap status rather than instead of it.
+sum by (tap_name) (
+  count_over_time({service_name="trawl-observation", cluster="$cluster"}[$__interval])
+)
+
+# --- Audit ------------------------------------------------------------------
+
+# audit_actions: security-sensitive actions by decision.
+sum by (action, decision) (
+  count_over_time({service_name="trawl-audit", cluster="$cluster"}[$__interval])
+)
+
+# audit_denials: refused actions, which is where an operator looks first.
+{service_name="trawl-audit", cluster="$cluster", decision="denied"}
+
+# audit_by_stable_key: one action's records.
+#
+# Replay deliberately re-delivers around its cursor, so duplicate copies are
+# expected. They share a stable_key and are collapsed here; the object ledger,
+# not Loki, remains authoritative.
+{service_name="trawl-audit", cluster="$cluster"}
+  | stable_key = "$stable_key"

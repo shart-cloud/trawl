@@ -1,0 +1,233 @@
+{
+  "uid": "trawl-protocol-analysis",
+  "title": "Trawl Protocol Analysis",
+  "description": "Connection, DNS, HTTP, TLS, certificate, file, notice and weird records.",
+  "tags": [
+    "trawl"
+  ],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Loki",
+        "type": "datasource",
+        "query": "loki",
+        "current": {},
+        "options": []
+      },
+      {
+        "name": "cluster",
+        "label": "Cluster",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "${datasource}"
+        },
+        "query": {
+          "label": "cluster",
+          "stream": "{service_name=\"trawl-observation\"}",
+          "type": 1
+        },
+        "refresh": 1,
+        "current": {},
+        "options": []
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Connections",
+      "type": "logs",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service_name=\"trawl-observation\", cluster=\"$cluster\", observation_type=\"connection\"} | json service=\"details.connection.service\", state=\"details.connection.state\", missed=\"details.connection.missed_bytes\"",
+          "queryType": "range",
+          "datasource": {
+            "type": "loki",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "description": "Connection summaries. missed_bytes is Zeek reporting that its own view was incomplete."
+    },
+    {
+      "id": 2,
+      "title": "DNS",
+      "type": "logs",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service_name=\"trawl-observation\", cluster=\"$cluster\", observation_type=\"dns\"} | json query=\"details.dns.query\", rcode=\"details.dns.rcode\"",
+          "queryType": "range",
+          "datasource": {
+            "type": "loki",
+            "uid": "${datasource}"
+          }
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "HTTP",
+      "type": "logs",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 9
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service_name=\"trawl-observation\", cluster=\"$cluster\", observation_type=\"http\"} | json method=\"details.http.method\", host=\"details.http.host\", uri_path=\"details.http.uri_path\", status=\"details.http.status_code\"",
+          "queryType": "range",
+          "datasource": {
+            "type": "loki",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "description": "Path only. Query strings are stripped at the sensor because they routinely carry session tokens and API keys, so no query here can recover one."
+    },
+    {
+      "id": 4,
+      "title": "TLS",
+      "type": "logs",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 9
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service_name=\"trawl-observation\", cluster=\"$cluster\", observation_type=\"tls\"} | json server_name=\"details.tls.server_name\", version=\"details.tls.version\", ja3=\"details.tls.ja3\"",
+          "queryType": "range",
+          "datasource": {
+            "type": "loki",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "description": "Handshake metadata including JA3 for client fingerprinting."
+    },
+    {
+      "id": 5,
+      "title": "Certificates",
+      "type": "logs",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 18
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service_name=\"trawl-observation\", cluster=\"$cluster\", observation_type=\"certificate\"} | json subject=\"details.certificate.subject\", issuer=\"details.certificate.issuer\", validation=\"details.certificate.validation_status\"",
+          "queryType": "range",
+          "datasource": {
+            "type": "loki",
+            "uid": "${datasource}"
+          }
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "File transfers",
+      "type": "logs",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 18
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service_name=\"trawl-observation\", cluster=\"$cluster\", observation_type=\"file\"} | json mime=\"details.file.mime_type\", sha256=\"details.file.sha256\", size=\"details.file.size_bytes\"",
+          "queryType": "range",
+          "datasource": {
+            "type": "loki",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "description": "Hashes and metadata. File content is never stored, so this supports lookup rather than extraction."
+    },
+    {
+      "id": 7,
+      "title": "Notices and protocol anomalies",
+      "type": "logs",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 27
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service_name=\"trawl-observation\", cluster=\"$cluster\"} | observation_type =~ \"notice|weird\"",
+          "queryType": "range",
+          "datasource": {
+            "type": "loki",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "description": "Zeek's own anomaly reporting."
+    }
+  ]
+}

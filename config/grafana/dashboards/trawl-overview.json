@@ -1,0 +1,241 @@
+{
+  "uid": "trawl-overview",
+  "title": "Trawl Overview",
+  "description": "Observation volume, detections, cluster verdicts and tap health. Counts are observations, not incidents: one incident can produce hundreds of records.",
+  "tags": [
+    "trawl"
+  ],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "1m",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Loki",
+        "type": "datasource",
+        "query": "loki",
+        "current": {},
+        "options": []
+      },
+      {
+        "name": "cluster",
+        "label": "Cluster",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "${datasource}"
+        },
+        "query": {
+          "label": "cluster",
+          "stream": "{service_name=\"trawl-observation\"}",
+          "type": 1
+        },
+        "refresh": 1,
+        "current": {},
+        "options": []
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Observation volume by source",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (source_kind) (count_over_time({service_name=\"trawl-observation\", cluster=\"$cluster\"}[$__interval]))",
+          "queryType": "range",
+          "datasource": {
+            "type": "loki",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "{{source_kind}}"
+        }
+      ],
+      "description": "Records reaching Loki per analyzer. A drop here with healthy taps means the ingestion path, not the network, went quiet."
+    },
+    {
+      "id": 2,
+      "title": "Detections by severity",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (severity) (count_over_time({service_name=\"trawl-observation\", cluster=\"$cluster\", observation_type=\"signature\"} | severity != \"\" [$__interval]))",
+          "queryType": "range",
+          "datasource": {
+            "type": "loki",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "severity {{severity}}"
+        }
+      ],
+      "description": "Signature detections. These are observation counts, not incident counts."
+    },
+    {
+      "id": 3,
+      "title": "Top signatures",
+      "type": "table",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "topk(10, sum by (rule_id, category) (count_over_time({service_name=\"trawl-observation\", cluster=\"$cluster\", observation_type=\"signature\"}[$__range])))",
+          "queryType": "instant",
+          "datasource": {
+            "type": "loki",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "description": "Noisiest rules in range. A rule dominating this table is usually tuning work, not an incident."
+    },
+    {
+      "id": 4,
+      "title": "Cluster flow verdicts",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (verdict) (count_over_time({service_name=\"trawl-observation\", cluster=\"$cluster\", source_kind=\"Hubble\"} | json verdict=\"details.cluster_flow.verdict\" [$__interval]))",
+          "queryType": "range",
+          "datasource": {
+            "type": "loki",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "{{verdict}}"
+        }
+      ],
+      "description": "Allowed versus denied traffic as the cluster itself judged it."
+    },
+    {
+      "id": 5,
+      "title": "Denied flows by reason",
+      "type": "table",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 16
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "topk(10, sum by (drop_reason) (count_over_time({service_name=\"trawl-observation\", cluster=\"$cluster\", source_kind=\"Hubble\"} | json verdict=\"details.cluster_flow.verdict\", drop_reason=\"details.cluster_flow.drop_reason\" | verdict = \"DROPPED\" [$__range])))",
+          "queryType": "instant",
+          "datasource": {
+            "type": "loki",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "description": "What is being blocked and why. This is the input to denied-flow capture policies."
+    },
+    {
+      "id": 6,
+      "title": "Suspected duplicate observations",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 16
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (target_node) (count_over_time({service_name=\"trawl-observation\", cluster=\"$cluster\"} | duplication = \"Suspected\" [$__interval]))",
+          "queryType": "range",
+          "datasource": {
+            "type": "loki",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "{{target_node}}"
+        }
+      ],
+      "description": "Mirrored and overlay traffic legitimately carries the same packet twice. Read alongside volume: a spike in both usually means duplication, not more traffic. Records are marked, never dropped."
+    },
+    {
+      "id": 7,
+      "title": "Observations per tap",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 16
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (tap_name) (count_over_time({service_name=\"trawl-observation\", cluster=\"$cluster\"}[$__interval]))",
+          "queryType": "range",
+          "datasource": {
+            "type": "loki",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "{{tap_name}}"
+        }
+      ],
+      "description": "A tap that has gone quiet looks identical to a quiet network here. Read this with NetworkTap status, which reports whether the sensor is actually healthy."
+    }
+  ]
+}
