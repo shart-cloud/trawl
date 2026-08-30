@@ -299,3 +299,44 @@ func TestZeekTimestampConversion(t *testing.T) {
 		t.Errorf("event_time = %v, want ~%v", obs.EventTime, want)
 	}
 }
+
+// A line captured from Zeek 8.0.10 running Trawl's own configuration on a node
+// interface, taken verbatim from conn.log. The unit tests around it all passed
+// while every record the deployed sensor read was rejected: the normalizer
+// produced a correct observation and Validate refused it, because source.version
+// is required with minLength 1 and the Version field was never set by the
+// caller. The tailer counted it malformed, the sensor stayed ready, and the
+// symptom was an interface that looked like it carried no traffic.
+func TestRealZeekConnLinePassesTheFullAcceptPath(t *testing.T) {
+	const line = `{"ts":1788116709.963403,"uid":"CGUv4r2as4kLerjD13","id.orig_h":"192.168.0.6",` +
+		`"id.orig_p":50264,"id.resp_h":"185.199.108.154","id.resp_p":443,"proto":"tcp",` +
+		`"service":"ssl","duration":0.6301510334014893,"orig_bytes":3203,"resp_bytes":0,` +
+		`"conn_state":"S0","local_orig":true,"local_resp":false,"missed_bytes":0,` +
+		`"history":"SAD","orig_pkts":283,"orig_ip_bytes":17963,"resp_pkts":0,` +
+		`"resp_ip_bytes":0,"ip_proto":6,"community_id":"1:KKM1GXJNfDGxIwFg9L4zVHxF4TU="}`
+
+	n := &ZeekNormalizer{
+		Tap:     &Tap{Namespace: "trawl-system", Name: "node-eno1", UID: "f1bb32c4-eecb-4a55-bda7-ac7928b9d8ce"},
+		Target:  Target{Node: "talos-node", Interface: "eno1"},
+		Version: "zeek version 8.0.10",
+	}
+
+	obs, err := n.Normalize(ZeekConn, []byte(line))
+	if err != nil {
+		t.Fatalf("normalizing a real conn.log line: %v", err)
+	}
+	if err := Normalize(obs); err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+	// This is the step that rejected every record on the cluster.
+	if err := Validate(obs); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+
+	if obs.Source.Version == "" {
+		t.Error("source.version is empty; the schema requires it and the record would be dropped")
+	}
+	if obs.Flow == nil || obs.Flow.CommunityID == "" {
+		t.Error("no community_id survived normalization; the exact pivot depends on it")
+	}
+}

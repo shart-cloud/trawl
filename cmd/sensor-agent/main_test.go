@@ -1,7 +1,9 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"trawl.cloud/trawl/internal/observation"
@@ -40,5 +42,43 @@ func TestZeekTailersAreBuiltForEveryLog(t *testing.T) {
 		if !paths[want] {
 			t.Errorf("no tailer for %s", want)
 		}
+	}
+}
+
+// An empty version is not a cosmetic gap. observation.schema.json requires
+// source.version with minLength 1, so an empty string fails validation and the
+// tailer counts the record malformed - every observation discarded because of a
+// missing label about the reader, not anything wrong with what was read.
+func TestAnalyzerVersionIsNeverEmpty(t *testing.T) {
+	dir := t.TempDir()
+
+	missing := filepath.Join(dir, "absent", ".version")
+	if got := analyzerVersion(missing); got == "" {
+		t.Error("a missing version file yields an empty version, which fails schema validation")
+	}
+
+	empty := filepath.Join(dir, "empty")
+	if err := os.WriteFile(empty, []byte("   \n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := analyzerVersion(empty); got == "" {
+		t.Error("a blank version file yields an empty version")
+	}
+
+	real := filepath.Join(dir, "real")
+	if err := os.WriteFile(real, []byte("zeek version 8.0.10\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := analyzerVersion(real); got != "zeek version 8.0.10" {
+		t.Errorf("analyzerVersion = %q, want the trimmed banner", got)
+	}
+
+	long := filepath.Join(dir, "long")
+	if err := os.WriteFile(long, []byte(strings.Repeat("v", 200)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The schema caps it at 64.
+	if got := analyzerVersion(long); len(got) > 64 {
+		t.Errorf("analyzerVersion returned %d characters, over the schema maximum", len(got))
 	}
 }

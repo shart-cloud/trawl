@@ -80,4 +80,10 @@ if [ -d "$overlay" ]; then
 	set -- "$@" "$overlay"
 fi
 
+# The observation schema requires source.version, and the only thing in this pod
+# that knows the analyzer's version is the analyzer. Written beside the logs the
+# sensor already reads, from the binary itself rather than from the image tag,
+# so it describes what is actually running.
+zeek --version 2>&1 | head -1 > "$log_dir/zeek/.version" || true
+
 exec zeek "$@"

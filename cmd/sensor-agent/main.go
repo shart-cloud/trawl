@@ -32,6 +32,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -98,7 +99,11 @@ func main() {
 	var wg sync.WaitGroup
 
 	if *suricataLog != "" {
-		n := &observation.SuricataNormalizer{Tap: tap, Target: target}
+		n := &observation.SuricataNormalizer{
+			Tap:     tap,
+			Target:  target,
+			Version: analyzerVersion(filepath.Join(filepath.Dir(*suricataLog), ".version")),
+		}
 		tailer := &sensor.Tailer{
 			Path: *suricataLog,
 			Parse: func(line []byte) (*observation.Observation, error) {
@@ -131,7 +136,11 @@ func main() {
 		// than one stream, and creates each only when it first has something to
 		// record - which is why Tailer waits for a file that is not there yet
 		// instead of treating it as an error.
-		n := &observation.ZeekNormalizer{Tap: tap, Target: target}
+		n := &observation.ZeekNormalizer{
+			Tap:     tap,
+			Target:  target,
+			Version: analyzerVersion(filepath.Join(*zeekLogDir, ".version")),
+		}
 		for _, tailer := range zeekTailers(*zeekLogDir, n, emitter.emit, metrics) {
 			wg.Go(func() {
 				if err := tailer.Run(ctx); err != nil {
@@ -217,6 +226,38 @@ func zeekTailers(
 		})
 	}
 	return out
+}
+
+// analyzerVersion reads the version an analyzer recorded beside its logs.
+//
+// observation.schema.json requires source.version with minLength 1, and the
+// normalizers take it from a field nothing set: every Zeek and Suricata record
+// was produced correctly, failed validation on /source, and was counted as
+// malformed. The sensor stayed ready and emitted nothing while the analyzers
+// worked perfectly.
+//
+// A missing or unreadable file falls back to "unknown" rather than propagating
+// an empty string, because an empty one reproduces exactly that failure - every
+// observation dropped for want of a label about the reader rather than anything
+// wrong with what was read. "unknown" is what the Hubble path already records
+// when the relay does not report a version.
+func analyzerVersion(path string) string {
+	const unknown = "unknown"
+
+	raw, err := os.ReadFile(path) //nolint:gosec // G304: path is built from the sensor's own flags.
+	if err != nil {
+		return unknown
+	}
+	v := strings.TrimSpace(string(raw))
+	if v == "" {
+		return unknown
+	}
+	// The schema caps this at 64 characters, and a version banner can be
+	// longer than the version.
+	if len(v) > 64 {
+		v = v[:64]
+	}
+	return v
 }
 
 // emitter serializes observations to stdout.

@@ -56,6 +56,12 @@ mkdir -p "$log_dir/suricata"
 # explicitly, so the cluster-type, tpacket-v3 and checksum-checks settings in
 # suricata.yaml's af-packet block are the ones that apply. With -i, Suricata
 # picks a capture method itself and those settings may not take effect.
+# The observation schema requires source.version, and the only thing in this pod
+# that knows the analyzer's version is the analyzer. Written beside the logs the
+# sensor already reads, from the binary itself rather than from the image tag,
+# so it describes what is actually running.
+suricata -V 2>&1 | head -1 > "$log_dir/suricata/.version" || true
+
 exec suricata \
 	-c /etc/suricata/suricata.yaml \
 	--af-packet="$interface" \
