@@ -837,3 +837,110 @@ func writeSearchabilityEvidence(t *testing.T, sorted []time.Duration,
 	}
 	t.Logf("evidence written to test/e2e/%s", path)
 }
+
+func TestTheManagerServesAuthenticatedMetrics(t *testing.T) {
+	// Carried over from the Kind suite this file replaced. It is the one
+	// assertion that suite made which nothing else covers: the manager's
+	// metrics endpoint requires a bearer token, authorizes it against
+	// trawl-metrics-reader, and then actually serves controller-runtime's
+	// series.
+	//
+	// It is worth more here than it was there. In Kind it proved the scaffold
+	// deployed; against the real cluster it proves the RBAC an operator relies
+	// on to scrape Trawl works as installed, including the ClusterRole the
+	// install bundle ships.
+	in := requireCluster(t)
+
+	binding := "trawl-e2e-metrics-" + in.runID
+	if err := kubectl("create", "clusterrolebinding", binding,
+		"--clusterrole=trawl-metrics-reader",
+		"--serviceaccount=trawl-system:trawl-controller-manager"); err != nil {
+		t.Skipf("cannot grant metrics access (%v); this spec needs RBAC write on the cluster", err)
+	}
+	t.Cleanup(func() {
+		_ = kubectl("delete", "clusterrolebinding", binding, "--ignore-not-found")
+	})
+
+	token, err := kubectlOut("create", "token", "trawl-controller-manager",
+		"-n", "trawl-system", "--duration=10m")
+	if err != nil {
+		t.Fatalf("minting a service account token: %v", err)
+	}
+
+	// Scraped from inside the cluster: the endpoint serves TLS with a
+	// cert-manager certificate whose SANs are the in-cluster service names, so
+	// a port-forwarded request would be testing a name the deployment does not
+	// serve.
+	pod := "trawl-e2e-metrics-" + in.runID
+	script := fmt.Sprintf(
+		`curl -s -o /tmp/m -w %%{http_code} -k -H "Authorization: Bearer %s" `+
+			`https://trawl-controller-manager-metrics-service.trawl-system.svc:8443/metrics; `+
+			`echo; grep -c controller_runtime /tmp/m || true`,
+		strings.TrimSpace(token))
+
+	out, err := runProbePod(pod, script)
+	if err != nil {
+		t.Fatalf("scraping the metrics endpoint: %v (%s)", err, out)
+	}
+
+	lines := strings.Fields(out)
+	if len(lines) < 2 {
+		t.Fatalf("unexpected probe output: %q", out)
+	}
+	if lines[0] != "200" {
+		t.Fatalf("the metrics endpoint answered %s to an authorized request", lines[0])
+	}
+	if lines[1] == "0" {
+		t.Error("the endpoint answered 200 but served no controller_runtime metrics")
+	}
+	t.Logf("metrics: HTTP %s, %s controller_runtime series", lines[0], lines[1])
+}
+
+// kubectl runs a kubectl command, discarding its output.
+func kubectl(args ...string) error {
+	_, err := kubectlOut(args...)
+	return err
+}
+
+// kubectlOut runs a kubectl command and returns its combined output.
+//
+// #nosec G204 -- callers pass constants and this run's identifier; nothing
+// reaches the command line from the environment or from observed traffic.
+func kubectlOut(args ...string) (string, error) {
+	out, err := exec.Command("kubectl", args...).CombinedOutput()
+	return string(out), err
+}
+
+// runProbePod runs one short-lived pod and returns what it printed.
+//
+// The cluster enforces the restricted Pod Security standard, so the security
+// context is spelled out rather than left to the defaults kubectl run would
+// otherwise produce.
+func runProbePod(name, script string) (string, error) {
+	overrides := fmt.Sprintf(`{"spec":{"securityContext":{"runAsNonRoot":true,`+
+		`"runAsUser":65534,"seccompProfile":{"type":"RuntimeDefault"}},`+
+		`"containers":[{"name":"probe","image":%q,`+
+		`"securityContext":{"allowPrivilegeEscalation":false,`+
+		`"capabilities":{"drop":["ALL"]}},"command":["sh","-c",%q]}]}}`,
+		probeImage, script)
+
+	if out, err := kubectlOut("run", name, "-n", "default", "--restart=Never",
+		"--image="+probeImage, "--overrides="+overrides); err != nil {
+		return out, err
+	}
+	defer func() { _ = kubectl("delete", "pod", name, "-n", "default", "--ignore-not-found") }()
+
+	deadline := time.Now().Add(2 * time.Minute)
+	for time.Now().Before(deadline) {
+		phase, _ := kubectlOut("get", "pod", name, "-n", "default",
+			"-o", "jsonpath={.status.phase}")
+		if phase == "Succeeded" || phase == "Failed" {
+			return kubectlOut("logs", name, "-n", "default")
+		}
+		time.Sleep(time.Second)
+	}
+	return "", fmt.Errorf("probe pod %s did not finish within two minutes", name)
+}
+
+// probeImage is pinned like every other image the tests run.
+const probeImage = "docker.io/curlimages/curl:8.11.1"

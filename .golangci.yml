@@ -101,12 +101,6 @@ linters:
           - dupl
           - lll
         path: internal/*
-      # Scaffolded e2e helpers shell out to kubectl with test-controlled
-      # arguments. gosec/noctx stay enabled everywhere that ships in an image.
-      - linters:
-          - gosec
-          - noctx
-        path: test/utils/
       # The integration harness shells out to docker with container IDs and
       # image names it created itself. G204 has no caller input to warn about.
       - linters:
