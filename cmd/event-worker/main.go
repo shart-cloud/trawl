@@ -98,6 +98,15 @@ func main() {
 		}
 		metrics.TriggerSourceConnected.WithLabelValues(telemetry.TriggerSourceHubbleRelay).Set(v)
 	}
+	client.OnReject = func(reason string) {
+		// A record Trawl cannot store is counted, not dropped quietly. Without
+		// this the only evidence of a contract mismatch is that an
+		// investigation returns fewer records than the traffic warrants
+		// (FR-016).
+		metrics.TriggerEventsTotal.
+			WithLabelValues(telemetry.TriggerSourceHubbleRelay, telemetry.RecordMalformed).Inc()
+		fmt.Fprintf(os.Stderr, "event-worker: dropped a flow: %s\n", reason)
+	}
 	client.OnGap = func(reason string) {
 		// A gap is counted, not swallowed. Silently thinner evidence is the
 		// failure an analyst cannot detect (FR-039).

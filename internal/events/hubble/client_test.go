@@ -19,6 +19,8 @@ package hubble
 import (
 	"testing"
 	"time"
+
+	flowpb "github.com/cilium/cilium/api/v1/flow"
 )
 
 func TestWatermarkOnlyMovesForward(t *testing.T) {
@@ -115,5 +117,53 @@ func TestClientRequiresUsableTLSMaterial(t *testing.T) {
 	// a hard failure rather than a fallback to plaintext.
 	if _, err := NewClient(hubbleConfig("hubble-relay:80"), &Normalizer{}); err == nil {
 		t.Fatal("a client was created without usable TLS material")
+	}
+}
+
+func TestTheWorkerValidatesWhatItEmits(t *testing.T) {
+	// The sensor validates every record before emitting it and counts what it
+	// rejects, because Loki enforces no schema: an off-contract record is
+	// stored happily and only discovered when a dashboard query silently
+	// returns nothing (FR-016). The event worker did neither. It normalized a
+	// flow and handed the result straight to the emitter.
+	//
+	// That is how an incomplete verdict enum survived: a quarter of the
+	// cluster_flow records on a live cluster did not satisfy the schema, and
+	// the only symptom was that they were there.
+	var rejected []string
+	c := &Client{
+		normalizer: normalizer(),
+		OnReject:   func(reason string) { rejected = append(rejected, reason) },
+	}
+
+	if obs, ok := c.accept(forwardedFlow()); !ok || obs == nil {
+		t.Error("a well-formed forwarded flow was not accepted")
+	}
+	if len(rejected) != 0 {
+		t.Errorf("a well-formed flow was counted as rejected: %v", rejected)
+	}
+
+	// A verdict from a Cilium newer than the one Trawl was built against. The
+	// record is uninterpretable, so it must be counted and dropped rather than
+	// stored where an analyst would read it as evidence.
+	future := forwardedFlow()
+	future.Verdict = flowpb.Verdict(99)
+	if _, ok := c.accept(future); ok {
+		t.Error("a flow carrying a verdict Cilium does not define was accepted")
+	}
+	if len(rejected) != 1 {
+		t.Fatalf("an invalid record produced %d rejections, want 1", len(rejected))
+	}
+
+	// A flow the normalizer cannot parse was already dropped, but silently.
+	// A dropped record that is not counted is indistinguishable from traffic
+	// that never happened.
+	unparseable := forwardedFlow()
+	unparseable.Time = nil
+	if _, ok := c.accept(unparseable); ok {
+		t.Error("a flow with no timestamp was accepted")
+	}
+	if len(rejected) != 2 {
+		t.Errorf("an unparseable flow produced %d total rejections, want 2", len(rejected))
 	}
 }

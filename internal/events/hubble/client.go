@@ -26,6 +26,7 @@ import (
 	"sync"
 	"time"
 
+	flowpb "github.com/cilium/cilium/api/v1/flow"
 	observerpb "github.com/cilium/cilium/api/v1/observer"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -64,6 +65,11 @@ type Client struct {
 	// OnGap is called when the client knows it lost coverage, so the gap is
 	// reported rather than silently absorbed (FR-039).
 	OnGap func(reason string)
+
+	// OnReject is called when a flow produced no record Trawl can store, so a
+	// dropped record is counted rather than being indistinguishable from
+	// traffic that never happened (FR-016).
+	OnReject func(reason string)
 
 	// OnConnectionChange reports connection state for
 	// trawl_trigger_source_connected.
@@ -211,9 +217,8 @@ func (c *Client) streamOnce(ctx context.Context, handle func(context.Context, *P
 			continue
 		}
 
-		obs, err := c.normalizer.Normalize(flow)
-		if err != nil {
-			// One unparseable flow must not end the stream.
+		obs, ok := c.accept(flow)
+		if !ok {
 			continue
 		}
 
@@ -224,6 +229,47 @@ func (c *Client) streamOnce(ctx context.Context, handle func(context.Context, *P
 		c.advanceWatermark(obs.EventTime)
 	}
 }
+
+// accept converts one flow into a record the worker may emit.
+//
+// The validation here is the same discipline the sensor's tailer applies, and
+// for the same reason: Loki enforces no schema, so a record that does not
+// satisfy the contract is stored without complaint and only discovered when a
+// dashboard query silently returns nothing. Validating at the worker turns that
+// into a counted rejection.
+//
+// One bad flow must never end the stream, so both failures drop the record and
+// continue - but neither drops it silently.
+func (c *Client) accept(flow *flowpb.Flow) (*observation.Observation, bool) {
+	obs, err := c.normalizer.Normalize(flow)
+	if err != nil {
+		c.reportReject(RejectUnparseable)
+		return nil, false
+	}
+	if err := observation.Validate(obs); err != nil {
+		// The error quotes the offending instance, which for a flow includes
+		// addresses. Only the reason is reported.
+		c.reportReject(RejectSchema)
+		return nil, false
+	}
+	return obs, true
+}
+
+func (c *Client) reportReject(reason string) {
+	if c.OnReject != nil {
+		c.OnReject(reason)
+	}
+}
+
+// Reasons a flow produced no storable record.
+const (
+	// RejectUnparseable means the flow could not be normalized at all.
+	RejectUnparseable = "unparseable"
+
+	// RejectSchema means the record did not satisfy the observation contract -
+	// most likely a field whose value set has widened in a newer Cilium.
+	RejectSchema = "schema"
+)
 
 // resumePoint returns where a reconnecting stream should restart.
 func (c *Client) resumePoint() time.Time {

@@ -44,12 +44,26 @@ const (
 	protoSCTP   = "sctp"
 )
 
-// Verdicts Trawl recognises.
+// Verdicts Cilium reports, named exactly as the flow API names them.
+//
+// The verdict is copied verbatim rather than mapped: these describe what the
+// datapath did, and translating one into another would misdescribe it. The
+// names come from flowpb.Verdict_name, which is also where the schema's enum
+// and TestEveryVerdictCiliumReportsSatisfiesTheSchema derive theirs - so a
+// verdict added by a future Cilium fails a test rather than a production query.
 const (
-	VerdictForwarded = "FORWARDED"
-	VerdictDropped   = "DROPPED"
-	VerdictError     = "ERROR"
-	VerdictAudit     = "AUDIT"
+	VerdictForwarded  = "FORWARDED"
+	VerdictDropped    = "DROPPED"
+	VerdictError      = "ERROR"
+	VerdictAudit      = "AUDIT"
+	VerdictRedirected = "REDIRECTED"
+	VerdictTraced     = "TRACED"
+	VerdictTranslated = "TRANSLATED"
+
+	// VerdictUnknown is Cilium's zero value. It is spelled VERDICT_UNKNOWN,
+	// not UNKNOWN; the schema enumerated the latter, which no flow could ever
+	// carry.
+	VerdictUnknown = "VERDICT_UNKNOWN"
 )
 
 // Normalizer converts Hubble flows into Trawl observations.

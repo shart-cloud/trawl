@@ -310,3 +310,58 @@ func TestClusterFlowCorrelatesByAttributeNotExactly(t *testing.T) {
 		t.Errorf("match = %q, want %q", got, observation.MatchAttributeTime)
 	}
 }
+
+func TestEveryVerdictCiliumReportsSatisfiesTheSchema(t *testing.T) {
+	// The verdict is copied straight from the flow API, so the set Trawl must
+	// accept is the set Cilium can produce - not a shorter list that happens to
+	// cover the common cases.
+	//
+	// It was a shorter list. The schema enumerated FORWARDED, DROPPED, ERROR,
+	// AUDIT and UNKNOWN; Cilium 1.18 also reports REDIRECTED, TRACED and
+	// TRANSLATED, and names its zero value VERDICT_UNKNOWN rather than UNKNOWN.
+	// On a live cluster roughly a quarter of cluster_flow records were
+	// off-contract, and nothing said so, because the event worker did not
+	// validate what it emitted and Loki enforces nothing.
+	//
+	// Deriving the cases from flowpb.Verdict_name is the point: when Cilium
+	// adds a verdict, this fails and someone decides what it means, rather than
+	// the records quietly failing validation in production.
+	for value, name := range flowpb.Verdict_name {
+		flow := forwardedFlow()
+		flow.Verdict = flowpb.Verdict(value)
+
+		obs, err := normalizer().Normalize(flow)
+		if err != nil {
+			t.Errorf("normalizing a %s flow: %v", name, err)
+			continue
+		}
+		if obs.Details.ClusterFlow == nil {
+			t.Errorf("a %s flow produced no cluster_flow details", name)
+			continue
+		}
+		if obs.Details.ClusterFlow.Verdict != name {
+			t.Errorf("a %s flow recorded verdict %q", name, obs.Details.ClusterFlow.Verdict)
+		}
+		if err := observation.Validate(obs); err != nil {
+			t.Errorf("a %s flow produces a record the schema rejects: %v", name, err)
+		}
+	}
+}
+
+func TestAVerdictCiliumDoesNotDefineIsRejected(t *testing.T) {
+	// The complement of the test above. Widening the enum must not become
+	// accepting anything: a verdict from a Cilium newer than the one Trawl was
+	// built against is a record Trawl cannot interpret, and storing it as
+	// though it could would put an uninterpretable value in front of an analyst.
+	flow := forwardedFlow()
+	flow.Verdict = flowpb.Verdict(99)
+
+	obs, err := normalizer().Normalize(flow)
+	if err != nil {
+		return // Rejected at normalization is also a correct answer.
+	}
+	if err := observation.Validate(obs); err == nil {
+		t.Errorf("the schema accepted verdict %q, which Cilium does not define",
+			obs.Details.ClusterFlow.Verdict)
+	}
+}

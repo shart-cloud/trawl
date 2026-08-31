@@ -538,7 +538,8 @@
       "required": ["verdict"],
       "properties": {
         "verdict": {
-          "enum": ["FORWARDED", "DROPPED", "ERROR", "AUDIT", "UNKNOWN"]
+          "description": "The verdict Cilium reported, copied verbatim from the flow API. The set is Cilium's, not Trawl's: narrowing it drops records, and mapping one verdict onto another would misdescribe what the datapath did.",
+          "enum": ["FORWARDED", "DROPPED", "ERROR", "AUDIT", "REDIRECTED", "TRACED", "TRANSLATED", "VERDICT_UNKNOWN"]
         },
         "drop_reason": {"type": "string", "maxLength": 128},
         "direction": {"type": "string", "maxLength": 64},
