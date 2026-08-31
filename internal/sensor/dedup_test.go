@@ -17,6 +17,7 @@ limitations under the License.
 package sensor
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -218,5 +219,41 @@ func TestMarkNeverModifiesTheObservation(t *testing.T) {
 	}
 	if obs.Flow.Source.IP != before.Flow.Source.IP {
 		t.Error("Mark modified the flow")
+	}
+}
+
+// The cache is written by the tailers and read by the status reporter, which
+// publishes from its own goroutine. Sharing one cache across a target's
+// analyzers is what lets duplication reach status at all - duplication is a
+// property of the target, not of one analyzer, which is why StatusReporter has
+// a single Duplicates field - but it means Mark and State run concurrently.
+//
+// Run with -race. Without the lock this fails there rather than here.
+func TestTheCacheSurvivesConcurrentTailersAndStatusReads(t *testing.T) {
+	c := NewDuplicateCache(1024)
+
+	var wg sync.WaitGroup
+	// Two tailers, as a target with both analyzers has.
+	for _, kind := range []observation.SourceKind{observation.SourceZeek, observation.SourceSuricata} {
+		wg.Go(func() {
+			for i := range 500 {
+				at := time.Now().Add(time.Duration(i) * time.Millisecond)
+				obs := flowObs(at, "10.0.0.1", 4444, "10.0.0.2", 443)
+				obs.Source.Kind = kind
+				c.Mark(obs)
+			}
+		})
+	}
+	// The status reporter, reading while they write.
+	wg.Go(func() {
+		for range 500 {
+			_ = c.State()
+			_ = c.Len()
+		}
+	})
+	wg.Wait()
+
+	if got := c.State(); got == "" {
+		t.Error("the cache reported no state after concurrent use")
 	}
 }

@@ -25,6 +25,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	trawlv1alpha1 "trawl.cloud/trawl/api/v1alpha1"
@@ -60,6 +61,14 @@ const (
 // absence of duplicates that was never established would mislead anyone
 // counting observations.
 type DuplicateCache struct {
+	// The tailers write and the status reporter reads, from its own goroutine.
+	// One cache is shared by a target's analyzers, because duplication is a
+	// property of the target - the same packets arriving twice - not of one
+	// analyzer, which is why StatusReporter has a single Duplicates field.
+	// The fingerprint includes the source kind, so sharing cannot make two
+	// analyzers describing one flow look like a duplicate of each other.
+	mu sync.Mutex
+
 	max     int
 	window  time.Duration
 	entries map[string]*list.Element
@@ -94,6 +103,9 @@ func NewDuplicateCache(max int) *DuplicateCache {
 // It returns the duplication state for this record. The observation itself is
 // never modified or withheld.
 func (c *DuplicateCache) Mark(obs *observation.Observation) trawlv1alpha1.DuplicationState {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	fp, ok := fingerprint(obs)
 	if !ok {
 		// Missing fingerprint inputs mean we cannot tell. Saying NotDetected
@@ -149,13 +161,20 @@ func (c *DuplicateCache) Evicted() int64 { return c.evicted }
 func (c *DuplicateCache) Unknown() int64 { return c.unknown }
 
 // Len returns the current cache size.
-func (c *DuplicateCache) Len() int { return c.order.Len() }
+func (c *DuplicateCache) Len() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.order.Len()
+}
 
 // State summarizes the target's duplication state for status reporting.
 //
 // Eviction or unfingerprintable records collapse the answer to Unknown, because
 // once the window has overflowed a NotDetected result no longer means anything.
 func (c *DuplicateCache) State() trawlv1alpha1.DuplicationState {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	switch {
 	case c.suspected > 0:
 		return trawlv1alpha1.DuplicationSuspected
