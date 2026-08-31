@@ -38,10 +38,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -117,6 +118,8 @@ func setupInvestigation() {
 // dies with the test binary.
 func portForwardLoki() (string, error) {
 	const localPort = 31000
+	// #nosec G204 -- every argument is a constant of this file; nothing here
+	// comes from the environment or from evidence.
 	cmd := exec.Command("kubectl", "port-forward", "-n", "monitoring",
 		"svc/loki", fmt.Sprintf("%d:3100", localPort))
 	cmd.Stdout, cmd.Stderr = nil, nil
@@ -155,19 +158,35 @@ func envOr(key, fallback string) string {
 // Loki scan every stream in the range, which on a shared Loki is an outage for
 // whoever else is using it.
 func (in *investigation) selector(extra ...string) string {
-	s := fmt.Sprintf(`{service_name="trawl-observation", cluster=%q`, in.cluster)
+	var b strings.Builder
+	fmt.Fprintf(&b, `{service_name="trawl-observation", cluster=%q`, in.cluster)
 	for _, e := range extra {
-		s += ", " + e
+		b.WriteString(", " + e)
 	}
-	return s + "}"
+	b.WriteString("}")
+	return b.String()
 }
 
-// fixtureFilter narrows a query to the records this run pushed.
-func (in *investigation) fixtureFilter() string {
-	return fmt.Sprintf(` | tap_name = %q`, in.tapName())
+// fixtureFilter narrows a query to the records this spec pushed.
+func (in *investigation) fixtureFilter(t *testing.T) string {
+	return fmt.Sprintf(` | tap_name = %q`, in.tapName(t))
 }
 
-func (in *investigation) tapName() string { return "e2e-" + in.runID }
+// tapName scopes fixtures to one spec of one run.
+//
+// The run alone is not enough. Every spec in this file pushes into the same
+// shared Loki, so a tap name shared across them would let one spec's fixtures
+// be counted as another's - which is not a hypothetical: it made the subtype
+// counts wrong and made the fallback fixture appear to carry Community IDs it
+// had never been given.
+func (in *investigation) tapName(t *testing.T) string {
+	return "e2e-" + in.runID + "-" + strings.Map(func(r rune) rune {
+		if r == '/' || r == ' ' {
+			return '-'
+		}
+		return r
+	}, t.Name())
+}
 
 // query runs a LogQL query over the recent window and decodes the envelopes.
 func (in *investigation) query(t *testing.T, q string) []map[string]any {
@@ -202,7 +221,7 @@ func (in *investigation) query(t *testing.T, q string) []map[string]any {
 func (in *investigation) pushFixtures(t *testing.T, sessions ...fixtures.Session) []*observation.Observation {
 	t.Helper()
 
-	tap := &observation.Tap{Namespace: "trawl-system", Name: in.tapName(), UID: in.runID}
+	tap := &observation.Tap{Namespace: "trawl-system", Name: in.tapName(t), UID: in.runID}
 	target := observation.Target{Node: "e2e", Interface: "e2e0"}
 	now := func() time.Time { return fixtures.BaseTime.Add(time.Minute) }
 
@@ -242,12 +261,12 @@ func (in *investigation) waitForFixtures(t *testing.T, want int) {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
 	for {
-		if got := len(in.query(t, in.selector()+in.fixtureFilter())); got >= want {
+		if got := len(in.query(t, in.selector()+in.fixtureFilter(t))); got >= want {
 			return
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("only %d of %d pushed records became queryable within 30s",
-				len(in.query(t, in.selector()+in.fixtureFilter())), want)
+				len(in.query(t, in.selector()+in.fixtureFilter(t))), want)
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
@@ -276,7 +295,11 @@ func TestOverviewShowsObservationsAndNothingElse(t *testing.T) {
 	// observation stream would sit in a shared Loki with neither.
 	in := requireCluster(t)
 
-	records := in.query(t, in.selector())
+	// Sampled per source rather than with one query, because a single query
+	// fills its entry limit with whichever source is noisiest - here Hubble, by
+	// two orders of magnitude - and a defect confined to Zeek's records would
+	// never be sampled at all.
+	records := in.liveRecords(t)
 	if len(records) == 0 {
 		t.Fatal("the deployed pipeline has produced no observations in the last 15 minutes; " +
 			"there is no investigation to run")
@@ -314,7 +337,9 @@ func TestOverviewShowsObservationsAndNothingElse(t *testing.T) {
 		}
 	}
 
-	t.Logf("overview: %d observations in the last 15 minutes, all schema-valid", len(records))
+	if invalid == 0 {
+		t.Logf("overview: %d observations in the last 15 minutes, all schema-valid", len(records))
+	}
 }
 
 // payloadShapedKey reports the first key that would carry traffic content.
@@ -325,12 +350,7 @@ func payloadShapedKey(v any) string {
 	}
 	switch t := v.(type) {
 	case map[string]any:
-		keys := make([]string, 0, len(t))
-		for k := range t {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
+		for _, k := range slices.Sorted(maps.Keys(t)) {
 			if forbidden[k] {
 				return k
 			}
@@ -363,7 +383,7 @@ func TestExactPivotReachesTheWholeFlowFromEitherEnd(t *testing.T) {
 	pushed := in.pushFixtures(t, session)
 	in.waitForFixtures(t, len(pushed))
 
-	pivot := in.selector() + in.fixtureFilter() +
+	pivot := in.selector() + in.fixtureFilter(t) +
 		fmt.Sprintf(" | community_id = %q", session.CommunityID)
 
 	records := in.query(t, pivot)
@@ -431,7 +451,7 @@ func TestFallbackPivotWhenNoCommunityIDIsAvailable(t *testing.T) {
 
 	// The exact pivot must find nothing. If it found something, these records
 	// carry a Community ID and the fixture is no longer exercising the fallback.
-	exact := in.query(t, in.selector()+in.fixtureFilter()+` | community_id != ""`)
+	exact := in.query(t, in.selector()+in.fixtureFilter(t)+` | community_id != ""`)
 	if len(exact) != 0 {
 		t.Fatalf("the fallback fixture produced %d records carrying a Community ID; "+
 			"it is no longer testing the fallback", len(exact))
@@ -452,7 +472,7 @@ func TestFallbackPivotWhenNoCommunityIDIsAvailable(t *testing.T) {
 		t.Fatal("the fallback fixture produced no record with endpoints to pivot on")
 	}
 
-	fallback := in.selector() + in.fixtureFilter() +
+	fallback := in.selector() + in.fixtureFilter(t) +
 		fmt.Sprintf(" | source_ip = %q | destination_ip = %q",
 			subject.Flow.Source.IP, subject.Flow.Destination.IP)
 	records := in.query(t, fallback)
@@ -502,14 +522,10 @@ func TestEveryProtocolSubtypeIsPresentAndFilterable(t *testing.T) {
 		t.Fatalf("the fixtures produced only %d subtype(s); this asserts nothing", len(want))
 	}
 
-	types := make([]string, 0, len(want))
-	for k := range want {
-		types = append(types, k)
-	}
-	sort.Strings(types)
+	types := slices.Sorted(maps.Keys(want))
 
 	for _, subtype := range types {
-		q := in.selector(fmt.Sprintf("observation_type=%q", subtype)) + in.fixtureFilter()
+		q := in.selector(fmt.Sprintf("observation_type=%q", subtype)) + in.fixtureFilter(t)
 		got := len(in.query(t, q))
 		if got != want[subtype] {
 			t.Errorf("filtering on observation_type=%q returned %d records, want %d",
@@ -553,7 +569,7 @@ func TestEveryProtocolSubtypeIsPresentAndFilterable(t *testing.T) {
 				obs.ObservationType, got)
 		}
 	}
-	t.Logf("flowless records: %d of %d reported no match, as the evidence requires",
+	t.Logf("flowless records: %d of %d carry no flow and correctly report no match",
 		flowless, flowless+withFlow)
 }
 
@@ -618,6 +634,23 @@ func TestObservationsBecomeSearchableWithinThirtySeconds(t *testing.T) {
 	// the true figure is lower.
 	in := requireCluster(t)
 
+	// Traffic of our own, so the measurement does not depend on the cluster
+	// happening to be busy. A DNS query for a name that cannot resolve is the
+	// cheapest observable thing to produce and leaves nothing behind.
+	//
+	// It runs in the background because generating it means scheduling a pod
+	// and waiting for an image, which takes tens of seconds. Doing that between
+	// the warm-up and the first poll would stall polling, and every record that
+	// arrived during the stall would be credited with the whole of it - which
+	// is exactly the shape of a pipeline problem, and would be a fiction.
+	marker := "trawle2e" + in.runID
+	trafficDone := make(chan struct{})
+	go func() {
+		defer close(trafficDone)
+		generateTraffic(t, in.runID, marker)
+	}()
+	defer func() { <-trafficDone }()
+
 	// Warm-up. Everything already in Loki when polling starts would be credited
 	// with the latency to the first poll, which reflects when this test began
 	// rather than when the record became searchable.
@@ -626,11 +659,6 @@ func TestObservationsBecomeSearchableWithinThirtySeconds(t *testing.T) {
 		warm[recordString(doc, "id")] = true
 	}
 	t.Logf("warm-up: %d records already searchable, excluded from the measurement", len(warm))
-
-	// Traffic of our own, so the measurement does not depend on the cluster
-	// happening to be busy. A DNS query for a name that cannot resolve is the
-	// cheapest observable thing to produce and leaves nothing behind.
-	marker := generateTraffic(t, in.runID)
 
 	type sample struct {
 		latency time.Duration
@@ -679,7 +707,7 @@ func TestObservationsBecomeSearchableWithinThirtySeconds(t *testing.T) {
 			within++
 		}
 	}
-	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
+	slices.Sort(latencies)
 
 	proportion := float64(within) / float64(len(latencies))
 	p95 := percentile(latencies, 0.95)
@@ -709,11 +737,12 @@ func TestObservationsBecomeSearchableWithinThirtySeconds(t *testing.T) {
 // liveRecords returns the deployed pipeline's recent output.
 func (in *investigation) liveRecords(t *testing.T) []map[string]any {
 	t.Helper()
-	var all []map[string]any
+	kinds := []string{"Zeek", "Suricata", "Hubble"}
+	all := make([]map[string]any, 0, len(kinds)*256)
 	// One query per source kind. A single query would fill its entry limit with
 	// whichever source is noisiest - on this cluster, Hubble by two orders of
 	// magnitude - and the quieter sources would never be sampled at all.
-	for _, kind := range []string{"Zeek", "Suricata", "Hubble"} {
+	for _, kind := range kinds {
 		all = append(all, in.query(t, in.selector(fmt.Sprintf("source_kind=%q", kind)))...)
 	}
 	return all
@@ -736,9 +765,7 @@ func percentile(sorted []time.Duration, q float64) time.Duration {
 // it safe to emit and unambiguous to find: the marker appears in the query name
 // and nowhere else. The pod runs under the restricted Pod Security standard
 // because the cluster enforces it.
-func generateTraffic(t *testing.T, runID string) string {
-	t.Helper()
-	marker := "trawle2e" + runID
+func generateTraffic(t *testing.T, runID, marker string) {
 	name := marker + ".trawl-e2e.invalid"
 	overrides := fmt.Sprintf(`{"spec":{"securityContext":{"runAsNonRoot":true,"runAsUser":65534,`+
 		`"seccompProfile":{"type":"RuntimeDefault"}},"containers":[{"name":"probe",`+
@@ -746,6 +773,9 @@ func generateTraffic(t *testing.T, runID string) string {
 		`"capabilities":{"drop":["ALL"]}},"command":["sh","-c","nslookup %s || true"]}]}}`,
 		trafficImage, name)
 
+	// #nosec G204 -- runID is this process's start time in nanoseconds and the
+	// image is a constant; no argument derives from the environment or from
+	// observed traffic.
 	cmd := exec.Command("kubectl", "run", "trawl-e2e-probe-"+runID,
 		"-n", "default", "--restart=Never", "--rm", "--attach=true", "--quiet",
 		"--image="+trafficImage, "--overrides="+overrides)
@@ -755,7 +785,6 @@ func generateTraffic(t *testing.T, runID string) string {
 		t.Logf("could not generate traffic (%v); measuring ambient observations only: %s",
 			err, strings.TrimSpace(string(out)))
 	}
-	return marker
 }
 
 // trafficImage is pinned like every other image the tests run.
@@ -771,7 +800,7 @@ func writeSearchabilityEvidence(t *testing.T, sorted []time.Duration,
 	t.Helper()
 
 	dir := filepath.Join("results")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Errorf("creating results directory: %v", err)
 		return
 	}
@@ -787,14 +816,9 @@ func writeSearchabilityEvidence(t *testing.T, sorted []time.Duration,
 	fmt.Fprintf(&b, "| source / subtype | n | p50 | p95 | max |\n")
 	fmt.Fprintf(&b, "|---|---:|---:|---:|---:|\n")
 
-	kinds := make([]string, 0, len(byKind))
-	for k := range byKind {
-		kinds = append(kinds, k)
-	}
-	sort.Strings(kinds)
-	for _, k := range kinds {
+	for _, k := range slices.Sorted(maps.Keys(byKind)) {
 		v := byKind[k]
-		sort.Slice(v, func(i, j int) bool { return v[i] < v[j] })
+		slices.Sort(v)
 		fmt.Fprintf(&b, "| %s | %d | %s | %s | %s |\n", k, len(v),
 			percentile(v, 0.5).Round(10*time.Millisecond),
 			percentile(v, 0.95).Round(10*time.Millisecond),
@@ -807,7 +831,7 @@ func writeSearchabilityEvidence(t *testing.T, sorted []time.Duration,
 	fmt.Fprintf(&b, "\nWithin budget: %.2f%% of %d observations.\n", proportion*100, len(sorted))
 
 	path := filepath.Join(dir, "sc-004-searchability.md")
-	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
 		t.Errorf("writing evidence: %v", err)
 		return
 	}

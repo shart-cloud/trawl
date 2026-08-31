@@ -147,7 +147,7 @@ then verify an event without Community ID is returned only as `attribute-time`.
 - [X] T053 [P] [US2] Add failing real-Loki tests for time, tap, target, type, severity, rule, Community ID, endpoint, and fallback queries with ingestion-latency measurement in `test/integration/loki_queries_test.go`
 - [X] T054 [P] [US2] Add failing Hubble TLS/GetFlows/reconnect/lost-event/allowed/denied normalization tests against a gRPC fixture in `test/integration/hubble_observation_test.go`
 - [X] T055 [P] [US2] Add failing dashboard contract tests for bounded labels, required panels, exact/approximate badges, safe links, query ranges, and supported schema fields in `test/contract/grafana_dashboards_test.go`
-- [ ] T056 [US2] Add a failing end-to-end investigation test covering the observation-only overview, exact pivot in both directions, fallback pivot, every protocol subtype, Hubble context, and 30-second searchability in `test/e2e/investigation_test.go`
+- [X] T056 [US2] Add a failing end-to-end investigation test covering the observation-only overview, exact pivot in both directions, fallback pivot, every protocol subtype, Hubble context, and 30-second searchability in `test/e2e/investigation_test.go`
 
 ### Implementation for User Story 2
 
