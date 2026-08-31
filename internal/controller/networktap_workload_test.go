@@ -668,3 +668,52 @@ func TestSensorTokenProjectionCarriesTheCA(t *testing.T) {
 		t.Error("no CA is projected; a client built from the token cannot verify the API server")
 	}
 }
+
+// A tap may enable one analyzer. The CRD only requires that at least one is
+// enabled, so Zeek-only and Suricata-only taps are both valid configurations -
+// and the way the renderer expresses "not enabled" is by leaving the flag off
+// entirely, because cmd/sensor-agent treats an absent path as an absent
+// analyzer.
+//
+// This is the renderer's half of that contract. The binary's half is
+// TestAnAnalyzerTheTapDidNotEnableStaysAbsent in cmd/sensor-agent.
+func TestOnlyEnabledAnalyzersAreSwitchedOn(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		suricata bool
+		zeek     bool
+		want     []string
+		absent   []string
+	}{
+		{"zeek only", false, true, []string{"zeek-log-dir"}, []string{"suricata-log"}},
+		{"suricata only", true, false, []string{"suricata-log"}, []string{"zeek-log-dir"}},
+		{"both", true, true, []string{"suricata-log", "zeek-log-dir"}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tap := testTap()
+			tap.Spec.Analyzers.Suricata.Enabled = tc.suricata
+			tap.Spec.Analyzers.Zeek.Enabled = tc.zeek
+
+			c := containerByName(renderer().PodSpec(tap), "sensor-agent")
+			if c == nil {
+				t.Fatal("no sensor-agent container rendered")
+			}
+
+			seen := map[string]bool{}
+			for _, arg := range c.Args {
+				name, _, _ := strings.Cut(strings.TrimPrefix(arg, "--"), "=")
+				seen[name] = true
+			}
+			for _, want := range tc.want {
+				if !seen[want] {
+					t.Errorf("--%s is not passed, so the sensor reads none of that analyzer's output", want)
+				}
+			}
+			for _, absent := range tc.absent {
+				if seen[absent] {
+					t.Errorf("--%s is passed for an analyzer this tap does not enable", absent)
+				}
+			}
+		})
+	}
+}

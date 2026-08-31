@@ -26,6 +26,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
@@ -53,12 +54,17 @@ func main() {
 		tapName      = flag.String("tap-name", "", "Name of the owning NetworkTap.")
 		tapUID       = flag.String("tap-uid", "", "UID of the owning NetworkTap.")
 		iface        = flag.String("interface", "", "Interface being observed.")
-		logDir       = flag.String("log-dir", "/var/log/trawl", "Directory holding analyzer output.")
-		contentDir   = flag.String("content-dir", "/var/lib/trawl/content", "Directory holding analyzer content.")
-		probeAddr    = flag.String("probe-addr", ":9100", "Address for health and metrics endpoints.")
-		suricataLog  = flag.String("suricata-log", "", "Suricata EVE JSON path; empty disables Suricata.")
-		zeekLogDir   = flag.String("zeek-log-dir", "", "Zeek JSON log directory; empty disables Zeek.")
-		tokenDir     = flag.String("token-dir", "/var/run/secrets/trawl", "Directory holding the projected API token and CA.")
+		// The shared mount root the renderer creates. Nothing here derives
+		// paths from it any more - each enabled analyzer's path is passed
+		// explicitly, so that an analyzer the tap did not enable stays absent -
+		// but the flag is still accepted, because the renderer passes it and an
+		// unknown flag makes the binary exit 2 before doing anything.
+		_           = flag.String("log-dir", "/var/log/trawl", "Directory holding analyzer output.")
+		contentDir  = flag.String("content-dir", "/var/lib/trawl/content", "Directory holding analyzer content.")
+		probeAddr   = flag.String("probe-addr", ":9100", "Address for health and metrics endpoints.")
+		suricataLog = flag.String("suricata-log", "", "Suricata EVE JSON path; empty disables Suricata.")
+		zeekLogDir  = flag.String("zeek-log-dir", "", "Zeek JSON log directory; empty disables Zeek.")
+		tokenDir    = flag.String("token-dir", "/var/run/secrets/trawl", "Directory holding the projected API token and CA.")
 	)
 	flag.Parse()
 
@@ -67,14 +73,12 @@ func main() {
 		os.Exit(2)
 	}
 
-	// Analyzer paths default under the shared log directory, so the operator
-	// renders one mount rather than a path per analyzer.
-	if *suricataLog == "" {
-		*suricataLog = filepath.Join(*logDir, "suricata", "eve.json")
+	resolvedSuricataLog, resolvedZeekLogDir, err := analyzerLogs(*suricataLog, *zeekLogDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sensor-agent: %v\n", err)
+		os.Exit(2)
 	}
-	if *zeekLogDir == "" {
-		*zeekLogDir = filepath.Join(*logDir, "zeek")
-	}
+	suricataLog, zeekLogDir = &resolvedSuricataLog, &resolvedZeekLogDir
 
 	nodeName := os.Getenv("TRAWL_NODE_NAME")
 	if nodeName == "" {
@@ -98,6 +102,13 @@ func main() {
 	defer stop()
 
 	emitter := newEmitter()
+
+	// One cache for this target, shared by every tailer and read by the status
+	// reporter. Duplication is the same packets arriving twice, which is a
+	// property of what the target receives - not of an analyzer, and certainly
+	// not of a Zeek log type.
+	duplicates := sensor.NewDuplicateCache(sensor.MaxFingerprints)
+
 	var wg sync.WaitGroup
 
 	// Kept so the status reporter can read their counters. The reporter
@@ -119,7 +130,7 @@ func main() {
 				return obs, err
 			},
 			Emit:       emitter.emit,
-			Duplicates: sensor.NewDuplicateCache(sensor.MaxFingerprints),
+			Duplicates: duplicates,
 			OnAccept: func() {
 				metrics.SensorRecordsTotal.
 					WithLabelValues(telemetry.AnalyzerSuricata, "signature", string(sensor.ResultAccepted)).Inc()
@@ -160,7 +171,7 @@ func main() {
 			Target:  target,
 			Version: analyzerVersion(filepath.Join(*zeekLogDir, ".version")),
 		}
-		zeekTailerSet = zeekTailers(*zeekLogDir, n, emitter.emit, metrics)
+		zeekTailerSet = zeekTailers(*zeekLogDir, n, emitter.emit, metrics, duplicates)
 		for _, tailer := range zeekTailerSet {
 			wg.Go(func() {
 				if err := tailer.Run(ctx); err != nil {
@@ -191,19 +202,7 @@ func main() {
 	// an analyzer to describe: a sensor with neither would otherwise publish an
 	// empty target and claim to be observing nothing on purpose.
 	if len(observers) > 0 {
-		reporter := &sensor.StatusReporter{
-			NodeName:   nodeName,
-			Interface:  *iface,
-			InstanceID: os.Getenv("POD_NAME"),
-			Analyzers:  observers,
-			Packets: func() sensor.PacketCounters {
-				// Packet counters come from the capture boundary, which this
-				// sensor does not read yet. Reporting accepted records as
-				// packets would overstate what was measured, so the field is
-				// left unset and the status says so rather than guessing.
-				return sensor.PacketCounters{}
-			},
-		}
+		reporter := newStatusReporter(nodeName, *iface, os.Getenv("POD_NAME"), observers, duplicates)
 		wg.Go(func() {
 			if err := publishStatus(ctx, reporter, *tapNamespace, *tapName, *tokenDir); err != nil {
 				fmt.Fprintf(os.Stderr, "status reporter: %v\n", sanitize.Error(err))
@@ -255,11 +254,40 @@ var zeekLogTypes = []observation.ZeekLogType{
 // Zeek observed the interface, wrote conn, dns, ssl and the rest, and every
 // record stopped at the disk. The normalizer and the tailer both already
 // existed; only the construction was missing.
+// newStatusReporter assembles what the sensor tells its NetworkTap.
+//
+// It is a function rather than a struct literal in main because the omission
+// this guards against is an assembly mistake: StatusReporter read a Duplicates
+// field that nothing ever set, so a sensor actively marking records "Suspected"
+// reported Duplication: Unknown for the life of the pod. A unit test of the
+// reporter cannot see that; a test of this can.
+func newStatusReporter(
+	nodeName, iface, instanceID string,
+	observers []sensor.AnalyzerObserver,
+	duplicates *sensor.DuplicateCache,
+) *sensor.StatusReporter {
+	return &sensor.StatusReporter{
+		NodeName:   nodeName,
+		Interface:  iface,
+		InstanceID: instanceID,
+		Analyzers:  observers,
+		Duplicates: duplicates,
+		Packets: func() sensor.PacketCounters {
+			// Packet counters come from the capture boundary, which this sensor
+			// does not read yet. Reporting accepted records as packets would
+			// overstate what was measured, so the field is left unset and the
+			// status says so rather than guessing.
+			return sensor.PacketCounters{}
+		},
+	}
+}
+
 func zeekTailers(
 	dir string,
 	n *observation.ZeekNormalizer,
 	emit sensor.EmitFunc,
 	metrics *telemetry.Metrics,
+	duplicates *sensor.DuplicateCache,
 ) []*sensor.Tailer {
 	out := make([]*sensor.Tailer, 0, len(zeekLogTypes))
 	for _, logType := range zeekLogTypes {
@@ -269,7 +297,7 @@ func zeekTailers(
 				return n.Normalize(logType, line)
 			},
 			Emit:       emit,
-			Duplicates: sensor.NewDuplicateCache(sensor.MaxFingerprints),
+			Duplicates: duplicates,
 			OnReject: func(result sensor.RecordResult, _ string) {
 				metrics.SensorRecordsTotal.
 					WithLabelValues(telemetry.AnalyzerZeek, string(logType), string(result)).Inc()
@@ -336,6 +364,28 @@ func (e *emitter) emit(obs *observation.Observation, duplication string) error {
 		*observation.Observation
 		DuplicationSuspected string `json:"duplication,omitempty"`
 	}{Observation: obs, DuplicationSuspected: duplication})
+}
+
+// analyzerLogs resolves which analyzer output this sensor reads.
+//
+// An empty path means the analyzer is not present on this tap. That is how the
+// renderer expresses "not enabled": it passes a log path for each analyzer the
+// NetworkTap enables and leaves the flag off for the others
+// (internal/controller.TestOnlyEnabledAnalyzersAreSwitchedOn).
+//
+// This used to default an empty path under --log-dir, which made the disable
+// branch unreachable. A Zeek-only tap started a Suricata tailer on a file
+// nothing writes and registered a readiness check against it, so the pod never
+// became ready and the tap never went Active.
+//
+// A sensor with no analyzer at all is refused rather than started. It would
+// tail nothing and report no observations, which is indistinguishable from an
+// interface carrying no traffic.
+func analyzerLogs(suricataLog, zeekLogDir string) (suricata, zeek string, err error) {
+	if suricataLog == "" && zeekLogDir == "" {
+		return "", "", errors.New("no analyzer configured: pass --suricata-log, --zeek-log-dir, or both")
+	}
+	return suricataLog, zeekLogDir, nil
 }
 
 func fileReadable(path string) func() error {
