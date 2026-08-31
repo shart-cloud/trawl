@@ -113,6 +113,14 @@ linters:
           - gosec
         text: "G204"
         path: test/integration/harness/
+      # The end-to-end suites drive kubectl and kind with names and namespaces
+      # the tests themselves construct. Nothing on those command lines comes
+      # from the environment or from observed traffic, so G204 has no caller
+      # input to warn about. They never ship in an image.
+      - linters:
+          - gosec
+        text: "G204"
+        path: test/e2e/
       # Redaction tests must contain credential-shaped fixtures to prove the
       # redaction works. G101 on those strings is the test doing its job.
       # (AKIAIOSFODNN7EXAMPLE is AWS's published example key, not a real one.)

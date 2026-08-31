@@ -90,6 +90,14 @@ test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expect
 	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e ./test/e2e/ -v -ginkgo.v
 	$(MAKE) cleanup-test-e2e
 
+.PHONY: test-investigation
+test-investigation: ## Run the end-to-end investigation test against a deployed Trawl (T056).
+# Not part of `make test`, and not the Kind suite above: this one needs a real
+# cluster with sensors observing real traffic, and it writes into the cluster's
+# shared Loki. Set TRAWL_E2E_LOKI to address Loki directly instead of letting
+# the test port-forward to it.
+	go test -tags=investigation ./test/e2e/ -v -timeout 15m
+
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)
@@ -149,6 +157,11 @@ IMAGE_REPO ?= ghcr.io/shart-cloud/trawl
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
 	"$(GOLANGCI_LINT)" run
+# Files behind a build tag are invisible to the run above, so they would rot
+# unlinted. Each tagged suite is linted in its own pass because the tags select
+# mutually exclusive files in the same package.
+	"$(GOLANGCI_LINT)" run --build-tags=e2e ./test/e2e/...
+	"$(GOLANGCI_LINT)" run --build-tags=investigation ./test/e2e/...
 
 .PHONY: lint-fix
 lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
