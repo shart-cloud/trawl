@@ -39,6 +39,11 @@ jobs:
       - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
           go-version-file: go.mod
+      # make verify begins with verify-tools, and the tool pins job installs
+      # into its own runner. Without this step the drift job failed at the first
+      # command on every commit, so the gate below has never once run.
+      - name: Install pinned tools
+        run: hack/verify-tools.sh --install
       # CRDs, RBAC, and the install bundle are contract artifacts. If they differ
       # from what the current source generates, the checked-in copy is a lie.
       - name: Regenerate and check for drift
