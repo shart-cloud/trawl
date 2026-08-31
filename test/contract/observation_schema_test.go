@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	trawlv1alpha1 "trawl.cloud/trawl/api/v1alpha1"
 	"trawl.cloud/trawl/internal/observation"
 )
 
@@ -318,5 +319,79 @@ func TestClusterFlowRequiresAVerdict(t *testing.T) {
 
 	if err := observation.Validate(obs); err == nil {
 		t.Fatal("a cluster-flow record with no verdict was accepted")
+	}
+}
+
+func TestTheRecordTheSensorWritesSatisfiesTheSchema(t *testing.T) {
+	// The sensor validates the observation and then writes something else.
+	// observation.Validate is given the envelope; the emitter encodes that
+	// envelope with a duplication marker beside it, and the marker is what
+	// reaches Loki. Because the envelope declares additionalProperties: false
+	// and does not declare duplication, every record actually stored is
+	// off-contract - while the sensor's own validation passes, because it ran
+	// against a different document.
+	//
+	// The field is not incidental. Alloy promotes it to structured metadata and
+	// the reviewed LogQL templates filter on it, so an operator reading a
+	// traffic spike can tell a real increase from a mirror duplicating packets.
+	// It is part of the wire format whether or not the schema says so, which is
+	// why the schema is what changes.
+	//
+	// This validates the encoded document rather than a round-tripped struct:
+	// decoding into observation.Observation would discard the very field the
+	// test is about.
+	schema, err := observation.Schema()
+	if err != nil {
+		t.Fatalf("compiling schema: %v", err)
+	}
+
+	obs := envelope(observation.TypeConnection,
+		observation.Details{Connection: &observation.Connection{State: "SF"}})
+	for _, duplication := range []string{
+		string(trawlv1alpha1.DuplicationNotDetected),
+		string(trawlv1alpha1.DuplicationSuspected),
+		string(trawlv1alpha1.DuplicationUnknown),
+	} {
+		encoded, err := json.Marshal(struct {
+			*observation.Observation
+			Duplication string `json:"duplication,omitempty"`
+		}{Observation: obs, Duplication: duplication})
+		if err != nil {
+			t.Fatalf("encoding: %v", err)
+		}
+
+		var doc any
+		if err := json.Unmarshal(encoded, &doc); err != nil {
+			t.Fatalf("decoding: %v", err)
+		}
+		if err := schema.Validate(doc); err != nil {
+			t.Errorf("the record the sensor writes with duplication=%q does not satisfy the schema: %v",
+				duplication, err)
+		}
+	}
+}
+
+func TestDuplicationIsConstrainedToTheStatesTrawlAssigns(t *testing.T) {
+	// Declaring the field without an enum would let any string through, which
+	// would break the dashboard filters silently rather than loudly.
+	schema, err := observation.Schema()
+	if err != nil {
+		t.Fatalf("compiling schema: %v", err)
+	}
+
+	encoded, err := json.Marshal(struct {
+		*observation.Observation
+		Duplication string `json:"duplication"`
+	}{Observation: envelope(observation.TypeConnection,
+		observation.Details{Connection: &observation.Connection{State: "SF"}}), Duplication: "probably"})
+	if err != nil {
+		t.Fatalf("encoding: %v", err)
+	}
+	var doc any
+	if err := json.Unmarshal(encoded, &doc); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	if err := schema.Validate(doc); err == nil {
+		t.Error("the schema accepts an arbitrary duplication value")
 	}
 }

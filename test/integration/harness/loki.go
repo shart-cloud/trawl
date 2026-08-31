@@ -26,8 +26,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
+
+	"trawl.cloud/trawl/internal/observation"
 )
 
 const (
@@ -35,6 +38,9 @@ const (
 	lokiImage = "docker.io/grafana/loki:3.4.2"
 
 	lokiStartupTimeout = 120 * time.Second
+
+	// lokiRequestTimeout bounds a single API call.
+	lokiRequestTimeout = 30 * time.Second
 )
 
 // lokiConfig enables the two features Trawl's label discipline depends on.
@@ -119,7 +125,7 @@ func RequireLoki(t *testing.T) *Loki {
 	l := &Loki{
 		BaseURL:     fmt.Sprintf("http://127.0.0.1:%d", port),
 		containerID: string(bytes.TrimSpace(out)),
-		client:      &http.Client{Timeout: 30 * time.Second},
+		client:      &http.Client{Timeout: lokiRequestTimeout},
 	}
 	t.Cleanup(func() {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -289,4 +295,96 @@ func CountEntries(results []QueryResult) int {
 		n += len(r.Values)
 	}
 	return n
+}
+
+// AttachLoki addresses a Loki this process did not start.
+//
+// The e2e investigation test runs against the cluster's shared Loki rather than
+// a throwaway one, because what it is measuring - whether an analyst can find a
+// record within thirty seconds of the traffic - is a property of the deployed
+// ingestion path, not of Loki in general. A private instance would measure a
+// pipeline nobody uses.
+func AttachLoki(baseURL string) *Loki {
+	return &Loki{
+		BaseURL: strings.TrimSuffix(baseURL, "/"),
+		client:  &http.Client{Timeout: lokiRequestTimeout},
+	}
+}
+
+// ObservationStreams renders records the way the Alloy pipeline does: the four
+// contract labels become stream labels, and the fields an analyst filters on
+// become structured metadata.
+//
+// Both the integration tests and the e2e investigation test build their input
+// through this function, so a change to the label discipline cannot leave one
+// of them asserting against a shape the pipeline no longer produces.
+//
+// The offset shifts event times into a window Loki will serve; pass zero for
+// records that are already recent.
+func ObservationStreams(records []*observation.Observation, cluster string, offset time.Duration) []Stream {
+	byLabels := map[string]*Stream{}
+
+	for _, obs := range records {
+		labels := map[string]string{
+			"service_name":     "trawl-observation",
+			"cluster":          cluster,
+			"source_kind":      string(obs.Source.Kind),
+			"observation_type": string(obs.ObservationType),
+		}
+		key := labels["source_kind"] + "|" + labels["observation_type"]
+		if _, ok := byLabels[key]; !ok {
+			byLabels[key] = &Stream{Labels: labels}
+		}
+
+		line, err := json.Marshal(obs)
+		if err != nil {
+			// An observation that cannot be encoded cannot be pushed; callers
+			// build these from normalizers that have already validated them.
+			continue
+		}
+
+		metadata := map[string]string{
+			"tap_uid":          obs.Tap.UID,
+			"tap_name":         obs.Tap.Name,
+			"tap_namespace":    obs.Tap.Namespace,
+			"target_node":      obs.Target.Node,
+			"target_interface": obs.Target.Interface,
+		}
+		if obs.Flow != nil {
+			metadata["community_id"] = obs.Flow.CommunityID
+			metadata["zeek_uid"] = obs.Flow.ZeekUID
+			metadata["protocol"] = obs.Flow.Protocol
+			metadata["source_ip"] = obs.Flow.Source.IP
+			metadata["destination_ip"] = obs.Flow.Destination.IP
+			if p := obs.Flow.Source.Port; p != nil {
+				metadata["source_port"] = strconv.Itoa(int(*p))
+			}
+			if p := obs.Flow.Destination.Port; p != nil {
+				metadata["destination_port"] = strconv.Itoa(int(*p))
+			}
+		}
+		if sig := obs.Details.Signature; sig != nil {
+			metadata["severity"] = strconv.Itoa(int(sig.Severity))
+			metadata["rule_id"] = strconv.Itoa(int(sig.RuleID))
+			metadata["category"] = sig.Category
+		}
+		// Loki rejects empty structured-metadata values.
+		for k, v := range metadata {
+			if v == "" {
+				delete(metadata, k)
+			}
+		}
+
+		byLabels[key].Entries = append(byLabels[key].Entries, Entry{
+			Timestamp:          obs.EventTime.Add(offset),
+			Line:               string(line),
+			StructuredMetadata: metadata,
+		})
+	}
+
+	streams := make([]Stream, 0, len(byLabels))
+	for _, s := range byLabels {
+		streams = append(streams, *s)
+	}
+	return streams
 }

@@ -17,7 +17,6 @@ limitations under the License.
 package integration
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -80,57 +79,9 @@ func pushSession(t *testing.T, loki *harness.Loki, session fixtures.Session) {
 	}
 
 	// One stream per label combination, exactly as the Alloy config produces.
-	byLabels := map[string]*harness.Stream{}
-	for _, obs := range records {
-		labels := map[string]string{
-			"service_name":     "trawl-observation",
-			"cluster":          "homelab",
-			"source_kind":      string(obs.Source.Kind),
-			"observation_type": string(obs.ObservationType),
-		}
-		key := labels["source_kind"] + "|" + labels["observation_type"]
-		if _, ok := byLabels[key]; !ok {
-			byLabels[key] = &harness.Stream{Labels: labels}
-		}
-
-		line, err := json.Marshal(obs)
-		if err != nil {
-			t.Fatalf("encoding observation: %v", err)
-		}
-
-		metadata := map[string]string{
-			"tap_uid":     obs.Tap.UID,
-			"tap_name":    obs.Tap.Name,
-			"target_node": obs.Target.Node,
-		}
-		if obs.Flow != nil {
-			metadata["community_id"] = obs.Flow.CommunityID
-			metadata["protocol"] = obs.Flow.Protocol
-			metadata["source_ip"] = obs.Flow.Source.IP
-			metadata["destination_ip"] = obs.Flow.Destination.IP
-		}
-		if obs.Details.Signature != nil {
-			metadata["severity"] = itoa(int(obs.Details.Signature.Severity))
-			metadata["rule_id"] = itoa(int(obs.Details.Signature.RuleID))
-		}
-		// Loki rejects empty structured-metadata values.
-		for k, v := range metadata {
-			if v == "" {
-				delete(metadata, k)
-			}
-		}
-
-		byLabels[key].Entries = append(byLabels[key].Entries, harness.Entry{
-			Timestamp:          obs.EventTime.Add(offset),
-			Line:               string(line),
-			StructuredMetadata: metadata,
-		})
-	}
-
-	streams := make([]harness.Stream, 0, len(byLabels))
-	for _, s := range byLabels {
-		streams = append(streams, *s)
-	}
+	// The rendering lives in the harness so this test and the e2e investigation
+	// test cannot drift into asserting against different shapes.
+	streams := harness.ObservationStreams(records, "homelab", offset)
 	if err := loki.Push(t.Context(), streams); err != nil {
 		t.Fatalf("pushing to Loki: %v", err)
 	}
@@ -341,26 +292,4 @@ func TestTimeRangeQueriesUseEventTime(t *testing.T) {
 	if harness.CountEntries(results) != 0 {
 		t.Errorf("a range before the event time returned %d records", harness.CountEntries(results))
 	}
-}
-
-func itoa(v int) string {
-	if v == 0 {
-		return "0"
-	}
-	var buf [20]byte
-	i := len(buf)
-	neg := v < 0
-	if neg {
-		v = -v
-	}
-	for v > 0 {
-		i--
-		buf[i] = byte('0' + v%10)
-		v /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
 }

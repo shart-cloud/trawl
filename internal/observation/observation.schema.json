@@ -54,6 +54,14 @@
         "cluster_flow"
       ]
     },
+    "duplication": {
+      "description": "Trawl's assessment of whether this record duplicates traffic already observed, from a mirror delivering the same packets twice. It sits beside the envelope rather than inside it because it is Trawl's judgement about the observation, not something the analyzer reported - but it is part of the record the sensor writes, and dashboards filter on it, so the schema describes it.",
+      "enum": [
+        "Unknown",
+        "NotDetected",
+        "Suspected"
+      ]
+    },
     "flow": {
       "$ref": "#/$defs/flow"
     },
