@@ -86,11 +86,11 @@ data:
       refreshInterval: 24h
 
     images:
-      suricata: ghcr.io/shart-cloud/trawl/suricata@sha256:0b6285179f4073f61e0ac8db75fd56657afa02ca9fc40d538fbeedf884444e9a
-      zeek: ghcr.io/shart-cloud/trawl/zeek@sha256:f3674012118f635435ed0babef6718c38391b21a84923aad3a24fad720a1e780
-      sensorAgent: ghcr.io/shart-cloud/trawl/sensor-agent@sha256:5271ffbc847b1a2d60d6f109c5921834fd6a4fe3071d32ab528bfeafab2e7580
-      contentInit: ghcr.io/shart-cloud/trawl/content-init@sha256:39ce59283f04a4aa335ecf6c108c157a6cbcaf7763b311b14f648f5eea730869
+      suricata: ghcr.io/shart-cloud/trawl/suricata@sha256:a23ce50569fe57cf2a8f01b2397eb87b34511a0778049c1a479f634099a5b218
+      zeek: ghcr.io/shart-cloud/trawl/zeek@sha256:e75bcc75f223e6a847bdeb642b6acffc86c1a5edae375d379e78f4884845362b
+      sensorAgent: ghcr.io/shart-cloud/trawl/sensor-agent@sha256:b57136d6bf27223ac61815421fef3a28f4fc2313b0de59c544c62366cd8f98af
+      contentInit: ghcr.io/shart-cloud/trawl/content-init@sha256:d7e5bdc5a613619bb5f1e10b68594f7994ea1f449bf5924edef3698b6034aea4
       # Not implemented until US3. The stub image exists so this required field
       # names something that resolves and refuses, rather than something that
       # resolves and does another component's job.
-      captureRunner: ghcr.io/shart-cloud/trawl/capture-runner@sha256:a2ff7ae849e63d2ba6ee39cc1b844bf72429af8826c36a1d34ea3d085d9d3834
+      captureRunner: ghcr.io/shart-cloud/trawl/capture-runner@sha256:fdd8a7cfe872f3b88388543a567755bf758b5fae205ea11af7bc5fcda1491fdf
