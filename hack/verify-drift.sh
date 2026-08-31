@@ -21,6 +21,13 @@ GENERATED_PATHS=(
   "config/crd"
   "config/rbac"
   "config/webhook"
+  # go.mod and go.sum are generated too: `go mod tidy` derives them from the
+  # imports. Deleting the last file that imported a package leaves them stale,
+  # which is what happened when the Kind suite went and took ginkgo with it.
+  # This check lived only in CI until then, so a locally green tree could still
+  # fail the build.
+  "go.mod"
+  "go.sum"
 )
 
 snapshot="$(mktemp -d)"
@@ -35,6 +42,7 @@ done
 
 echo "verify-drift: regenerating artifacts..."
 make manifests generate >/dev/null
+go mod tidy
 
 status=0
 for path in "${GENERATED_PATHS[@]}"; do
@@ -51,7 +59,7 @@ done
 if [[ "${status}" != 0 ]]; then
   echo "" >&2
   echo "verify-drift: checked-in generated artifacts are stale." >&2
-  echo "Run 'make manifests generate' and commit the result." >&2
+  echo "Run 'make manifests generate && go mod tidy' and commit the result." >&2
   exit 1
 fi
 

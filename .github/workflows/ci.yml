@@ -48,12 +48,6 @@ jobs:
       # from what the current source generates, the checked-in copy is a lie.
       - name: Regenerate and check for drift
         run: make verify
-      - name: Verify go.mod/go.sum are tidy
-        run: |
-          cp go.mod go.mod.bak && cp go.sum go.sum.bak
-          go mod tidy
-          diff -u go.mod.bak go.mod
-          diff -u go.sum.bak go.sum
 
   lint:
     name: Lint
