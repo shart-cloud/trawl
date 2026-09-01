@@ -133,17 +133,28 @@ func TestAMeterDistinguishesZeroDropsFromUnreportedDrops(t *testing.T) {
 func TestAMeterFallsBackToDecoderPacketsAndDoesNotMixCounters(t *testing.T) {
 	// Not every capture method reports kernel counters. Falling back keeps a
 	// working tap from reporting nothing, but the two counters measure
-	// different points, so a switch between them restarts the accumulation
-	// instead of subtracting one from the other.
+	// different points, so a switch between them re-baselines instead of
+	// subtracting one from the other.
 	m := NewPacketMeter(DiscardPackets)
 	m.Observe(&observation.SuricataStats{DecoderPackets: i64(70), Timestamp: at(10)})
 	if got := m.Counters().PacketsObserved; got != 70 {
 		t.Errorf("packets observed = %d from decoder packets alone, want 70", got)
 	}
 
+	// The switch itself adds nothing. This case previously expected 75 - the
+	// new counter's whole cumulative value added on top - which read as
+	// reasonable only because 5 is a small number. Both counters count from the
+	// same process start, so in production the value arriving here is the
+	// history over again; see the double-counting regression below.
 	m.Observe(&observation.SuricataStats{KernelPackets: i64(5), Timestamp: at(20)})
-	if got := m.Counters().PacketsObserved; got != 75 {
-		t.Errorf("packets observed = %d after switching counter source, want 75", got)
+	if got := m.Counters().PacketsObserved; got != 70 {
+		t.Errorf("packets observed = %d after switching counter source, want 70", got)
+	}
+
+	// From the new baseline it measures normally again.
+	m.Observe(&observation.SuricataStats{KernelPackets: i64(9), Timestamp: at(30)})
+	if got := m.Counters().PacketsObserved; got != 74 {
+		t.Errorf("packets observed = %d after the kernel counter advanced by 4, want 74", got)
 	}
 }
 
@@ -205,5 +216,35 @@ func TestAMeterWithNoObserverStillMeasures(t *testing.T) {
 	m.Observe(&observation.SuricataStats{KernelPackets: i64(7), Timestamp: at(10)})
 	if got := m.Counters().PacketsObserved; got != 7 {
 		t.Errorf("packets observed = %d, want 7", got)
+	}
+}
+
+func TestAFallbackToTheOtherCounterDoesNotCountTheSamePacketsTwice(t *testing.T) {
+	// Both counters count the same traffic from the analyzer's start, at
+	// different points in its pipeline: decoder.pkts tracks kernel_packets less
+	// what the kernel dropped. So when a single stats record omits the kernel
+	// counter - which happens on capture-method reinitialisation - the decoder
+	// total it carries covers packets this meter has already counted. Adding it
+	// whole made PacketsObserved jump by the whole history, and a status that
+	// doubles on a hiccup is not a packet count.
+	m := NewPacketMeter(DiscardPackets)
+	m.Observe(&observation.SuricataStats{KernelPackets: i64(5_000_000), Timestamp: at(10)})
+	m.Observe(&observation.SuricataStats{DecoderPackets: i64(4_999_000), Timestamp: at(20)})
+
+	if got := m.Counters().PacketsObserved; got != 5_000_000 {
+		t.Errorf("packets observed = %d after falling back to the decoder counter, want 5000000", got)
+	}
+
+	// Having adopted the decoder counter as the baseline, it measures from
+	// there: the next record's growth is real and is counted.
+	m.Observe(&observation.SuricataStats{DecoderPackets: i64(4_999_500), Timestamp: at(30)})
+	if got := m.Counters().PacketsObserved; got != 5_000_500 {
+		t.Errorf("packets observed = %d after the decoder counter advanced by 500, want 5000500", got)
+	}
+
+	// And switching back does not re-count the kernel counter's history either.
+	m.Observe(&observation.SuricataStats{KernelPackets: i64(5_001_000), Timestamp: at(40)})
+	if got := m.Counters().PacketsObserved; got != 5_000_500 {
+		t.Errorf("packets observed = %d after switching back to the kernel counter, want 5000500", got)
 	}
 }
