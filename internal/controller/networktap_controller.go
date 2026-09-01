@@ -142,6 +142,13 @@ func (r *NetworkTapReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 
+	// checkProbePortConflict writes its own terminal status, for the same
+	// reason checkTargetCardinality does.
+	if ok, err := r.checkProbePortConflict(ctx, &tap, nodes); !ok {
+		result = telemetry.ReconcileInvalid
+		return ctrl.Result{}, err
+	}
+
 	if err := r.applyOwnedResources(ctx, &tap); err != nil {
 		result = telemetry.ReconcileError
 		return ctrl.Result{}, sanitize.Error(err)
@@ -191,6 +198,71 @@ func (r *NetworkTapReconciler) checkTargetCardinality(ctx context.Context, tap *
 			fmt.Sprintf("a mirror source must match exactly one node; the selector matched %d", len(nodes)))
 	}
 	return true, nil
+}
+
+// checkProbePortConflict refuses to schedule a sensor that could not bind.
+//
+// Sensor pods are on the host network, so a sensor's probe port is a port on the
+// node. SensorProbePort derives it from the tap's identity precisely so two taps
+// sharing a node do not share a port, but a derivation into a bounded range can
+// still collide. Left alone, a collision is invisible in the API: the second pod
+// exits with "bind: address already in use", crash-loops, and the tap sits in
+// Pending with nothing naming the cause.
+//
+// The tap that yields is the newer one, so a collision cannot take down a sensor
+// that is already running - the incumbent keeps the port and keeps observing.
+func (r *NetworkTapReconciler) checkProbePortConflict(ctx context.Context, tap *trawlv1alpha1.NetworkTap, nodes []corev1.Node) (bool, error) {
+	port := SensorProbePort(tap)
+
+	var taps trawlv1alpha1.NetworkTapList
+	if err := r.List(ctx, &taps); err != nil {
+		return false, sanitize.Errorf("listing taps to check probe ports: %v", err)
+	}
+
+	mine := make(map[string]struct{}, len(nodes))
+	for _, n := range nodes {
+		mine[n.Name] = struct{}{}
+	}
+
+	for i := range taps.Items {
+		other := &taps.Items[i]
+		if other.UID == tap.UID || !other.DeletionTimestamp.IsZero() {
+			continue
+		}
+		if SensorProbePort(other) != port || !incumbent(other, tap) {
+			continue
+		}
+		// Only a tap that shares a node conflicts. Two taps on different nodes
+		// may hold the same port quite happily.
+		otherNodes, err := r.eligibleNodes(ctx, other)
+		if err != nil {
+			// The other tap's selector is its own problem and its own reconcile
+			// will report it. It cannot be shown to conflict, so it does not.
+			continue
+		}
+		for _, n := range otherNodes {
+			if _, shared := mine[n.Name]; !shared {
+				continue
+			}
+			return false, r.markError(ctx, tap, status.ReasonProbePortConflict,
+				fmt.Sprintf("tap %s/%s targets node %s and derives the same sensor probe port %d; "+
+					"both sensors run on the host network, so only one can bind it",
+					other.Namespace, other.Name, n.Name, port))
+		}
+	}
+	return true, nil
+}
+
+// incumbent reports whether other has the older claim on a probe port.
+//
+// Creation time decides it, with the UID as a tie-break so that two taps created
+// in the same instant still agree on which of them yields - both reconcile
+// independently, and a rule they read differently would fail both or neither.
+func incumbent(other, tap *trawlv1alpha1.NetworkTap) bool {
+	if !other.CreationTimestamp.Equal(&tap.CreationTimestamp) {
+		return other.CreationTimestamp.Before(&tap.CreationTimestamp)
+	}
+	return string(other.UID) < string(tap.UID)
 }
 
 // applyOwnedResources creates or updates everything the tap owns.
