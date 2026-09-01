@@ -27,8 +27,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	trawlv1alpha1 "trawl.cloud/trawl/api/v1alpha1"
 	"trawl.cloud/trawl/internal/admission"
@@ -440,7 +445,48 @@ func (r *NetworkTapReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.Deployment{}).
 		Owns(&appsv1.DaemonSet{}).
 		Owns(&corev1.ConfigMap{}).
+		// Nodes are what a tap's selector resolves against, and Owns cannot
+		// reach them: a tap that matched no node owns nothing at all, so
+		// without this watch there is no event left that could ever wake it.
+		// It stayed in Error reporting "the node selector matched no nodes"
+		// after the node had been given the matching label, which describes a
+		// misconfiguration the operator has already corrected.
+		//
+		// The predicate is not an optimisation. Kubelet rewrites node status
+		// every few seconds, and enqueueing every tap on every one of those
+		// would keep the reconciler busy rewriting status it already agrees
+		// with. Only label changes can alter which nodes a selector matches;
+		// creates and deletes pass because the default Funcs admit them.
+		Watches(&corev1.Node{},
+			handler.EnqueueRequestsFromMapFunc(r.tapsForNodeChange),
+			builder.WithPredicates(predicate.LabelChangedPredicate{})).
 		Complete(r)
+}
+
+// tapsForNodeChange enqueues every tap when the node set changes.
+//
+// It enqueues all of them rather than the ones whose selector matches. A tap
+// that must be woken here is precisely one whose selector matched nothing
+// before the change, so a mapper that filtered by current match would skip the
+// case the watch exists for. Reconciliation is idempotent and taps are few, so
+// the cost of the wider fan-out is a status read per tap per label change.
+func (r *NetworkTapReconciler) tapsForNodeChange(ctx context.Context, _ client.Object) []reconcile.Request {
+	var taps trawlv1alpha1.NetworkTapList
+	if err := r.List(ctx, &taps); err != nil {
+		// Returning nothing is the only option here, so it is logged rather
+		// than swallowed: the symptom would otherwise be a tap that never
+		// notices a node, which is the defect this watch exists to fix.
+		log.FromContext(ctx).Error(sanitize.Error(err),
+			"Failed to list NetworkTaps for a node change")
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(taps.Items))
+	for i := range taps.Items {
+		requests = append(requests, reconcile.Request{
+			NamespacedName: client.ObjectKeyFromObject(&taps.Items[i]),
+		})
+	}
+	return requests
 }
 
 func boolCondition(b bool) metav1.ConditionStatus {
