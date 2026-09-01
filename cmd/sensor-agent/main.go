@@ -109,6 +109,13 @@ func main() {
 	// not of a Zeek log type.
 	duplicates := sensor.NewDuplicateCache(sensor.MaxFingerprints)
 
+	// One meter for this target, for the same reason: packets at the capture
+	// boundary are a property of the target. Only Suricata reports them today -
+	// Zeek's logs describe traffic it parsed, not what the kernel handed it -
+	// so a Zeek-only tap still reports no packets, which is honest rather than
+	// zero pretending to be a measurement.
+	packets := sensor.NewPacketMeter()
+
 	var wg sync.WaitGroup
 
 	// Kept so the status reporter can read their counters. The reporter
@@ -124,11 +131,8 @@ func main() {
 			Version: analyzerVersion(filepath.Join(filepath.Dir(*suricataLog), ".version")),
 		}
 		suricataTailer = &sensor.Tailer{
-			Path: *suricataLog,
-			Parse: func(line []byte) (*observation.Observation, error) {
-				obs, _, err := n.Normalize(line)
-				return obs, err
-			},
+			Path:       *suricataLog,
+			Parse:      suricataParser(n, packets),
 			Emit:       emitter.emit,
 			Duplicates: duplicates,
 			OnAccept: func() {
@@ -202,7 +206,8 @@ func main() {
 	// an analyzer to describe: a sensor with neither would otherwise publish an
 	// empty target and claim to be observing nothing on purpose.
 	if len(observers) > 0 {
-		reporter := newStatusReporter(nodeName, *iface, os.Getenv("POD_NAME"), observers, duplicates)
+		reporter := newStatusReporter(nodeName, *iface, os.Getenv("POD_NAME"),
+			observers, duplicates, packets)
 		wg.Go(func() {
 			if err := publishStatus(ctx, reporter, *tapNamespace, *tapName, *tokenDir); err != nil {
 				fmt.Fprintf(os.Stderr, "status reporter: %v\n", sanitize.Error(err))
@@ -265,6 +270,7 @@ func newStatusReporter(
 	nodeName, iface, instanceID string,
 	observers []sensor.AnalyzerObserver,
 	duplicates *sensor.DuplicateCache,
+	packets *sensor.PacketMeter,
 ) *sensor.StatusReporter {
 	return &sensor.StatusReporter{
 		NodeName:   nodeName,
@@ -272,13 +278,22 @@ func newStatusReporter(
 		InstanceID: instanceID,
 		Analyzers:  observers,
 		Duplicates: duplicates,
-		Packets: func() sensor.PacketCounters {
-			// Packet counters come from the capture boundary, which this sensor
-			// does not read yet. Reporting accepted records as packets would
-			// overstate what was measured, so the field is left unset and the
-			// status says so rather than guessing.
-			return sensor.PacketCounters{}
-		},
+		Packets:    packets.Counters,
+	}
+}
+
+// suricataParser adapts the normalizer to the tailer, keeping the stats records
+// the tailer itself has no use for.
+//
+// Normalize returns three values and this closure used to discard the middle
+// one. Nothing downstream could notice: a stats record legitimately yields no
+// observation, so throwing its counters away looked exactly like handling it,
+// and the tailer's own accounting called the line consumed either way.
+func suricataParser(n *observation.SuricataNormalizer, packets *sensor.PacketMeter) sensor.ParseFunc {
+	return func(line []byte) (*observation.Observation, error) {
+		obs, stats, err := n.Normalize(line)
+		packets.Observe(stats)
+		return obs, err
 	}
 }
 

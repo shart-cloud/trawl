@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	trawlv1alpha1 "trawl.cloud/trawl/api/v1alpha1"
 	"trawl.cloud/trawl/internal/observation"
@@ -142,17 +143,21 @@ func TestAnAnalyzerTheTapDidNotEnableStaysAbsent(t *testing.T) {
 // records "Suspected" - as the deployed sensor is - reported Duplication:
 // Unknown for the whole life of the pod.
 //
-// That is the same shape as the packet counters and as StatusReporter itself
-// before it had a caller: implemented, unit-tested, and never wired. The unit
-// tests could not catch it because the omission is in the assembly, which is
-// why the reporter is built by a function rather than inline.
+// That is the same shape as StatusReporter itself before it had a caller, and
+// as the packet counters were until the test below covered them: implemented,
+// unit-tested, and never wired. Three instances of one defect in one file. The
+// unit tests could not catch any of them because the omission is in the
+// assembly, which is why the reporter is built by a function rather than
+// inline, and why every field it fills has a test here and not only in
+// internal/sensor.
 func TestStatusReportsTheDuplicationTheSensorMeasured(t *testing.T) {
 	duplicates := sensor.NewDuplicateCache(sensor.MaxFingerprints)
 	observers := []sensor.AnalyzerObserver{
 		&analyzerObserver{name: trawlv1alpha1.AnalyzerZeek},
 	}
 
-	r := newStatusReporter("node-01", "enp5s0", "pod-xyz", observers, duplicates)
+	r := newStatusReporter("node-01", "enp5s0", "pod-xyz", observers, duplicates,
+		sensor.NewPacketMeter())
 
 	if r.Duplicates == nil {
 		t.Fatal("the status reporter carries no duplicate cache; duplication can never leave Unknown")
@@ -187,5 +192,79 @@ func TestEveryTailerSharesTheTargetsDuplicateCache(t *testing.T) {
 		if tl.Duplicates != shared {
 			t.Errorf("tailer %s writes to a cache the status reporter does not read", tl.Path)
 		}
+	}
+}
+
+// The counters the analyzer reports have to reach the status the tap publishes.
+//
+// This is the omission main_test.go's duplication test named as still open:
+// SuricataNormalizer lifted kernel_packets and kernel_drops out of every EVE
+// stats record, StatusReporter had a Packets hook that filled in
+// PacketsObserved, KernelDrops and LastPacketTime, and between them the sensor
+// returned an empty struct from a closure that explained why it was empty. A
+// tap capturing traffic perfectly well reported PacketsObserved=False for the
+// life of the pod.
+//
+// Both halves had unit tests and both passed. The defect was the assembly,
+// which is what this tests.
+func TestStatusReportsThePacketsTheSensorMeasured(t *testing.T) {
+	meter := sensor.NewPacketMeter()
+	observers := []sensor.AnalyzerObserver{
+		&analyzerObserver{name: trawlv1alpha1.AnalyzerSuricata},
+	}
+
+	r := newStatusReporter("node-01", "enp5s0", "pod-xyz", observers,
+		sensor.NewDuplicateCache(sensor.MaxFingerprints), meter)
+
+	if r.Packets == nil {
+		t.Fatal("the status reporter has no packet source; PacketsObserved can never leave zero")
+	}
+
+	drops := int64(7)
+	meter.Observe(&observation.SuricataStats{
+		KernelPackets: &drops, KernelDrops: &drops,
+		Timestamp: time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC),
+	})
+
+	got := r.Packets()
+	if got.PacketsObserved != 7 {
+		t.Errorf("the reporter reads %d packets from a meter that measured 7; "+
+			"it is reading a different meter from the one the tailer writes",
+			got.PacketsObserved)
+	}
+	if got.KernelDrops == nil || *got.KernelDrops != 7 {
+		t.Errorf("kernel drops = %v, want 7", got.KernelDrops)
+	}
+}
+
+// The Suricata parse path must hand its stats records to the meter.
+//
+// SuricataNormalizer.Normalize returns (observation, stats, error) and the
+// sensor's closure discarded the middle value with `_`. Nothing downstream
+// could tell, because a stats record legitimately produces no observation - so
+// dropping it looked exactly like handling it.
+func TestTheSuricataParserFeedsTheMeterItsStatsRecords(t *testing.T) {
+	meter := sensor.NewPacketMeter()
+	parse := suricataParser(&observation.SuricataNormalizer{Version: "8.0.6"}, meter)
+
+	stats := []byte(`{"timestamp":"2026-09-01T12:00:00.000000+0000",` +
+		`"event_type":"stats","stats":{"capture":{"kernel_packets":4096,` +
+		`"kernel_drops":0}}}`)
+
+	obs, err := parse(stats)
+	if err != nil {
+		t.Fatalf("parsing a stats record: %v", err)
+	}
+	if obs != nil {
+		t.Errorf("a stats record produced an observation: %+v", obs)
+	}
+
+	got := meter.Counters()
+	if got.PacketsObserved != 4096 {
+		t.Errorf("the meter saw %d packets after a stats record reporting 4096; "+
+			"the parser is still discarding its stats value", got.PacketsObserved)
+	}
+	if got.KernelDrops == nil || *got.KernelDrops != 0 {
+		t.Errorf("kernel drops = %v, want an explicit 0", got.KernelDrops)
 	}
 }
