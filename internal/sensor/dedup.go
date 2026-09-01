@@ -149,16 +149,32 @@ func (c *DuplicateCache) insert(fp string, seenAt time.Time) {
 }
 
 // Suspected returns how many records were marked as suspected duplicates.
-func (c *DuplicateCache) Suspected() int64 { return c.suspected }
+//
+// The counter accessors lock for the same reason Len and State do: one cache is
+// shared by every tailer goroutine on the sensor, and the status reporter reads
+// it from another goroutine again.
+func (c *DuplicateCache) Suspected() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.suspected
+}
 
 // Evicted returns how many fingerprints were dropped for capacity.
 //
 // A non-zero value means duplicate detection was operating beyond its window,
 // so the target's state should be read as Unknown rather than trusted.
-func (c *DuplicateCache) Evicted() int64 { return c.evicted }
+func (c *DuplicateCache) Evicted() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.evicted
+}
 
 // Unknown returns how many records could not be fingerprinted.
-func (c *DuplicateCache) Unknown() int64 { return c.unknown }
+func (c *DuplicateCache) Unknown() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.unknown
+}
 
 // Len returns the current cache size.
 func (c *DuplicateCache) Len() int {
