@@ -55,28 +55,37 @@ func TestZeekTailersAreBuiltForEveryLog(t *testing.T) {
 // source.version with minLength 1, so an empty string fails validation and the
 // tailer counts the record malformed - every observation discarded because of a
 // missing label about the reader, not anything wrong with what was read.
+//
+// readVersionFile reports whether the analyzer has published one yet; turning
+// "not yet" into observation.UnknownVersion is the normalizer's job, so that
+// one place decides what a record carries.
 func TestAnalyzerVersionIsNeverEmpty(t *testing.T) {
 	dir := t.TempDir()
 
 	missing := filepath.Join(dir, "absent", ".version")
-	if got := analyzerVersion(missing); got == "" {
-		t.Error("a missing version file yields an empty version, which fails schema validation")
+	if _, ok := readVersionFile(missing); ok {
+		t.Error("a missing version file reported a version")
 	}
 
 	empty := filepath.Join(dir, "empty")
 	if err := os.WriteFile(empty, []byte("   \n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := analyzerVersion(empty); got == "" {
-		t.Error("a blank version file yields an empty version")
+	if _, ok := readVersionFile(empty); ok {
+		t.Error("a blank version file reported a version")
+	}
+	// Whatever the file said, what reaches a record is never empty.
+	if got := versionFile(empty).Resolve(); got != observation.UnknownVersion {
+		t.Errorf("an unwritten version file yields %q on a record, want %q",
+			got, observation.UnknownVersion)
 	}
 
 	real := filepath.Join(dir, "real")
 	if err := os.WriteFile(real, []byte("zeek version 8.0.10\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := analyzerVersion(real); got != "zeek version 8.0.10" {
-		t.Errorf("analyzerVersion = %q, want the trimmed banner", got)
+	if got, ok := readVersionFile(real); !ok || got != "zeek version 8.0.10" {
+		t.Errorf("readVersionFile = %q, %v, want the trimmed banner", got, ok)
 	}
 
 	long := filepath.Join(dir, "long")
@@ -84,8 +93,8 @@ func TestAnalyzerVersionIsNeverEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The schema caps it at 64.
-	if got := analyzerVersion(long); len(got) > 64 {
-		t.Errorf("analyzerVersion returned %d characters, over the schema maximum", len(got))
+	if got, _ := readVersionFile(long); len(got) > 64 {
+		t.Errorf("readVersionFile returned %d characters, over the schema maximum", len(got))
 	}
 }
 
@@ -247,7 +256,7 @@ func TestStatusReportsThePacketsTheSensorMeasured(t *testing.T) {
 // dropping it looked exactly like handling it.
 func TestTheSuricataParserFeedsTheMeterItsStatsRecords(t *testing.T) {
 	meter := sensor.NewPacketMeter(sensor.DiscardPackets)
-	parse := suricataParser(&observation.SuricataNormalizer{Version: "8.0.6"}, meter)
+	parse := suricataParser(&observation.SuricataNormalizer{Version: observation.StaticVersion("8.0.6")}, meter)
 
 	stats := []byte(`{"timestamp":"2026-09-01T12:00:00.000000+0000",` +
 		`"event_type":"stats","stats":{"capture":{"kernel_packets":4096,` +
@@ -334,3 +343,35 @@ func TestMeasuredPacketsReachTheExportedMetrics(t *testing.T) {
 }
 
 func ptrTo[T any](v T) *T { return &v }
+
+// The analyzer writes .version from its own entrypoint, immediately before it
+// execs, in a sibling container that starts concurrently with the sensor. The
+// sensor reaches this read within milliseconds; Zeek and Suricata take seconds
+// to initialise. Reading once while building the normalizers therefore lost the
+// race every time, and every observation for the life of the pod carried
+// source.version "unknown" - which is the failure the version was added to
+// prevent, wearing the fallback's clothes.
+func TestAnalyzerVersionIsResolvedWhenTheAnalyzerHasWrittenIt(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".version")
+
+	src := versionFile(path)
+	if got := src(); got != "" {
+		t.Errorf("version = %q before the analyzer wrote the file, want the empty string the normalizer maps to unknown", got)
+	}
+
+	if err := os.WriteFile(path, []byte("zeek version 8.0.10\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := src(); got != "zeek version 8.0.10" {
+		t.Errorf("version = %q once the analyzer wrote the file, want it picked up", got)
+	}
+
+	// Once read it is cached, so the steady state is not a file read per record.
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if got := src(); got != "zeek version 8.0.10" {
+		t.Errorf("version = %q after the file went away, want the cached value", got)
+	}
+}

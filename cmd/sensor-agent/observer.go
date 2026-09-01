@@ -5,6 +5,7 @@ import (
 
 	trawlv1alpha1 "trawl.cloud/trawl/api/v1alpha1"
 	"trawl.cloud/trawl/internal/content"
+	"trawl.cloud/trawl/internal/observation"
 	"trawl.cloud/trawl/internal/sensor"
 )
 
@@ -17,14 +18,16 @@ import (
 // rather than the analyzer an operator asked for.
 type analyzerObserver struct {
 	name       trawlv1alpha1.AnalyzerName
-	version    string
+	version    observation.VersionSource
 	contentDir string
 	tailers    []*sensor.Tailer
 }
 
 func (o *analyzerObserver) Name() trawlv1alpha1.AnalyzerName { return o.name }
 
-func (o *analyzerObserver) Version() string { return o.version }
+// Version is resolved on each report rather than held as a string, because the
+// analyzer publishes it after the sensor starts; see versionFile.
+func (o *analyzerObserver) Version() string { return o.version.Resolve() }
 
 // Healthy reports observed liveness rather than desired state.
 //

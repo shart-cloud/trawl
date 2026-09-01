@@ -236,7 +236,7 @@ func TestZeekCertificateRecordsNormalizeIntoPopulatedObservations(t *testing.T) 
 	}
 
 	n := &observation.ZeekNormalizer{
-		Version: "8.0.10",
+		Version: observation.StaticVersion("8.0.10"),
 		Tap:     &observation.Tap{Namespace: "trawl-system", Name: "t", UID: "u"},
 		Target:  observation.Target{Node: "n", Interface: "eth0"},
 		Now:     time.Now,

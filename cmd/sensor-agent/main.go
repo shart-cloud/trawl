@@ -130,7 +130,7 @@ func main() {
 		n := &observation.SuricataNormalizer{
 			Tap:     tap,
 			Target:  target,
-			Version: analyzerVersion(filepath.Join(filepath.Dir(*suricataLog), ".version")),
+			Version: versionFile(filepath.Join(filepath.Dir(*suricataLog), ".version")),
 		}
 		suricataTailer = &sensor.Tailer{
 			Path:       *suricataLog,
@@ -175,7 +175,7 @@ func main() {
 		n := &observation.ZeekNormalizer{
 			Tap:     tap,
 			Target:  target,
-			Version: analyzerVersion(filepath.Join(*zeekLogDir, ".version")),
+			Version: versionFile(filepath.Join(*zeekLogDir, ".version")),
 		}
 		zeekTailerSet = zeekTailers(*zeekLogDir, n, emitter.emit, metrics, duplicates)
 		for _, tailer := range zeekTailerSet {
@@ -376,36 +376,61 @@ func zeekTailers(
 	return out
 }
 
-// analyzerVersion reads the version an analyzer recorded beside its logs.
+// versionFile resolves an analyzer's version from the file it records beside
+// its logs.
 //
 // observation.schema.json requires source.version with minLength 1, and the
-// normalizers take it from a field nothing set: every Zeek and Suricata record
+// normalizers took it from a field nothing set: every Zeek and Suricata record
 // was produced correctly, failed validation on /source, and was counted as
 // malformed. The sensor stayed ready and emitted nothing while the analyzers
 // worked perfectly.
 //
-// A missing or unreadable file falls back to "unknown" rather than propagating
-// an empty string, because an empty one reproduces exactly that failure - every
-// observation dropped for want of a label about the reader rather than anything
-// wrong with what was read. "unknown" is what the Hubble path already records
-// when the relay does not report a version.
-func analyzerVersion(path string) string {
-	const unknown = "unknown"
+// The read is deferred and retried rather than done once here, because the file
+// does not exist yet when the sensor starts. Each analyzer's entrypoint writes
+// it immediately before exec, in a container that starts concurrently with this
+// one, and the sensor reaches this point within milliseconds while Zeek and
+// Suricata take seconds to initialise. Reading once at startup therefore lost
+// the race every time and stamped "unknown" on every record for the life of the
+// pod - which is the same defect as the unset field, wearing the fallback's
+// clothes. By the time a record exists to stamp, the analyzer that produced it
+// has necessarily written its version.
+//
+// The empty string is returned until the file can be read; the normalizer maps
+// that to observation.UnknownVersion, so a record never carries an empty one.
+func versionFile(path string) observation.VersionSource {
+	var (
+		mu     sync.Mutex
+		cached string
+	)
+	return func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		if cached == "" {
+			if v, ok := readVersionFile(path); ok {
+				cached = v
+			}
+		}
+		return cached
+	}
+}
 
+// readVersionFile reads and bounds one version banner, reporting whether the
+// analyzer has published one yet.
+func readVersionFile(path string) (string, bool) {
 	raw, err := os.ReadFile(path) //nolint:gosec // G304: path is built from the sensor's own flags.
 	if err != nil {
-		return unknown
+		return "", false
 	}
 	v := strings.TrimSpace(string(raw))
 	if v == "" {
-		return unknown
+		return "", false
 	}
 	// The schema caps this at 64 characters, and a version banner can be
 	// longer than the version.
 	if len(v) > 64 {
 		v = v[:64]
 	}
-	return v
+	return v, true
 }
 
 // emitter serializes observations to stdout.
