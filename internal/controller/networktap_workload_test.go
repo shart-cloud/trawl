@@ -607,17 +607,19 @@ func TestSensorArgsMatchTheSensorBinary(t *testing.T) {
 // therefore has to set the port, and the probes have to agree with what it set
 // - a probe pointing at a port nothing serves would fail the pod just as surely.
 func TestSensorProbePortAvoidsNodeExporterAndMatchesTheProbes(t *testing.T) {
-	spec := renderer().PodSpec(testTap())
+	tap := testTap()
+	spec := renderer().PodSpec(tap)
 	c := containerByName(spec, "sensor-agent")
 	if c == nil {
 		t.Fatal("no sensor-agent container rendered")
 	}
+	port := int(SensorProbePort(tap))
 
-	if sensorProbePort == 9100 {
+	if port == 9100 {
 		t.Error("the sensor probe port is node_exporter's; on a host-network pod that is a collision waiting for any cluster with node metrics")
 	}
 
-	want := "--probe-addr=:" + strconv.Itoa(sensorProbePort)
+	want := "--probe-addr=:" + strconv.Itoa(port)
 	if !slices.Contains(c.Args, want) {
 		t.Errorf("args do not carry %q, so the binary keeps its own default and the probes point elsewhere", want)
 	}
@@ -630,8 +632,8 @@ func TestSensorProbePortAvoidsNodeExporterAndMatchesTheProbes(t *testing.T) {
 			t.Errorf("%s probe is not an HTTP GET", name)
 			continue
 		}
-		if got := probe.HTTPGet.Port.IntValue(); got != sensorProbePort {
-			t.Errorf("%s probe port = %d, want %d", name, got, sensorProbePort)
+		if got := probe.HTTPGet.Port.IntValue(); got != port {
+			t.Errorf("%s probe port = %d, want %d", name, got, port)
 		}
 	}
 }
@@ -757,4 +759,43 @@ func TestTheSensorIsToldItsSourceType(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Two taps may legitimately select the same node - a Zeek-only tap on one
+// interface and a Suricata-only tap on another is an ordinary configuration,
+// and nothing in the API or the webhook forbids overlapping selectors. Both
+// sensor pods are on the host network, so a probe port fixed for every tap
+// meant the second one to schedule died with "listen tcp :19100: bind: address
+// already in use", CrashLoopBackOff, WorkloadReady=False, and a tap stuck in
+// Pending with nothing in its status naming the cause.
+func TestEachTapGetsItsOwnProbePortOnAHostNetworkNode(t *testing.T) {
+	first := testTap()
+	first.Namespace, first.Name = "trawl-system", "zeek-only"
+	second := testTap()
+	second.Namespace, second.Name = "trawl-system", "suricata-only"
+
+	if SensorProbePort(first) == SensorProbePort(second) {
+		t.Errorf("two taps derive the same probe port %d; on one node that is a bind collision",
+			SensorProbePort(first))
+	}
+
+	// Derivation is a pure function of identity, because WorkloadRenderer is
+	// documented as a pure function of the tap and the installation config. A
+	// port that changed between reconciles would restart the sensor each time.
+	if SensorProbePort(first) != SensorProbePort(testTapNamed("trawl-system", "zeek-only")) {
+		t.Error("the probe port is not stable for one tap across renders")
+	}
+
+	// And it stays clear of the exporter range it was moved out of.
+	for _, tap := range []*trawlv1alpha1.NetworkTap{first, second} {
+		if p := SensorProbePort(tap); p < 19100 || p > 19199 {
+			t.Errorf("probe port %d for %s is outside the range reserved for sensors", p, tap.Name)
+		}
+	}
+}
+
+func testTapNamed(namespace, name string) *trawlv1alpha1.NetworkTap {
+	tap := testTap()
+	tap.Namespace, tap.Name = namespace, name
+	return tap
 }

@@ -405,3 +405,24 @@ func TestDurationRoundTripsAsAString(t *testing.T) {
 		t.Errorf("marshalled to %s, want a duration string", out)
 	}
 }
+
+func TestAnExplicitNullLeavesADurationForTheDefaults(t *testing.T) {
+	// `auditRetention: null` is a normal way to spell "leave it defaulted" in
+	// YAML. Unmarshalling it as a string succeeded as a no-op and left "",
+	// which ParseDuration rejects - so the spelling that asks for the default
+	// was the one spelling that failed to load.
+	c := valid()
+	raw, err := yaml.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withNull := strings.ReplaceAll(string(raw), "auditRetention: 8760h0m0s", "auditRetention: null")
+
+	loaded, err := Load([]byte(withNull))
+	if err != nil {
+		t.Fatalf("Load rejected a null duration: %v", err)
+	}
+	if got := loaded.AuditRetention.Duration(); got != DefaultAuditRetention {
+		t.Errorf("auditRetention = %v after null, want the default %v", got, DefaultAuditRetention)
+	}
+}

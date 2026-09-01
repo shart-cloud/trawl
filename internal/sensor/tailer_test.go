@@ -102,7 +102,7 @@ func SuricataNormalizerFor(t *testing.T) observation.SuricataNormalizer {
 	t.Helper()
 	fixed := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	return observation.SuricataNormalizer{
-		Version: "8.0.6",
+		Version: observation.StaticVersion("8.0.6"),
 		Tap:     &observation.Tap{Namespace: "trawl-system", Name: "tap", UID: "tap-1"},
 		Target:  observation.Target{Node: "sensor-01", Interface: "enp5s0"},
 		Now:     func() time.Time { return fixed },

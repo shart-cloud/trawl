@@ -61,7 +61,7 @@ type PacketMeter struct {
 
 	// last is the previous raw reading, and lastSource which counter it came
 	// from. A reading below its predecessor, or one from a different counter,
-	// starts a new segment instead of producing a negative delta.
+	// re-baselines instead of producing a negative delta.
 	last       int64
 	lastSource counterSource
 
@@ -152,10 +152,18 @@ func (m *PacketMeter) measure(stats *observation.SuricataStats) (Increment, bool
 	before := m.observed
 
 	switch {
-	case source != m.lastSource:
-		// A different counter, so the previous reading is not a baseline for
-		// this one. Everything it reports is new to this meter.
+	case m.lastSource == sourceNone:
+		// The first reading of this meter's life. The analyzer may have been
+		// running before the sensor attached, and those packets were observed,
+		// so the whole cumulative value is taken.
 		m.observed += raw
+	case source != m.lastSource:
+		// A different counter. The two count the same traffic at different
+		// points in the analyzer's pipeline, so its cumulative total covers
+		// packets already counted through the other one - adding it whole
+		// counted the entire history twice. Adopt it as the baseline and
+		// measure onward from here, which forgoes at most the packets that
+		// arrived during this one record.
 	case raw < m.last:
 		// The analyzer restarted. The packets it counted before the reset were
 		// still observed, so they are kept and the new run is added to them.
@@ -164,7 +172,7 @@ func (m *PacketMeter) measure(stats *observation.SuricataStats) (Increment, bool
 		m.observed += raw - m.last
 	}
 
-	grew := raw != m.last || source != m.lastSource
+	grew := m.observed > before
 	inc := Increment{Packets: m.observed - before}
 	if m.drops != nil {
 		d := *m.drops
@@ -172,7 +180,7 @@ func (m *PacketMeter) measure(stats *observation.SuricataStats) (Increment, bool
 	}
 	m.last, m.lastSource = raw, source
 
-	if grew && raw > 0 {
+	if grew {
 		seen := stats.Timestamp
 		m.lastPacket = &seen
 		inc.LastPacket = seen

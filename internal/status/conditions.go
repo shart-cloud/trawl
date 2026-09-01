@@ -76,6 +76,7 @@ const (
 	ReasonTargetsResolved     = "TargetsResolved"
 	ReasonNoEligibleTargets   = "NoEligibleTargets"
 	ReasonAmbiguousTargets    = "AmbiguousTargets"
+	ReasonProbePortConflict   = "ProbePortConflict"
 	ReasonWorkloadReady       = "WorkloadReady"
 	ReasonWorkloadUnavailable = "WorkloadUnavailable"
 	ReasonWorkloadProgressing = "WorkloadProgressing"

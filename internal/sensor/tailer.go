@@ -118,10 +118,6 @@ type Tailer struct {
 	counters counters
 }
 
-// Counters returns a snapshot of processing outcomes.
-//
-// Safe to call from another goroutine while Run is active; the status reporter
-// does exactly that on every heartbeat.
 // LastRecord reports when this tailer last accepted a record.
 //
 // The boolean distinguishes "nothing yet" from a zero time.
@@ -133,6 +129,10 @@ func (t *Tailer) LastRecord() (time.Time, bool) {
 	return time.Unix(0, ns), true
 }
 
+// Counters returns a snapshot of processing outcomes.
+//
+// Safe to call from another goroutine while Run is active; the status reporter
+// does exactly that on every heartbeat.
 func (t *Tailer) Counters() Counters {
 	return Counters{
 		Accepted:    t.counters.accepted.Load(),

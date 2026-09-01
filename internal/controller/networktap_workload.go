@@ -19,6 +19,7 @@ package controller
 
 import (
 	"fmt"
+	"hash/fnv"
 	"strconv"
 	"strings"
 
@@ -54,13 +55,18 @@ const (
 	tmpVolume = "content-tmp"
 	tmpPath   = "/tmp"
 
-	// The sensor pod runs on the host network, so this is a port on the
-	// node, not a private one. cmd/sensor-agent defaults to :9100, which is
+	// The sensor pod runs on the host network, so its probe port is a port on
+	// the node, not a private one. cmd/sensor-agent defaults to :9100, which is
 	// node_exporter's well-known port - on any cluster that scrapes node
 	// metrics the sensor loses the race and exits with "listen tcp :9100:
-	// bind: address already in use". Chosen outside the Prometheus exporter
-	// range so it does not collide with the next exporter either.
-	sensorProbePort = 19100
+	// bind: address already in use". This range is outside the Prometheus
+	// exporter range so it does not collide with the next exporter either.
+	//
+	// The port is derived per tap rather than fixed, because two taps may
+	// legitimately select the same node and a fixed port made the second
+	// sensor to schedule there fail to bind. See sensorProbePort.
+	sensorProbePortBase = 19100
+	sensorProbePortSpan = 100
 	// tokenPath is a mount path, not a credential; the token itself is
 	// projected by the kubelet and never appears in this repository.
 	tokenPath = "/var/run/secrets/trawl" //nolint:gosec // G101: mount path
@@ -205,6 +211,33 @@ func sourceOf(tap *trawlv1alpha1.NetworkTap) *trawlv1alpha1.InterfaceSource {
 		return tap.Spec.MirrorInterface
 	}
 	return tap.Spec.NodeInterface
+}
+
+// sensorProbePort is the node port this tap's sensor serves probes and metrics
+// on.
+//
+// It is derived from the tap's identity rather than fixed, because the sensor
+// pod is on the host network and two taps may legitimately select the same
+// node: a Zeek-only tap on one interface and a Suricata-only tap on another is
+// an ordinary configuration that nothing in the API or the webhook forbids.
+// With one port for every sensor, the second pod to schedule on a node exited
+// with "bind: address already in use" and the tap sat in Pending.
+//
+// Derivation is a pure function of namespace and name for the same reason the
+// rest of WorkloadRenderer is pure: the port has to be identical on every
+// render, or each reconcile would rewrite the pod spec and restart the sensor.
+// The span is small enough that two taps can still collide; the controller
+// checks for that and says so in status rather than leaving a pod to crash-loop
+// unexplained - see checkProbePortConflict.
+//
+// Exported so the conflict check and its tests name one derivation rather than
+// two that can drift.
+func SensorProbePort(tap *trawlv1alpha1.NetworkTap) int32 {
+	h := fnv.New32a()
+	// Errors are impossible on a hash writer, and namespace/name is the tap's
+	// identity: two taps that share it are the same object.
+	_, _ = h.Write([]byte(tap.Namespace + "/" + tap.Name))
+	return sensorProbePortBase + int32(h.Sum32()%sensorProbePortSpan) //nolint:gosec // G115: bounded by the modulus.
 }
 
 // PodSpec renders the analyzer pod for a tap.
@@ -423,7 +456,7 @@ func (r *WorkloadRenderer) sensorContainer(tap *trawlv1alpha1.NetworkTap, src *t
 		"--source-type=" + sourceTypeLabel(tap),
 		"--log-dir=" + logsPath,
 		"--content-dir=" + contentPath,
-		"--probe-addr=:" + strconv.Itoa(sensorProbePort),
+		"--probe-addr=:" + strconv.Itoa(int(SensorProbePort(tap))),
 		// Where the projected token and CA are mounted. Passed rather than
 		// assumed so the renderer and the binary cannot disagree silently.
 		"--token-dir=" + tokenPath,
@@ -477,14 +510,14 @@ func (r *WorkloadRenderer) sensorContainer(tap *trawlv1alpha1.NetworkTap, src *t
 		},
 		ReadinessProbe: &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
-				HTTPGet: &corev1.HTTPGetAction{Path: "/readyz", Port: intstr.FromInt32(sensorProbePort)},
+				HTTPGet: &corev1.HTTPGetAction{Path: "/readyz", Port: intstr.FromInt32(SensorProbePort(tap))},
 			},
 			InitialDelaySeconds: 5,
 			PeriodSeconds:       10,
 		},
 		LivenessProbe: &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
-				HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstr.FromInt32(sensorProbePort)},
+				HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstr.FromInt32(SensorProbePort(tap))},
 			},
 			InitialDelaySeconds: 10,
 			PeriodSeconds:       20,

@@ -59,7 +59,9 @@ type zeekBase struct {
 
 // ZeekNormalizer converts Zeek JSON log lines into normalized observations.
 type ZeekNormalizer struct {
-	Version string
+	// Version is read per record, because the analyzer publishes it after the
+	// sensor starts.
+	Version VersionSource
 	Tap     *Tap
 	Target  Target
 	Now     func() time.Time
@@ -94,7 +96,7 @@ func (n *ZeekNormalizer) Normalize(logType ZeekLogType, line []byte) (*Observati
 		ID:              recordIDFromParts(SourceZeek, eventTime, string(logType), base.UID, base.CommunityID),
 		EventTime:       eventTime,
 		ObservedAt:      n.now(),
-		Source:          Source{Kind: SourceZeek, Version: n.Version},
+		Source:          Source{Kind: SourceZeek, Version: n.Version.Resolve()},
 		Tap:             n.Tap,
 		Target:          n.Target,
 		ObservationType: obsType,

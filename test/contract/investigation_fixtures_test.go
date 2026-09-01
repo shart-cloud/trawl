@@ -36,8 +36,10 @@ func normalizeSession(t *testing.T, s fixtures.Session) []*observation.Observati
 	target := observation.Target{Node: "sensor-01", Interface: "enp5s0"}
 	now := func() time.Time { return fixtures.BaseTime.Add(time.Minute) }
 
-	suricata := &observation.SuricataNormalizer{Version: "8.0.6", Tap: tap, Target: target, Now: now}
-	zeek := &observation.ZeekNormalizer{Version: "8.0.10", Tap: tap, Target: target, Now: now}
+	suricata := &observation.SuricataNormalizer{
+		Version: observation.StaticVersion("8.0.6"), Tap: tap, Target: target, Now: now,
+	}
+	zeek := &observation.ZeekNormalizer{Version: observation.StaticVersion("8.0.10"), Tap: tap, Target: target, Now: now}
 
 	var out []*observation.Observation
 	for _, line := range s.SuricataEVE {

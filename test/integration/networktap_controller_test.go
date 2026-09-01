@@ -17,6 +17,7 @@ limitations under the License.
 package integration
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -541,4 +542,96 @@ func findCondition(conds []metav1.Condition, condType string) *metav1.Condition 
 		}
 	}
 	return nil
+}
+
+// Two taps may legitimately select the same node - a different interface, a
+// different analyzer - and nothing in the API forbids it. Both sensor pods run
+// on the host network, so if they also derive the same probe port the second pod
+// to schedule exits with "bind: address already in use" and crash-loops. That is
+// invisible in the API: the tap reports WorkloadReady=False and sits in Pending
+// with nothing naming the cause. SensorProbePort makes the collision rare; this
+// is what makes it legible when it happens.
+func TestTapsCollidingOnAProbePortSayWhichOneYielded(t *testing.T) {
+	ns := NewNamespace(t)
+	createNode(t, "probe-conflict-node", map[string]string{"trawl-test": "probe-conflict"})
+	selector := metav1.LabelSelector{MatchLabels: map[string]string{"trawl-test": "probe-conflict"}}
+
+	first := mirrorTap(ns, "probe-conflict-a")
+	first.Spec.MirrorInterface.NodeSelector = selector
+	if err := Client().Create(t.Context(), first); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// A colliding name is searched for rather than hard-coded, so this test does
+	// not encode the hash and break the day the derivation is retuned.
+	second := mirrorTap(ns, collidingName(t, ns, first))
+	second.Spec.MirrorInterface.NodeSelector = selector
+	second.Spec.MirrorInterface.Interface = "enp6s0"
+	if err := Client().Create(t.Context(), second); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	r := reconcilerFor(t, ns)
+	reconcile(t, r, first)
+	reconcile(t, r, second)
+
+	// Exactly one yields, and the other keeps the port. Which one is decided by
+	// creation time, with the UID as a tie-break - and these two are created in
+	// the same second, because metav1.Time has second granularity. Asserting
+	// which name wins would either encode that tie-break or be flaky; what has
+	// to hold is that both taps reach the same answer, so a collision costs one
+	// sensor rather than both.
+	yielded := map[string]*metav1.Condition{}
+	kept := map[string]*metav1.Condition{}
+	for _, tap := range []*trawlv1alpha1.NetworkTap{first, second} {
+		stored := reload(t, tap)
+		c := findCondition(stored.Status.Conditions, "Accepted")
+		if c == nil {
+			t.Fatalf("%s has no Accepted condition", tap.Name)
+		}
+		if c.Status == metav1.ConditionFalse && c.Reason == "ProbePortConflict" {
+			yielded[tap.Name] = c
+			if stored.Status.Phase != trawlv1alpha1.TapPhaseError {
+				t.Errorf("%s phase = %q, want Error", tap.Name, stored.Status.Phase)
+			}
+			continue
+		}
+		if c.Status != metav1.ConditionTrue {
+			t.Errorf("%s Accepted = %+v, want either True or a ProbePortConflict", tap.Name, c)
+		}
+		kept[tap.Name] = c
+	}
+
+	if len(yielded) != 1 || len(kept) != 1 {
+		t.Fatalf("%d taps yielded and %d kept the port, want exactly one of each: "+
+			"neither running is as bad as both crash-looping, and both running is the bug",
+			len(yielded), len(kept))
+	}
+
+	for name, c := range yielded {
+		other := first.Name
+		if name == first.Name {
+			other = second.Name
+		}
+		if !strings.Contains(c.Message, other) || !strings.Contains(c.Message, "probe-conflict-node") {
+			t.Errorf("message = %q, want it to name the tap it yielded to and the shared node", c.Message)
+		}
+	}
+}
+
+// collidingName finds a tap name in ns whose derived probe port matches tap's.
+func collidingName(t *testing.T, ns string, tap *trawlv1alpha1.NetworkTap) string {
+	t.Helper()
+	want := controller.SensorProbePort(tap)
+	for i := range 1000 {
+		candidate := fmt.Sprintf("probe-conflict-b-%d", i)
+		probe := &trawlv1alpha1.NetworkTap{
+			ObjectMeta: metav1.ObjectMeta{Name: candidate, Namespace: ns},
+		}
+		if controller.SensorProbePort(probe) == want {
+			return candidate
+		}
+	}
+	t.Fatalf("no name collided with probe port %d in 1000 tries", want)
+	return ""
 }

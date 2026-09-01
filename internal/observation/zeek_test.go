@@ -26,7 +26,7 @@ import (
 func zeekNormalizer() *ZeekNormalizer {
 	fixed := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	return &ZeekNormalizer{
-		Version: "8.0.10",
+		Version: StaticVersion("8.0.10"),
 		Tap:     &Tap{Namespace: "trawl-system", Name: "mirror-0", UID: "tap-uid-1"},
 		Target:  Target{Node: "sensor-01", Interface: "enp5s0"},
 		Now:     func() time.Time { return fixed },
@@ -318,7 +318,7 @@ func TestRealZeekConnLinePassesTheFullAcceptPath(t *testing.T) {
 	n := &ZeekNormalizer{
 		Tap:     &Tap{Namespace: "trawl-system", Name: "node-eno1", UID: "f1bb32c4-eecb-4a55-bda7-ac7928b9d8ce"},
 		Target:  Target{Node: "talos-node", Interface: "eno1"},
-		Version: "zeek version 8.0.10",
+		Version: StaticVersion("zeek version 8.0.10"),
 	}
 
 	obs, err := n.Normalize(ZeekConn, []byte(line))

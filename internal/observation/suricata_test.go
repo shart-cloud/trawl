@@ -26,7 +26,7 @@ import (
 func suricataNormalizer() *SuricataNormalizer {
 	fixed := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	return &SuricataNormalizer{
-		Version: "8.0.6",
+		Version: StaticVersion("8.0.6"),
 		Tap:     &Tap{Namespace: "trawl-system", Name: "mirror-0", UID: "tap-uid-1"},
 		Target:  Target{Node: "sensor-01", Interface: "enp5s0"},
 		Now:     func() time.Time { return fixed },

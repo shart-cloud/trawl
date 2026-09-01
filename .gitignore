@@ -7,6 +7,15 @@
 bin/*
 Dockerfile.cross
 
+# `go build ./cmd/x` with no -o writes the binary to the repo root, named for
+# the package directory. A 40 MB sensor-agent was committed that way; the
+# Makefile always passes -o bin/, so nothing legitimate lands here.
+/capture-runner
+/content-init
+/controller-manager
+/event-worker
+/sensor-agent
+
 # Test binary, built with `go test -c`
 *.test
 

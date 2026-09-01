@@ -89,8 +89,9 @@ type SuricataStats struct {
 
 // SuricataNormalizer converts EVE JSON into normalized observations.
 type SuricataNormalizer struct {
-	// Version is the analyzer version reported on each record.
-	Version string
+	// Version is the analyzer version reported on each record. It is read per
+	// record, because the analyzer publishes it after the sensor starts.
+	Version VersionSource
 	// Tap and Target identify where these records came from.
 	Tap    *Tap
 	Target Target
@@ -144,7 +145,7 @@ func (n *SuricataNormalizer) normalizeAlert(rec *eveRecord) (*Observation, error
 		ID:              recordID(SourceSuricata, rec.CommunityID, rec.Alert.SignatureID, eventTime),
 		EventTime:       eventTime,
 		ObservedAt:      n.now(),
-		Source:          Source{Kind: SourceSuricata, Version: n.Version},
+		Source:          Source{Kind: SourceSuricata, Version: n.Version.Resolve()},
 		Tap:             n.Tap,
 		Target:          n.Target,
 		ObservationType: TypeSignature,
