@@ -52,7 +52,7 @@ spec:
         - name: event-worker
           # Placeholder digest, substituted by the release overlay. A tag here
           # would let the deployed image change without a manifest change.
-          image: ghcr.io/shart-cloud/trawl/event-worker@sha256:3b291e04078b9ac5eb79ccd61e0edde1fc3361fad40ef3beda22b6c7812e160e
+          image: ghcr.io/shart-cloud/trawl/event-worker@sha256:e08d5c96d536df6084b5792d981ec94b3b7e8e367e897b1e73b9294d6c2aec22
           args:
             - --config=/etc/trawl/config.yaml
             - --leader-elect=true
