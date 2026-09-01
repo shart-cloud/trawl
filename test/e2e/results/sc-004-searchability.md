@@ -1,6 +1,6 @@
 # SC-004 searchability
 
-Measured 2026-08-31T00:51:55Z by `TestObservationsBecomeSearchableWithinThirtySeconds`
+Measured 2026-08-31T23:52:40Z by `TestObservationsBecomeSearchableWithinThirtySeconds`
 against the deployed pipeline. Latency is from `observed_at` - when the
 sensor read the analyzer's record - to the first query that returned it,
 so each figure includes the one-second poll interval and is an upper bound.
@@ -9,12 +9,11 @@ Budget: 95% within 30s.
 
 | source / subtype | n | p50 | p95 | max |
 |---|---:|---:|---:|---:|
-| Hubble/cluster_flow | 7181 | 1.28s | 2.59s | 3s |
-| Suricata/signature | 1 | 490ms | 490ms | 490ms |
-| Zeek/connection | 32 | 1.97s | 4.05s | 4.05s |
-| Zeek/dns | 35 | 2.09s | 3.67s | 3.67s |
-| Zeek/tls | 12 | 2.23s | 4.1s | 4.1s |
-| Zeek/weird | 17 | 3.28s | 3.58s | 3.58s |
-| **all** | 7278 | 1.28s | 2.61s | 4.1s |
+| Hubble/cluster_flow | 6651 | 1.89s | 3.54s | 3.82s |
+| Zeek/connection | 33 | 2.55s | 2.88s | 3.53s |
+| Zeek/dns | 48 | 1.88s | 3.52s | 3.52s |
+| Zeek/tls | 7 | 2.72s | 2.99s | 2.99s |
+| Zeek/weird | 2 | 3.49s | 3.49s | 3.49s |
+| **all** | 6741 | 1.89s | 3.54s | 3.82s |
 
-Within budget: 100.00% of 7278 observations.
+Within budget: 100.00% of 6741 observations.
