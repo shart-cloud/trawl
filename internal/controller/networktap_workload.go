@@ -30,6 +30,7 @@ import (
 
 	trawlv1alpha1 "trawl.cloud/trawl/api/v1alpha1"
 	"trawl.cloud/trawl/internal/config"
+	"trawl.cloud/trawl/internal/telemetry"
 )
 
 // Volume and path names shared by the rendered containers.
@@ -187,6 +188,18 @@ func analyzerConfig(tap *trawlv1alpha1.NetworkTap, name trawlv1alpha1.AnalyzerNa
 }
 
 // sourceOf returns the tap's active interface source.
+// sourceTypeLabel maps a tap's source type onto the telemetry vocabulary.
+//
+// The metric label set is a contract the dashboards and the telemetry contract
+// test share, so it is taken from telemetry's constants rather than by
+// lowercasing the API enum, which would drift the moment either side renamed.
+func sourceTypeLabel(tap *trawlv1alpha1.NetworkTap) string {
+	if tap.Spec.Type == trawlv1alpha1.TapSourceMirrorInterface {
+		return telemetry.SourceTypeMirrorInterface
+	}
+	return telemetry.SourceTypeNodeInterface
+}
+
 func sourceOf(tap *trawlv1alpha1.NetworkTap) *trawlv1alpha1.InterfaceSource {
 	if tap.Spec.Type == trawlv1alpha1.TapSourceMirrorInterface {
 		return tap.Spec.MirrorInterface
@@ -405,6 +418,9 @@ func (r *WorkloadRenderer) sensorContainer(tap *trawlv1alpha1.NetworkTap, src *t
 		"--tap-name=" + tap.Name,
 		"--tap-uid=" + string(tap.UID),
 		"--interface=" + src.Interface,
+		// The sensor labels its capture counters by source type and cannot
+		// derive it: it is given an interface name, not the tap's Type.
+		"--source-type=" + sourceTypeLabel(tap),
 		"--log-dir=" + logsPath,
 		"--content-dir=" + contentPath,
 		"--probe-addr=:" + strconv.Itoa(sensorProbePort),

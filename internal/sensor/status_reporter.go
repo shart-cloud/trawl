@@ -159,23 +159,6 @@ func (r *StatusReporter) Build() trawlv1alpha1.TargetStatus {
 	return status
 }
 
-// AllHealthy reports whether every analyzer this sensor observes is healthy.
-//
-// Used to decide readiness. A partially healthy sensor is not ready, because a
-// tap that reports Active while one analyzer is dead would tell an analyst the
-// evidence is complete when it is not.
-func (r *StatusReporter) AllHealthy() bool {
-	if len(r.Analyzers) == 0 {
-		return false
-	}
-	for _, a := range r.Analyzers {
-		if healthy, _ := a.Healthy(); !healthy {
-			return false
-		}
-	}
-	return true
-}
-
 func (r *StatusReporter) now() time.Time {
 	if r.Now != nil {
 		return r.Now().UTC()

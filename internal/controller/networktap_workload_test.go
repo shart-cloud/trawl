@@ -28,6 +28,7 @@ import (
 
 	trawlv1alpha1 "trawl.cloud/trawl/api/v1alpha1"
 	"trawl.cloud/trawl/internal/config"
+	"trawl.cloud/trawl/internal/telemetry"
 )
 
 // These are the tests that pin Trawl's privilege boundary. Every assertion here
@@ -569,6 +570,7 @@ func TestSensorArgsMatchTheSensorBinary(t *testing.T) {
 		"suricata-log":  true,
 		"zeek-log-dir":  true,
 		"token-dir":     true,
+		"source-type":   true,
 	}
 
 	spec := renderer().PodSpec(testTap())
@@ -713,6 +715,45 @@ func TestOnlyEnabledAnalyzersAreSwitchedOn(t *testing.T) {
 				if seen[absent] {
 					t.Errorf("--%s is passed for an analyzer this tap does not enable", absent)
 				}
+			}
+		})
+	}
+}
+
+// The sensor must be told which source type it is observing.
+//
+// trawl_sensor_packets_total and its siblings are labelled by source_type, and
+// the sensor has no way to work that out for itself - it sees an interface
+// name, not the tap's Type. Without the flag every sensor would label its
+// counters with one default and a mirror tap's packets would be attributed to
+// node_interface.
+func TestTheSensorIsToldItsSourceType(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		typ  trawlv1alpha1.TapSourceType
+		want string
+	}{
+		{"node interface", trawlv1alpha1.TapSourceNodeInterface, telemetry.SourceTypeNodeInterface},
+		{"mirror interface", trawlv1alpha1.TapSourceMirrorInterface, telemetry.SourceTypeMirrorInterface},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tap := testTap()
+			tap.Spec.Type = tc.typ
+			// testTap is a mirror tap. The source has to move with the type:
+			// sourceOf reads the field the type names, and PodSpec
+			// dereferences what it returns.
+			if tc.typ == trawlv1alpha1.TapSourceNodeInterface {
+				tap.Spec.NodeInterface = tap.Spec.MirrorInterface
+				tap.Spec.MirrorInterface = nil
+			}
+
+			sensor := containerByName(renderer().PodSpec(tap), "sensor-agent")
+			if sensor == nil {
+				t.Fatal("no sensor-agent container rendered")
+			}
+			want := "--source-type=" + tc.want
+			if !slices.Contains(sensor.Args, want) {
+				t.Errorf("sensor args %v do not carry %q", sensor.Args, want)
 			}
 		})
 	}

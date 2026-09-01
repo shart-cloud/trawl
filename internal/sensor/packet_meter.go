@@ -73,10 +73,49 @@ type PacketMeter struct {
 	// emitted on a timer whether or not traffic arrived, so their timestamp
 	// says when the analyzer reported, not when a packet was seen.
 	lastPacket *time.Time
+
+	// observe reports each measurement onward, so the counters reach the
+	// metrics plane as well as the CRD status.
+	observe PacketObserver
 }
 
+// Increment is one measurement, reported as it is taken.
+type Increment struct {
+	// Packets is how many packets this measurement added. Zero when the
+	// analyzer's counter stood still.
+	Packets int64
+
+	// Drops is the cumulative kernel drop count, nil when the analyzer does
+	// not report drops - the same distinction the status field draws.
+	Drops *int64
+
+	// LastPacket is when a packet was last seen, zero when this measurement
+	// established no new arrival.
+	LastPacket time.Time
+}
+
+// PacketObserver receives each measurement.
+//
+// It is a required argument of NewPacketMeter rather than an optional field,
+// because an optional one is how the capture counters went unreported for the
+// life of the project: a consumer that nil-checks its own input cannot tell an
+// absent measurement from a quiet interface, and neither can anyone reading the
+// result. A caller with nothing to do with the measurements says so by passing
+// DiscardPackets, which is a decision a reader can see.
+type PacketObserver func(Increment)
+
+// DiscardPackets is the explicit "these measurements go nowhere" observer.
+func DiscardPackets(Increment) {}
+
 // NewPacketMeter returns a meter that has measured nothing.
-func NewPacketMeter() *PacketMeter { return &PacketMeter{} }
+func NewPacketMeter(observe PacketObserver) *PacketMeter {
+	if observe == nil {
+		// A nil observer is a caller who forgot rather than one who chose, and
+		// the point of the required argument is to tell those apart.
+		observe = DiscardPackets
+	}
+	return &PacketMeter{observe: observe}
+}
 
 // Observe folds one stats record into the running counters.
 //
@@ -86,7 +125,16 @@ func (m *PacketMeter) Observe(stats *observation.SuricataStats) {
 	if stats == nil {
 		return
 	}
+	// The observer runs outside the lock. It is caller-supplied code reached
+	// from the tailer goroutine, and holding the meter's lock across it would
+	// make any future observer that reads the meter a deadlock.
+	if inc, ok := m.measure(stats); ok {
+		m.observe(inc)
+	}
+}
 
+// measure folds one stats record in and returns what it added.
+func (m *PacketMeter) measure(stats *observation.SuricataStats) (Increment, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -97,8 +145,11 @@ func (m *PacketMeter) Observe(stats *observation.SuricataStats) {
 
 	raw, source := packetReading(stats)
 	if source == sourceNone {
-		return
+		// No packet counter in this record. Any drop count it carried has been
+		// taken, but there is no measurement to report.
+		return Increment{}, false
 	}
+	before := m.observed
 
 	switch {
 	case source != m.lastSource:
@@ -114,12 +165,19 @@ func (m *PacketMeter) Observe(stats *observation.SuricataStats) {
 	}
 
 	grew := raw != m.last || source != m.lastSource
+	inc := Increment{Packets: m.observed - before}
+	if m.drops != nil {
+		d := *m.drops
+		inc.Drops = &d
+	}
 	m.last, m.lastSource = raw, source
 
 	if grew && raw > 0 {
 		seen := stats.Timestamp
 		m.lastPacket = &seen
+		inc.LastPacket = seen
 	}
+	return inc, true
 }
 
 // Counters reports what has been measured so far.
