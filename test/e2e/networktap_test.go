@@ -1452,3 +1452,68 @@ func (a *acceptance) tapUID(t *testing.T, name string) string {
 	}
 	return strings.TrimSpace(out)
 }
+
+// A tap that is capturing says how much it captured.
+//
+// PacketsObserved was False on every working tap for the life of the project.
+// Suricata's normalizer lifted kernel_packets and kernel_drops out of each EVE
+// stats record, StatusReporter had a Packets hook that filled the field in, and
+// the sensor's parse closure discarded the stats value with `_` in between. A
+// stats record legitimately yields no observation, so throwing its counters
+// away was indistinguishable from handling it.
+//
+// The unit tests for both halves passed throughout, and cmd/sensor-agent's own
+// tests now cover the assembly. This spec exists because neither level can see
+// what this one can: that the counters survive the whole path - Suricata's
+// configuration emitting EVE stats at all, the tailer reaching them, the meter
+// accumulating them, the reporter patching them, and the controller deriving a
+// condition from them - in a deployed sensor on a real interface.
+func TestAWorkingTapReportsThePacketsItCaptured(t *testing.T) {
+	a := requireAcceptanceCluster(t)
+	name := a.tapName(t)
+
+	a.applyTap(t, name, defaultTapOptions())
+	a.waitForTap(t, name, activeTimeout, "Active", isActive)
+
+	// Loopback carries the kubelet's own health checks, so packets would arrive
+	// here regardless. The fixture runs anyway: a spec that depended on
+	// somebody else's background traffic would be measuring the cluster's
+	// configuration rather than this tap's capture path.
+	a.runTraffic(t, traffic.Baseline(a.namespace, a.node, a.runID))
+
+	status := a.waitForTap(t, name, settleTimeout,
+		"the target to report captured packets",
+		func(s trawlv1alpha1.NetworkTapStatus) bool {
+			return len(s.Targets) > 0 && s.Targets[0].PacketsObserved > 0
+		})
+
+	target := status.Targets[0]
+	if target.LastPacketTime == nil {
+		t.Error("the target counted packets but names no time it last saw one")
+	}
+	// Zero drops and unmeasured drops are different answers (FR-039). Suricata
+	// reports the counter, so this asks that the field be present, not that it
+	// be zero - a tap that dropped packets is still a tap that reported them.
+	if target.KernelDrops == nil {
+		t.Error("the target reports no kernel drop count, so packet loss is unmeasured")
+	}
+
+	// The condition is what an operator reads, and it is derived from the
+	// counter by the controller rather than by the sensor - a second joint,
+	// with its own opportunity to be unwired.
+	if got := condition(t, status, "PacketsObserved"); got.Status != metav1.ConditionTrue {
+		t.Errorf("the target counted %d packets but the tap reports "+
+			"PacketsObserved=%s (%s: %s)",
+			target.PacketsObserved, got.Status, got.Reason, got.Message)
+	}
+
+	t.Logf("packets: %d observed, drops %v, last packet %v",
+		target.PacketsObserved, derefInt64(target.KernelDrops), target.LastPacketTime)
+}
+
+func derefInt64(v *int64) any {
+	if v == nil {
+		return "unreported"
+	}
+	return *v
+}
