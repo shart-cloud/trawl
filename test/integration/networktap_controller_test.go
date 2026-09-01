@@ -603,6 +603,9 @@ func TestTapsCollidingOnAProbePortSayWhichOneYielded(t *testing.T) {
 	}
 
 	if len(yielded) != 1 || len(kept) != 1 {
+		for name, c := range yielded {
+			t.Logf("%s yielded: %s", name, c.Message)
+		}
 		t.Fatalf("%d taps yielded and %d kept the port, want exactly one of each: "+
 			"neither running is as bad as both crash-looping, and both running is the bug",
 			len(yielded), len(kept))
@@ -634,4 +637,42 @@ func collidingName(t *testing.T, ns string, tap *trawlv1alpha1.NetworkTap) strin
 	}
 	t.Fatalf("no name collided with probe port %d in 1000 tries", want)
 	return ""
+}
+
+// A tap whose spec does not validate holds no probe port. It reports
+// InvalidSpec and never gets a workload, so nothing of it runs on any node.
+//
+// Resolving its selector anyway is not harmless, which is how this was found:
+// metav1.LabelSelectorAsSelector turns an empty selector into
+// labels.Everything, so a tap that should never have been stored appeared to
+// occupy its port on every node in the cluster and pushed whichever valid tap
+// shared that port into a conflict it had no way to diagnose.
+func TestAnInvalidTapDoesNotOccupyAProbePort(t *testing.T) {
+	ns := NewNamespace(t)
+	createNode(t, "invalid-port-node", map[string]string{"trawl-test": "invalid-port"})
+
+	// Accepted by the schema and rejected by the webhook, which is not wired on
+	// this path - see TestNetworkTapRequiresNodeSelector, which documents the
+	// same gap. That is what puts an empty selector in the cluster at all.
+	invalid := mirrorTap(ns, "invalid-selector")
+	invalid.Spec.MirrorInterface.NodeSelector = metav1.LabelSelector{}
+	if err := Client().Create(t.Context(), invalid); err != nil {
+		t.Skipf("an empty selector is rejected before it can be stored: %v", err)
+	}
+
+	valid := mirrorTap(ns, collidingName(t, ns, invalid))
+	valid.Spec.MirrorInterface.NodeSelector = metav1.LabelSelector{
+		MatchLabels: map[string]string{"trawl-test": "invalid-port"},
+	}
+	if err := Client().Create(t.Context(), valid); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	r := reconcilerFor(t, ns)
+	reconcile(t, r, valid)
+
+	c := findCondition(reload(t, valid).Status.Conditions, "Accepted")
+	if c == nil || c.Status != metav1.ConditionTrue {
+		t.Errorf("Accepted = %+v, want True: the tap it collided with is invalid and runs nowhere", c)
+	}
 }
