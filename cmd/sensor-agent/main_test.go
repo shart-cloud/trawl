@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	trawlv1alpha1 "trawl.cloud/trawl/api/v1alpha1"
 	"trawl.cloud/trawl/internal/observation"
 	"trawl.cloud/trawl/internal/sensor"
@@ -157,7 +159,7 @@ func TestStatusReportsTheDuplicationTheSensorMeasured(t *testing.T) {
 	}
 
 	r := newStatusReporter("node-01", "enp5s0", "pod-xyz", observers, duplicates,
-		sensor.NewPacketMeter())
+		sensor.NewPacketMeter(sensor.DiscardPackets))
 
 	if r.Duplicates == nil {
 		t.Fatal("the status reporter carries no duplicate cache; duplication can never leave Unknown")
@@ -208,7 +210,7 @@ func TestEveryTailerSharesTheTargetsDuplicateCache(t *testing.T) {
 // Both halves had unit tests and both passed. The defect was the assembly,
 // which is what this tests.
 func TestStatusReportsThePacketsTheSensorMeasured(t *testing.T) {
-	meter := sensor.NewPacketMeter()
+	meter := sensor.NewPacketMeter(sensor.DiscardPackets)
 	observers := []sensor.AnalyzerObserver{
 		&analyzerObserver{name: trawlv1alpha1.AnalyzerSuricata},
 	}
@@ -244,7 +246,7 @@ func TestStatusReportsThePacketsTheSensorMeasured(t *testing.T) {
 // could tell, because a stats record legitimately produces no observation - so
 // dropping it looked exactly like handling it.
 func TestTheSuricataParserFeedsTheMeterItsStatsRecords(t *testing.T) {
-	meter := sensor.NewPacketMeter()
+	meter := sensor.NewPacketMeter(sensor.DiscardPackets)
 	parse := suricataParser(&observation.SuricataNormalizer{Version: "8.0.6"}, meter)
 
 	stats := []byte(`{"timestamp":"2026-09-01T12:00:00.000000+0000",` +
@@ -268,3 +270,67 @@ func TestTheSuricataParserFeedsTheMeterItsStatsRecords(t *testing.T) {
 		t.Errorf("kernel drops = %v, want an explicit 0", got.KernelDrops)
 	}
 }
+
+// Every Zeek tailer must count what it accepts, not only what it rejects.
+//
+// Suricata's tailer was given an OnAccept and Zeek's was not, so
+// trawl_sensor_records_total carried zeek rejections and never a single zeek
+// acceptance: the counter was silent precisely when Zeek was working. That is
+// the defect tailer.go's OnAccept doc comment describes as already fixed - the
+// fix reached one of the two call sites.
+func TestEveryZeekTailerCountsAcceptancesAndRejections(t *testing.T) {
+	metrics := telemetry.NewMetrics()
+	tailers := zeekTailers("/var/log/trawl/zeek", &observation.ZeekNormalizer{},
+		func(*observation.Observation, string) error { return nil },
+		metrics, sensor.NewDuplicateCache(sensor.MaxFingerprints))
+
+	if len(tailers) == 0 {
+		t.Fatal("no zeek tailers built")
+	}
+	for _, tl := range tailers {
+		if tl.OnAccept == nil {
+			t.Errorf("tailer for %s counts rejections but not acceptances", tl.Path)
+		}
+		if tl.OnReject == nil {
+			t.Errorf("tailer for %s counts acceptances but not rejections", tl.Path)
+		}
+	}
+}
+
+// The packets the meter measures must reach the metrics the sensor exports.
+//
+// trawl_sensor_packets_total, trawl_sensor_kernel_drops_total and
+// trawl_sensor_last_packet_timestamp_seconds were declared, registered, and
+// pre-initialised with zero-valued label sets - and never incremented by
+// anything. The pre-initialisation is what made it invisible: a permanently
+// zero counter is indistinguishable from a working one on a quiet interface.
+func TestMeasuredPacketsReachTheExportedMetrics(t *testing.T) {
+	metrics := telemetry.NewMetrics()
+	meter := sensor.NewPacketMeter(packetMetrics(metrics, telemetry.SourceTypeNodeInterface))
+
+	drops := int64(4)
+	meter.Observe(&observation.SuricataStats{
+		KernelPackets: ptrTo(int64(1500)), KernelDrops: &drops,
+		Timestamp: time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC),
+	})
+
+	packets := testutil.ToFloat64(metrics.SensorPacketsTotal.WithLabelValues(
+		telemetry.SourceTypeNodeInterface, telemetry.AnalyzerSuricata))
+	if packets != 1500 {
+		t.Errorf("trawl_sensor_packets_total = %v after measuring 1500 packets, want 1500", packets)
+	}
+
+	dropped := testutil.ToFloat64(metrics.SensorKernelDropsTotal.WithLabelValues(
+		telemetry.SourceTypeNodeInterface, telemetry.AnalyzerSuricata))
+	if dropped != 4 {
+		t.Errorf("trawl_sensor_kernel_drops_total = %v, want 4", dropped)
+	}
+
+	last := testutil.ToFloat64(metrics.SensorLastPacketSeconds.WithLabelValues(
+		telemetry.SourceTypeNodeInterface, telemetry.AnalyzerSuricata))
+	if want := float64(time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC).Unix()); last != want {
+		t.Errorf("trawl_sensor_last_packet_timestamp_seconds = %v, want %v", last, want)
+	}
+}
+
+func ptrTo[T any](v T) *T { return &v }

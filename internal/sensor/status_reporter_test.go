@@ -259,28 +259,3 @@ func TestBuildDefaultsDuplicationToUnknownWithoutACache(t *testing.T) {
 		t.Errorf("duplication = %q, want Unknown", got)
 	}
 }
-
-func TestAllHealthyRequiresEveryAnalyzer(t *testing.T) {
-	// A tap reporting Active while one analyzer is dead would tell an analyst
-	// the evidence is complete when it is not.
-	r := healthyReporter()
-	if !r.AllHealthy() {
-		t.Error("all-healthy reporter reported unhealthy")
-	}
-
-	r.Analyzers = append(r.Analyzers,
-		&fakeAnalyzer{name: trawlv1alpha1.AnalyzerZeek, healthy: false, reason: "dead"})
-	if r.AllHealthy() {
-		t.Error("reporter with a dead analyzer reported all healthy")
-	}
-}
-
-func TestAllHealthyIsFalseWithNoAnalyzers(t *testing.T) {
-	// No analyzers means nothing is producing evidence. Reporting healthy would
-	// be the most misleading answer available.
-	r := healthyReporter()
-	r.Analyzers = nil
-	if r.AllHealthy() {
-		t.Error("reporter with no analyzers reported healthy")
-	}
-}

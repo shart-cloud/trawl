@@ -54,6 +54,8 @@ func main() {
 		tapName      = flag.String("tap-name", "", "Name of the owning NetworkTap.")
 		tapUID       = flag.String("tap-uid", "", "UID of the owning NetworkTap.")
 		iface        = flag.String("interface", "", "Interface being observed.")
+		sourceType   = flag.String("source-type", telemetry.SourceTypeNodeInterface,
+			"Traffic source type this sensor observes, for metric labelling.")
 		// The shared mount root the renderer creates. Nothing here derives
 		// paths from it any more - each enabled analyzer's path is passed
 		// explicitly, so that an analyzer the tap did not enable stays absent -
@@ -114,7 +116,7 @@ func main() {
 	// Zeek's logs describe traffic it parsed, not what the kernel handed it -
 	// so a Zeek-only tap still reports no packets, which is honest rather than
 	// zero pretending to be a measurement.
-	packets := sensor.NewPacketMeter()
+	packets := sensor.NewPacketMeter(packetMetrics(metrics, *sourceType))
 
 	var wg sync.WaitGroup
 
@@ -282,6 +284,53 @@ func newStatusReporter(
 	}
 }
 
+// packetMetrics reports each measurement to the sensor's exported metrics.
+//
+// trawl_sensor_packets_total, trawl_sensor_kernel_drops_total and
+// trawl_sensor_last_packet_timestamp_seconds were declared, registered, and
+// pre-initialised with zero-valued label sets, and nothing ever incremented
+// them. The pre-initialisation is what hid it: a permanently zero counter reads
+// exactly like a working one on a quiet interface, which is the same confusion
+// between "unmeasured" and "zero" the record-level model is careful to avoid.
+//
+// Only Suricata reports capture-boundary counters, so the analyzer label is
+// fixed. Zeek's logs describe traffic it parsed, not what the kernel handed it.
+func packetMetrics(metrics *telemetry.Metrics, sourceType string) sensor.PacketObserver {
+	// Drops arrive as the analyzer's running total, and a Prometheus counter
+	// takes increments, so the last reported total is kept here to difference
+	// against. The meter reports measurements from one tailer goroutine, so
+	// this needs no lock.
+	var reported int64
+
+	return func(inc sensor.Increment) {
+		labels := []string{sourceType, telemetry.AnalyzerSuricata}
+
+		if inc.Packets > 0 {
+			metrics.SensorPacketsTotal.WithLabelValues(labels...).Add(float64(inc.Packets))
+		}
+
+		if inc.Drops != nil {
+			added := *inc.Drops - reported
+			if added < 0 {
+				// Suricata restarted and its counter went back to zero. The
+				// drops it counted before the reset were real, so the new run
+				// is added rather than the difference, which would be negative
+				// and would silently do nothing.
+				added = *inc.Drops
+			}
+			if added > 0 {
+				metrics.SensorKernelDropsTotal.WithLabelValues(labels...).Add(float64(added))
+			}
+			reported = *inc.Drops
+		}
+
+		if !inc.LastPacket.IsZero() {
+			metrics.SensorLastPacketSeconds.WithLabelValues(labels...).
+				Set(float64(inc.LastPacket.Unix()))
+		}
+	}
+}
+
 // suricataParser adapts the normalizer to the tailer, keeping the stats records
 // the tailer itself has no use for.
 //
@@ -313,6 +362,11 @@ func zeekTailers(
 			},
 			Emit:       emit,
 			Duplicates: duplicates,
+			OnAccept: func() {
+				metrics.SensorRecordsTotal.
+					WithLabelValues(telemetry.AnalyzerZeek, string(logType),
+						string(sensor.ResultAccepted)).Inc()
+			},
 			OnReject: func(result sensor.RecordResult, _ string) {
 				metrics.SensorRecordsTotal.
 					WithLabelValues(telemetry.AnalyzerZeek, string(logType), string(result)).Inc()

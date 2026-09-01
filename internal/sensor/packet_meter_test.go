@@ -32,7 +32,7 @@ func i64(v int64) *int64 { return &v }
 func TestAMeterWithNoStatsClaimsNothing(t *testing.T) {
 	// FR-039 draws the line between zero and unmeasured. A sensor that has not
 	// yet seen a stats record has not established that no packets arrived.
-	got := NewPacketMeter().Counters()
+	got := NewPacketMeter(DiscardPackets).Counters()
 
 	if got.PacketsObserved != 0 {
 		t.Errorf("packets observed = %d before any stats record, want 0",
@@ -49,7 +49,7 @@ func TestAMeterWithNoStatsClaimsNothing(t *testing.T) {
 }
 
 func TestAMeterReportsWhatTheCaptureBoundarySaw(t *testing.T) {
-	m := NewPacketMeter()
+	m := NewPacketMeter(DiscardPackets)
 	m.Observe(&observation.SuricataStats{
 		KernelPackets: i64(1200), KernelDrops: i64(3), Timestamp: at(10),
 	})
@@ -69,7 +69,7 @@ func TestAMeterReportsWhatTheCaptureBoundarySaw(t *testing.T) {
 func TestAMeterAccumulatesAcrossStatsRecords(t *testing.T) {
 	// Suricata's counters are cumulative for its process, so the meter must
 	// track the latest value rather than adding each record to the last.
-	m := NewPacketMeter()
+	m := NewPacketMeter(DiscardPackets)
 	m.Observe(&observation.SuricataStats{KernelPackets: i64(100), Timestamp: at(10)})
 	m.Observe(&observation.SuricataStats{KernelPackets: i64(250), Timestamp: at(20)})
 
@@ -83,7 +83,7 @@ func TestAnAnalyzerRestartDoesNotLoseThePacketsItAlreadyCounted(t *testing.T) {
 	// survives - the reporter's instance ID only distinguishes a *sensor*
 	// restart. Reporting the raw value would make the count jump backwards,
 	// and a consumer reads a count going backwards as traffic having stopped.
-	m := NewPacketMeter()
+	m := NewPacketMeter(DiscardPackets)
 	m.Observe(&observation.SuricataStats{KernelPackets: i64(900), Timestamp: at(10)})
 	m.Observe(&observation.SuricataStats{KernelPackets: i64(40), Timestamp: at(20)})
 
@@ -97,7 +97,7 @@ func TestAMeterDoesNotClaimAPacketArrivedWhenTheCountStoodStill(t *testing.T) {
 	// timestamp says when Suricata reported, not when a packet was seen, so
 	// advancing last-packet-time on a flat counter would invent an arrival and
 	// make a dead interface look live.
-	m := NewPacketMeter()
+	m := NewPacketMeter(DiscardPackets)
 	m.Observe(&observation.SuricataStats{KernelPackets: i64(500), Timestamp: at(10)})
 	m.Observe(&observation.SuricataStats{KernelPackets: i64(500), Timestamp: at(60)})
 
@@ -115,13 +115,13 @@ func TestAMeterDistinguishesZeroDropsFromUnreportedDrops(t *testing.T) {
 	// FR-039 again, at the point the value enters the sensor rather than the
 	// point it leaves: reporting zero for an analyzer that said nothing about
 	// drops claims a clean capture nobody measured.
-	unreported := NewPacketMeter()
+	unreported := NewPacketMeter(DiscardPackets)
 	unreported.Observe(&observation.SuricataStats{KernelPackets: i64(10), Timestamp: at(10)})
 	if got := unreported.Counters().KernelDrops; got != nil {
 		t.Errorf("kernel drops = %d when the record reported none, want nil", *got)
 	}
 
-	zero := NewPacketMeter()
+	zero := NewPacketMeter(DiscardPackets)
 	zero.Observe(&observation.SuricataStats{
 		KernelPackets: i64(10), KernelDrops: i64(0), Timestamp: at(10),
 	})
@@ -135,7 +135,7 @@ func TestAMeterFallsBackToDecoderPacketsAndDoesNotMixCounters(t *testing.T) {
 	// working tap from reporting nothing, but the two counters measure
 	// different points, so a switch between them restarts the accumulation
 	// instead of subtracting one from the other.
-	m := NewPacketMeter()
+	m := NewPacketMeter(DiscardPackets)
 	m.Observe(&observation.SuricataStats{DecoderPackets: i64(70), Timestamp: at(10)})
 	if got := m.Counters().PacketsObserved; got != 70 {
 		t.Errorf("packets observed = %d from decoder packets alone, want 70", got)
@@ -148,7 +148,7 @@ func TestAMeterFallsBackToDecoderPacketsAndDoesNotMixCounters(t *testing.T) {
 }
 
 func TestAMeterIgnoresAStatsRecordWithNoCounters(t *testing.T) {
-	m := NewPacketMeter()
+	m := NewPacketMeter(DiscardPackets)
 	m.Observe(&observation.SuricataStats{KernelPackets: i64(42), Timestamp: at(10)})
 	m.Observe(&observation.SuricataStats{Timestamp: at(20)})
 	m.Observe(nil)
@@ -159,5 +159,51 @@ func TestAMeterIgnoresAStatsRecordWithNoCounters(t *testing.T) {
 	}
 	if got.LastPacketTime == nil || !got.LastPacketTime.Equal(at(10)) {
 		t.Errorf("last packet time = %v, want it unchanged at %v", got.LastPacketTime, at(10))
+	}
+}
+
+func TestAMeterReportsEachMeasurementToItsObserver(t *testing.T) {
+	// The observer is how the counters reach the metrics plane. Reporting the
+	// running total instead of the increment would make a Prometheus counter
+	// climb quadratically, so what it hands over is what this measurement
+	// added.
+	var got []Increment
+	m := NewPacketMeter(func(inc Increment) { got = append(got, inc) })
+
+	m.Observe(&observation.SuricataStats{KernelPackets: i64(100), KernelDrops: i64(2), Timestamp: at(10)})
+	m.Observe(&observation.SuricataStats{KernelPackets: i64(250), Timestamp: at(20)})
+	m.Observe(&observation.SuricataStats{KernelPackets: i64(250), Timestamp: at(30)})
+
+	if len(got) != 3 {
+		t.Fatalf("observer saw %d measurements, want 3", len(got))
+	}
+	if got[0].Packets != 100 || got[1].Packets != 150 {
+		t.Errorf("increments were %d then %d, want 100 then 150",
+			got[0].Packets, got[1].Packets)
+	}
+	if got[2].Packets != 0 {
+		t.Errorf("a flat counter reported %d new packets, want 0", got[2].Packets)
+	}
+	if !got[1].LastPacket.Equal(at(20)) {
+		t.Errorf("last packet = %v, want %v", got[1].LastPacket, at(20))
+	}
+	if !got[2].LastPacket.IsZero() {
+		t.Errorf("a flat counter reported an arrival at %v, want none", got[2].LastPacket)
+	}
+	// Drops are cumulative and carry forward even when a later record omits
+	// them, because the analyzer having stopped mentioning drops is not the
+	// analyzer reporting zero.
+	if got[1].Drops == nil || *got[1].Drops != 2 {
+		t.Errorf("drops = %v on the second measurement, want a carried-forward 2", got[1].Drops)
+	}
+}
+
+func TestAMeterWithNoObserverStillMeasures(t *testing.T) {
+	// A nil observer is a caller who forgot; the meter must not panic on the
+	// tailer's hot path because of it.
+	m := NewPacketMeter(nil)
+	m.Observe(&observation.SuricataStats{KernelPackets: i64(7), Timestamp: at(10)})
+	if got := m.Counters().PacketsObserved; got != 7 {
+		t.Errorf("packets observed = %d, want 7", got)
 	}
 }
