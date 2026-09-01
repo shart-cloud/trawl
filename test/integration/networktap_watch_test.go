@@ -212,3 +212,82 @@ func labelNode(t *testing.T, name, key, value string) {
 		t.Fatalf("labelling node %s: %v", name, err)
 	}
 }
+
+// A tap that loses its target withdraws what it said about that target.
+//
+// Marking the phase Error is not enough on its own. Every other status field
+// describes a reconcile that resolved nodes and read sensors back, and the
+// error path does neither, so without clearing them they keep describing the
+// last pass that did. Status then contradicts itself: Accepted=False saying the
+// selector matched no nodes, beside TargetsResolved=True and a non-zero ready
+// count.
+//
+// The ready count is the reason this matters. It claims a target has a working
+// sensor when the tap has no targets at all.
+func TestATapThatLosesItsTargetStopsClaimingOne(t *testing.T) {
+	ns := NewNamespace(t)
+	startManager(t, ns)
+
+	label := fmt.Sprintf("trawl-test-lost-%d", time.Now().UnixNano())
+	nodeName := "lost-target-" + ns
+	createNode(t, nodeName, map[string]string{label: "yes"})
+
+	tap := mirrorTap(ns, "loses-its-target")
+	tap.Spec.MirrorInterface.NodeSelector = metav1.LabelSelector{
+		MatchLabels: map[string]string{label: "yes"},
+	}
+	if err := Client().Create(t.Context(), tap); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// The tap resolves the node first, so there is a claim to withdraw. Envtest
+	// runs no kubelet, so it never becomes Active; matching the node is enough
+	// to put a non-zero count in status.
+	awaitTap(t, ns, tap.Name, "one matched target",
+		func(s trawlv1alpha1.NetworkTapStatus) bool { return s.MatchedTargets == 1 })
+
+	unlabelNode(t, nodeName, label)
+
+	status := awaitTap(t, ns, tap.Name, "Error after losing its target",
+		func(s trawlv1alpha1.NetworkTapStatus) bool {
+			return s.Phase == trawlv1alpha1.TapPhaseError
+		})
+
+	if status.MatchedTargets != 0 {
+		t.Errorf("matchedTargets = %d after the selector stopped matching, want 0",
+			status.MatchedTargets)
+	}
+	if status.ReadyTargets != 0 {
+		t.Errorf("readyTargets = %d for a tap with no targets; it is claiming a working sensor",
+			status.ReadyTargets)
+	}
+	if len(status.Targets) != 0 {
+		t.Errorf("status still carries %d per-target report(s) for targets that no longer match",
+			len(status.Targets))
+	}
+	for _, c := range status.Conditions {
+		if c.Type == "Accepted" {
+			continue
+		}
+		if c.Status == metav1.ConditionTrue {
+			t.Errorf("condition %s is still True (%s: %s) beside Accepted=False; "+
+				"status is describing a reconcile that did not happen",
+				c.Type, c.Reason, c.Message)
+		}
+	}
+}
+
+// unlabelNode removes a label from an existing node.
+func unlabelNode(t *testing.T, name, key string) {
+	t.Helper()
+
+	var node corev1.Node
+	if err := Client().Get(t.Context(), client.ObjectKey{Name: name}, &node); err != nil {
+		t.Fatalf("reading node %s: %v", name, err)
+	}
+	patched := node.DeepCopy()
+	delete(patched.Labels, key)
+	if err := Client().Patch(t.Context(), patched, client.MergeFrom(&node)); err != nil {
+		t.Fatalf("removing label %s from node %s: %v", key, name, err)
+	}
+}

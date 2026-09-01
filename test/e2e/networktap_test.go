@@ -56,6 +56,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -101,8 +102,17 @@ const (
 	// admission.
 	starvedMemory = "24Mi"
 
-	// healthyMemory is what the same analyzer recovers to.
-	healthyMemory = "1Gi"
+	// healthyMemory is what an analyzer is asked for when it is meant to run,
+	// and healthyMemoryLimit is the ceiling it is given.
+	//
+	// The two differ, and copy the deployed tap's numbers. Setting the ceiling
+	// equal to the request looked tidier and was wrong: Suricata grows past a
+	// gigabyte after a minute or so, so the short specs finished before it
+	// mattered and the one long spec had its sensor OOMKilled underneath it.
+	// The tap then left Active for a reason that had nothing to do with what
+	// that spec was testing.
+	healthyMemory      = "1Gi"
+	healthyMemoryLimit = "3Gi"
 )
 
 // acceptance holds the deployed environment the specs share.
@@ -200,6 +210,12 @@ func (a *acceptance) buildTap(name string, opts tapOptions) *trawlv1alpha1.Netwo
 		selector = map[string]string{"kubernetes.io/hostname": a.node}
 	}
 	analyzer := func(memory string, enabled bool) trawlv1alpha1.AnalyzerConfig {
+		// The starved fixture pins the ceiling to the request so the analyzer
+		// cannot start; anything meant to run gets the deployed tap's headroom.
+		limit := healthyMemoryLimit
+		if memory != healthyMemory {
+			limit = memory
+		}
 		return trawlv1alpha1.AnalyzerConfig{
 			Enabled: enabled,
 			Resources: &corev1.ResourceRequirements{
@@ -209,7 +225,7 @@ func (a *acceptance) buildTap(name string, opts tapOptions) *trawlv1alpha1.Netwo
 				},
 				Limits: corev1.ResourceList{
 					corev1.ResourceCPU:    resource.MustParse("1"),
-					corev1.ResourceMemory: resource.MustParse(memory),
+					corev1.ResourceMemory: resource.MustParse(limit),
 				},
 			},
 		}
@@ -453,23 +469,34 @@ func (a *acceptance) writeLedgerCredentials() (string, error) {
 // the same Service. Like the investigation suite's Loki forward, this is not
 // torn down per test; the process owns it for its lifetime.
 func (a *acceptance) forwardMinIO(clusterEndpoint string) (string, error) {
-	const localPort = 31901
-
 	service, port, ok := strings.Cut(clusterEndpoint, ":")
 	if !ok {
 		return "", fmt.Errorf("audit endpoint %q has no port", clusterEndpoint)
 	}
 	service, _, _ = strings.Cut(service, ".")
 
+	// The local port is claimed by the kernel rather than fixed in this file.
+	//
+	// A constant looked simpler and hid a failure that is hard to read. A
+	// forward left behind by an earlier run still holds the port and still
+	// accepts connections, while the pod behind it is gone - so a fresh run
+	// binds nothing, dials the stale forward, and fails on the first ledger
+	// read with a closed connection rather than anything naming the cause.
+	// This suite makes that likely rather than rare: the ledger-outage spec
+	// deletes the very pod a forward points at.
+	local, err := reserveLocalPort()
+	if err != nil {
+		return "", err
+	}
+
 	// #nosec G204 -- the service name and port come from the installation
 	// ConfigMap, which is cluster configuration rather than user input.
 	cmd := exec.Command("kubectl", "port-forward", "-n", a.namespace,
-		"svc/"+service, fmt.Sprintf("%d:%s", localPort, port))
+		"svc/"+service, fmt.Sprintf("%s:%s", localPort(local), port))
 	if err := cmd.Start(); err != nil {
 		return "", fmt.Errorf("starting kubectl port-forward to %s: %w", service, err)
 	}
 
-	local := fmt.Sprintf("127.0.0.1:%d", localPort)
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if conn, err := net.DialTimeout("tcp", local, 2*time.Second); err == nil {
@@ -480,6 +507,27 @@ func (a *acceptance) forwardMinIO(clusterEndpoint string) (string, error) {
 	}
 	_ = cmd.Process.Kill()
 	return "", fmt.Errorf("the audit ledger did not answer on %s within 30s", local)
+}
+
+// reserveLocalPort returns a loopback address nothing else is listening on.
+func reserveLocalPort() (string, error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return "", fmt.Errorf("claiming a local port: %w", err)
+	}
+	address := listener.Addr().String()
+	// Closed immediately so kubectl can take it. The window between here and
+	// the forward binding is the price of asking the kernel for a free port;
+	// nothing else on a test machine is racing for ephemeral ports.
+	if err := listener.Close(); err != nil {
+		return "", fmt.Errorf("releasing the local port: %w", err)
+	}
+	return address, nil
+}
+
+func localPort(address string) string {
+	_, port, _ := strings.Cut(address, ":")
+	return port
 }
 
 // ledgerCursor is the newest record key in the ledger, or "" when it is empty.
@@ -728,6 +776,28 @@ func (a *acceptance) sensorDaemonSets(t *testing.T, tapName string) []string {
 	return names
 }
 
+// sensorPods counts the pods a tap's DaemonSets are currently running.
+//
+// This is the question "is anything capturing", which the DaemonSet's desired
+// count answers and the existence of the object does not.
+func (a *acceptance) sensorPods(t *testing.T, tapName string) int {
+	t.Helper()
+	total := 0
+	for _, ds := range a.sensorDaemonSets(t, tapName) {
+		out, err := kubectlOut("get", "daemonset", ds, "-n", a.namespace,
+			"-o", "jsonpath={.status.desiredNumberScheduled}")
+		if err != nil {
+			t.Fatalf("reading DaemonSet %s: %v: %s", ds, err, out)
+		}
+		desired, err := strconv.Atoi(strings.TrimSpace(out))
+		if err != nil {
+			t.Fatalf("DaemonSet %s reported desiredNumberScheduled %q: %v", ds, out, err)
+		}
+		total += desired
+	}
+	return total
+}
+
 // A tap naming an interface no node has never claims to be working.
 //
 // The failure that matters is not the error; it is a tap that reports Active
@@ -797,8 +867,13 @@ func TestADisappearingTargetIsReportedAndRecovers(t *testing.T) {
 	if gone.ReadyTargets != 0 {
 		t.Errorf("a tap whose target disappeared reports %d ready target(s)", gone.ReadyTargets)
 	}
-	if len(a.sensorDaemonSets(t, name)) != 0 {
-		t.Errorf("the sensor DaemonSet outlived the target it was placed for")
+	// The DaemonSet object stays - the tap still owns it, and it is what the
+	// sensor comes back on. What must go is the capture: its node selector no
+	// longer matches, so it scales itself to zero pods. Asserting the object
+	// were deleted would be asserting the wrong thing and would fail against a
+	// correctly behaving cluster.
+	if scheduled := a.sensorPods(t, name); scheduled != 0 {
+		t.Errorf("%d sensor pod(s) are still scheduled for a tap with no targets", scheduled)
 	}
 
 	// Recovery: the same tap, unchanged, comes back when the target does.
@@ -958,8 +1033,42 @@ func (a *acceptance) stopLedger(t *testing.T) func() {
 				"-n", a.namespace, "--timeout=3m"); err != nil {
 				t.Fatalf("waiting for storage to return: %v: %s", err, out)
 			}
+			// Storage being back is not the same as admission being back. The
+			// manager's readyz consults the ledger, so it was removed from the
+			// webhook Service's endpoints during the outage and takes a moment
+			// to return - and until it does, every mutation still fails, the
+			// cleanup delete included. Without this wait the spec leaves behind
+			// the tap it created, which it saw happen.
+			a.waitForAdmission(t)
 		})
 	}
+}
+
+// waitForAdmission blocks until the webhook is admitting mutations again.
+//
+// It probes with the real thing rather than with an endpoint check: what the
+// caller needs to know is that a NetworkTap mutation will now succeed, and only
+// a NetworkTap mutation answers that.
+func (a *acceptance) waitForAdmission(t *testing.T) {
+	t.Helper()
+	name := "acc-admission-probe-" + a.runID
+
+	deadline := time.Now().Add(settleTimeout)
+	var last error
+	for time.Now().Before(deadline) {
+		if err := a.apply(a.buildTap(name, defaultTapOptions())); err == nil {
+			if out, err := kubectlOut("delete", "networktap", name, "-n", a.namespace,
+				"--ignore-not-found", "--wait=true", "--timeout=2m"); err != nil {
+				t.Fatalf("removing the admission probe tap: %v: %s", err, out)
+			}
+			return
+		} else {
+			last = err
+		}
+		time.Sleep(pollInterval)
+	}
+	t.Fatalf("admission did not recover within %s after storage returned; "+
+		"the installation is still refusing mutations (last attempt: %v)", settleTimeout, last)
 }
 
 // waitForRefusal retries a create until it is refused, and fails if one is ever
