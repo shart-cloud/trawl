@@ -69,7 +69,9 @@ import (
 	trawlv1alpha1 "trawl.cloud/trawl/api/v1alpha1"
 	"trawl.cloud/trawl/internal/audit"
 	"trawl.cloud/trawl/internal/config"
+	"trawl.cloud/trawl/internal/observation"
 	"trawl.cloud/trawl/internal/storage"
+	"trawl.cloud/trawl/test/e2e/traffic"
 )
 
 const (
@@ -274,9 +276,18 @@ func (a *acceptance) updateTap(t *testing.T, name string, opts tapOptions) {
 }
 
 func (a *acceptance) apply(tap *trawlv1alpha1.NetworkTap) error {
-	doc, err := json.Marshal(tap)
+	return applyObject(tap)
+}
+
+// applyObject applies any object built from the API types.
+//
+// The object travels on stdin rather than through a rendered file so nothing
+// this test builds can be left behind on disk for a later run to apply by
+// accident.
+func applyObject(obj any) error {
+	doc, err := json.Marshal(obj)
 	if err != nil {
-		return fmt.Errorf("encoding tap: %w", err)
+		return fmt.Errorf("encoding object: %w", err)
 	}
 	// #nosec G204 -- the arguments are constants; the object travels on stdin.
 	cmd := exec.Command("kubectl", "apply", "-f", "-")
@@ -1108,4 +1119,336 @@ func decodeBase64(s string) ([]byte, error) {
 		return nil, errors.New("the key is absent from the secret")
 	}
 	return base64.StdEncoding.DecodeString(strings.TrimSpace(s))
+}
+
+// SC-001: an operator declares one valid source and sees a structured record of
+// test traffic within fifteen minutes, without logging into or modifying a host.
+//
+// This is the only spec that observes the thing the product is for. Every other
+// spec here asserts that the control plane behaves — a tap reaches Active, a
+// status tells the truth, a mutation is audited — and all of that can be
+// perfectly correct while the sensor emits nothing anyone can use. Reading the
+// records back is what separates "the tap says it is working" from "the tap is
+// working", and those two have already come apart once in this codebase.
+//
+// The records are validated as the bytes the sensor emitted, not as a decoded
+// and re-encoded Go value. The envelope schema sets additionalProperties:false,
+// so a field the sensor adds that the contract does not describe is a violation
+// the raw bytes reveal and a round trip through the Go type would quietly drop.
+func TestAFirstStructuredObservationArrivesWithinFifteenMinutes(t *testing.T) {
+	a := requireAcceptanceCluster(t)
+	name := a.tapName(t)
+
+	// The budget runs from the declaration, because that is the moment SC-001
+	// measures from: the operator has done the only thing they are asked to do.
+	declared := time.Now()
+	a.applyTap(t, name, defaultTapOptions())
+	a.waitForTap(t, name, activeTimeout, "Active", isActive)
+
+	fx := traffic.Baseline(a.namespace, a.node, a.runID)
+	a.runTraffic(t, fx)
+
+	remaining := firstObservationBudget - time.Since(declared)
+	if remaining <= 0 {
+		t.Fatalf("the tap took %s to become Active and generate traffic, "+
+			"leaving none of the %s budget for an observation",
+			time.Since(declared).Round(time.Second), firstObservationBudget)
+	}
+	records := a.collectObservations(t, name, fx.UserAgent, fx.Requests, remaining)
+	elapsed := time.Since(declared)
+
+	if len(records) != fx.Requests {
+		t.Errorf("the fixture made %d requests and the tap reported %d records",
+			fx.Requests, len(records))
+	}
+
+	status, _ := a.tapStatus(t, name)
+	uid := a.tapUID(t, name)
+	for _, r := range records {
+		if r.ObservationType != observation.TypeHTTP {
+			t.Errorf("record %s is %q, not an http record", r.ID, r.ObservationType)
+		}
+		// A record that does not name the tap and target it came from cannot be
+		// attributed by anyone reading the stream later, which is most of what
+		// makes it evidence rather than a log line.
+		if r.Tap == nil || r.Tap.Name != name || r.Tap.Namespace != a.namespace {
+			t.Errorf("record %s does not attribute itself to tap %s/%s: %+v",
+				r.ID, a.namespace, name, r.Tap)
+		} else if r.Tap.UID != uid {
+			t.Errorf("record %s carries tap UID %q, but the tap's is %q",
+				r.ID, r.Tap.UID, uid)
+		}
+		if r.Target.Node != a.node || r.Target.Interface != acceptanceInterface {
+			t.Errorf("record %s says it was observed on %s/%s, not %s/%s",
+				r.ID, r.Target.Node, r.Target.Interface, a.node, acceptanceInterface)
+		}
+		// Each baseline request opens its own connection, so nothing here is a
+		// duplicate of anything. A Suspected among them would mean the
+		// heuristic fires on plainly distinct traffic.
+		if r.Duplication == string(trawlv1alpha1.DuplicationSuspected) {
+			t.Errorf("record %s is marked a suspected duplicate, but every "+
+				"baseline request used its own connection", r.ID)
+		}
+	}
+
+	t.Logf("first observation: %d/%d records %s after declaring the tap "+
+		"(budget %s), phase %q",
+		len(records), fx.Requests, elapsed.Round(time.Second),
+		firstObservationBudget, status.Phase)
+}
+
+// Suspected duplicates are marked and counted, and never discarded.
+//
+// Mirrored and overlay traffic carries the same packet more than once, and the
+// design's answer is to mark rather than drop: deciding two records describe one
+// event is a judgement an analyst may need to overturn, and evidence deleted at
+// ingest cannot be recovered. The unit tests cover the heuristic itself. What
+// they cannot show is that a deployed sensor still emits what it marked, which
+// is the whole of the guarantee — a cache that silently dropped its suspects
+// would pass every test in internal/sensor.
+//
+// So the assertion that carries the weight is the count: as many records come
+// back as the fixture made requests. The Suspected marks prove the heuristic
+// ran; the count proves it cost nothing.
+func TestSuspectedDuplicatesAreMarkedAndNotDropped(t *testing.T) {
+	a := requireAcceptanceCluster(t)
+	name := a.tapName(t)
+
+	a.applyTap(t, name, defaultTapOptions())
+	a.waitForTap(t, name, activeTimeout, "Active", isActive)
+
+	fx := traffic.Duplicate(a.namespace, a.node, a.runID)
+	a.runTraffic(t, fx)
+
+	records := a.collectObservations(t, name, fx.UserAgent, fx.Requests, settleTimeout)
+
+	if len(records) != fx.Requests {
+		t.Errorf("the fixture made %d requests down one connection and the tap "+
+			"reported %d records; marking must not discard evidence",
+			fx.Requests, len(records))
+	}
+
+	states := map[string]int{}
+	for _, r := range records {
+		states[r.Duplication]++
+	}
+	if states[string(trawlv1alpha1.DuplicationSuspected)] == 0 {
+		t.Errorf("no record was marked a suspected duplicate, so this spec "+
+			"proved nothing about marking; states seen: %v", states)
+	}
+	// Unknown means the fingerprint could not be computed. These records all
+	// carry a flow, so Unknown here would mean the heuristic never got to run.
+	if states[string(trawlv1alpha1.DuplicationUnknown)] > 0 {
+		t.Errorf("%d record(s) reported Unknown duplication despite carrying a "+
+			"flow, so the fingerprint was not computed",
+			states[string(trawlv1alpha1.DuplicationUnknown)])
+	}
+
+	// The per-record mark and the target's rolled-up state are written by
+	// different code paths - the tailer marks each record as it parses it, the
+	// status reporter publishes the cache's summary on its heartbeat - so a
+	// status that never agreed with the records would send an operator looking
+	// at the wrong tap.
+	//
+	// This waits rather than reading once. The two are not written together:
+	// records reach the sensor's stdout as they are parsed, while the summary
+	// only reaches the API on the next heartbeat, so reading immediately after
+	// collecting records sees the state from before them. An empty cache
+	// reports Unknown, which is what that read returns and what an earlier
+	// draft of this spec mistook for the status contradicting its own records.
+	status := a.waitForTap(t, name, settleTimeout,
+		"the target to report suspected duplicates",
+		func(s trawlv1alpha1.NetworkTapStatus) bool {
+			return len(s.Targets) > 0 &&
+				s.Targets[0].Duplication == trawlv1alpha1.DuplicationSuspected
+		})
+
+	t.Logf("duplicates: %d requests -> %d records, states %v, target reports %q",
+		fx.Requests, len(records), states, status.Targets[0].Duplication)
+}
+
+// firstObservationBudget is SC-001's fifteen minutes, from declaring a source
+// to seeing a structured record of test traffic.
+const firstObservationBudget = 15 * time.Minute
+
+// emittedObservation is a record as the sensor wrote it.
+//
+// It is not observation.Observation: the sensor stamps duplication onto the
+// emitted document and the Go envelope type has no field for it, so decoding
+// into that type alone would silently discard the value two specs here assert
+// on. Raw keeps the original bytes, which is what gets validated - see the
+// schema note on TestAFirstStructuredObservationArrivesWithinFifteenMinutes.
+type emittedObservation struct {
+	observation.Observation
+	Duplication string `json:"duplication,omitempty"`
+
+	Raw []byte `json:"-"`
+}
+
+// runTraffic runs a traffic fixture to completion and fails if it did not
+// generate what it promised.
+//
+// The generator is checked rather than trusted. A curl that could not reach the
+// target still exits a pod that ran, and a spec that went on to wait for
+// records would spend its whole budget before failing with "no observations" -
+// a message that points at the sensor when the fault was in the fixture.
+func (a *acceptance) runTraffic(t *testing.T, fx traffic.Fixture) {
+	t.Helper()
+
+	name := fx.Pod.Name
+	t.Cleanup(func() {
+		if out, err := kubectlOut("delete", "pod", name, "-n", a.namespace,
+			"--ignore-not-found", "--wait=false"); err != nil {
+			t.Logf("deleting traffic pod %s: %v: %s", name, err, out)
+		}
+	})
+
+	if err := applyObject(fx.Pod); err != nil {
+		t.Fatalf("applying traffic fixture %s: %v", name, err)
+	}
+
+	deadline := time.Now().Add(settleTimeout)
+	var phase string
+	for time.Now().Before(deadline) {
+		out, err := kubectlOut("get", "pod", name, "-n", a.namespace,
+			"-o", "jsonpath={.status.phase}")
+		if err == nil {
+			phase = strings.TrimSpace(out)
+		}
+		if phase == "Succeeded" || phase == "Failed" {
+			break
+		}
+		time.Sleep(pollInterval)
+	}
+
+	logs, err := kubectlOut("logs", name, "-n", a.namespace)
+	if err != nil {
+		t.Fatalf("reading traffic fixture logs: %v: %s", err, logs)
+	}
+	if phase != "Succeeded" {
+		t.Fatalf("traffic fixture %s ended %q, not Succeeded: %s",
+			name, phase, strings.TrimSpace(logs))
+	}
+	if !strings.Contains(logs, fmt.Sprintf("generated=%d", fx.Requests)) {
+		t.Fatalf("traffic fixture %s did not report generating %d requests: %s",
+			name, fx.Requests, strings.TrimSpace(logs))
+	}
+}
+
+// collectObservations polls a tap's sensors for records carrying userAgent.
+//
+// It waits for want records rather than for the first one, and keeps the last
+// reading if the deadline passes, so a spec reports "7 of 12" instead of
+// failing with nothing to look at. Polling the sensor's stdout is deliberate:
+// it is where the records exist before anything downstream has had a chance to
+// reshape them, and the audit pipeline that would carry them to Loki is not
+// deployed on this cluster.
+func (a *acceptance) collectObservations(t *testing.T, tapName, userAgent string,
+	want int, timeout time.Duration) []emittedObservation {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	var found []emittedObservation
+	for {
+		found = a.readObservations(t, tapName, userAgent)
+		if len(found) >= want || !time.Now().Before(deadline) {
+			return found
+		}
+		time.Sleep(pollInterval)
+	}
+}
+
+// readObservations reads every record a tap's sensors have emitted for
+// userAgent, and validates each against the normative schema as it goes.
+func (a *acceptance) readObservations(t *testing.T, tapName, userAgent string) []emittedObservation {
+	t.Helper()
+
+	schema, err := observation.Schema()
+	if err != nil {
+		t.Fatalf("compiling the observation schema: %v", err)
+	}
+
+	var found []emittedObservation
+	for _, pod := range a.sensorPodNames(t, tapName) {
+		// A bounded tail, because a sensor on a busy interface would otherwise
+		// return more than this test needs to read. The fixtures are small and
+		// recent, so what matters is only that the window comfortably exceeds
+		// what one fixture produces.
+		out, err := kubectlOut("logs", pod, "-n", a.namespace,
+			"-c", "sensor-agent", "--tail=5000")
+		if err != nil {
+			// A sensor pod that restarted between listing and reading is not a
+			// failure of what this spec is testing; the next poll re-reads it.
+			t.Logf("reading sensor logs from %s: %v", pod, err)
+			continue
+		}
+
+		for line := range strings.SplitSeq(out, "\n") {
+			line = strings.TrimSpace(line)
+			if !strings.Contains(line, userAgent) {
+				continue
+			}
+
+			var rec emittedObservation
+			if err := json.Unmarshal([]byte(line), &rec); err != nil {
+				// The marker matched, so this line was meant to be one of ours.
+				t.Errorf("a record carrying %s did not decode: %v", userAgent, err)
+				continue
+			}
+			// Match on the decoded field rather than the substring that found
+			// it: a User-Agent can appear in some other record's content, and
+			// counting that would inflate the very number these specs assert.
+			if rec.Details.HTTP == nil || rec.Details.HTTP.UserAgent != userAgent {
+				continue
+			}
+			rec.Raw = []byte(line)
+
+			var doc any
+			if err := json.Unmarshal(rec.Raw, &doc); err != nil {
+				t.Errorf("record %s did not re-decode for validation: %v", rec.ID, err)
+				continue
+			}
+			if err := schema.Validate(doc); err != nil {
+				t.Errorf("record %s does not satisfy %s: %v",
+					rec.ID, observation.SchemaVersion, err)
+			}
+			found = append(found, rec)
+		}
+	}
+	return found
+}
+
+// sensorPodNames lists the pods running a tap's sensors.
+func (a *acceptance) sensorPodNames(t *testing.T, tapName string) []string {
+	t.Helper()
+
+	var pods []string
+	for _, ds := range a.sensorDaemonSets(t, tapName) {
+		out, err := kubectlOut("get", "pods", "-n", a.namespace,
+			"-o", "jsonpath={range .items[?(@.metadata.ownerReferences[0].name==\""+ds+"\")]}{.metadata.name}{\"\\n\"}{end}")
+		if err != nil {
+			t.Fatalf("listing pods for DaemonSet %s: %v: %s", ds, err, out)
+		}
+		for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
+			if line != "" {
+				pods = append(pods, line)
+			}
+		}
+	}
+	if len(pods) == 0 {
+		t.Fatalf("tap %s is running no sensor pods", tapName)
+	}
+	return pods
+}
+
+// tapUID reads the tap's UID, which its records must carry to be attributable
+// to this tap rather than to another one that reused the name.
+func (a *acceptance) tapUID(t *testing.T, name string) string {
+	t.Helper()
+	out, err := kubectlOut("get", "networktap", name, "-n", a.namespace,
+		"-o", "jsonpath={.metadata.uid}")
+	if err != nil {
+		t.Fatalf("reading tap UID: %v: %s", err, out)
+	}
+	return strings.TrimSpace(out)
 }
