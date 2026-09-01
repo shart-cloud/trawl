@@ -180,6 +180,13 @@ type Duration time.Duration
 // configurations contain, and rejecting them would turn this fix into a
 // breaking change for anyone who worked around the bug.
 func (d *Duration) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		// An explicit null asks for the default, so leave the field at its zero
+		// value for ApplyDefaults to fill. Falling through would unmarshal it
+		// as a string no-op, leaving "", which ParseDuration rejects.
+		return nil
+	}
+
 	var s string
 	if err := json.Unmarshal(data, &s); err == nil {
 		parsed, err := ParseDuration(s)
