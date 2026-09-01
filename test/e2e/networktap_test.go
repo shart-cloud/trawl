@@ -56,6 +56,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -728,6 +729,28 @@ func (a *acceptance) sensorDaemonSets(t *testing.T, tapName string) []string {
 	return names
 }
 
+// sensorPods counts the pods a tap's DaemonSets are currently running.
+//
+// This is the question "is anything capturing", which the DaemonSet's desired
+// count answers and the existence of the object does not.
+func (a *acceptance) sensorPods(t *testing.T, tapName string) int {
+	t.Helper()
+	total := 0
+	for _, ds := range a.sensorDaemonSets(t, tapName) {
+		out, err := kubectlOut("get", "daemonset", ds, "-n", a.namespace,
+			"-o", "jsonpath={.status.desiredNumberScheduled}")
+		if err != nil {
+			t.Fatalf("reading DaemonSet %s: %v: %s", ds, err, out)
+		}
+		desired, err := strconv.Atoi(strings.TrimSpace(out))
+		if err != nil {
+			t.Fatalf("DaemonSet %s reported desiredNumberScheduled %q: %v", ds, out, err)
+		}
+		total += desired
+	}
+	return total
+}
+
 // A tap naming an interface no node has never claims to be working.
 //
 // The failure that matters is not the error; it is a tap that reports Active
@@ -797,8 +820,13 @@ func TestADisappearingTargetIsReportedAndRecovers(t *testing.T) {
 	if gone.ReadyTargets != 0 {
 		t.Errorf("a tap whose target disappeared reports %d ready target(s)", gone.ReadyTargets)
 	}
-	if len(a.sensorDaemonSets(t, name)) != 0 {
-		t.Errorf("the sensor DaemonSet outlived the target it was placed for")
+	// The DaemonSet object stays - the tap still owns it, and it is what the
+	// sensor comes back on. What must go is the capture: its node selector no
+	// longer matches, so it scales itself to zero pods. Asserting the object
+	// were deleted would be asserting the wrong thing and would fail against a
+	// correctly behaving cluster.
+	if scheduled := a.sensorPods(t, name); scheduled != 0 {
+		t.Errorf("%d sensor pod(s) are still scheduled for a tap with no targets", scheduled)
 	}
 
 	// Recovery: the same tap, unchanged, comes back when the target does.

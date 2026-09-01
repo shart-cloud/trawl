@@ -424,13 +424,51 @@ func (r *NetworkTapReconciler) finalize(ctx context.Context, tap *trawlv1alpha1.
 }
 
 // markError records an invalid or unresolvable tap without retrying forever.
+// markError records that the tap is not proceeding, and withdraws everything
+// status previously claimed about its targets.
+//
+// Setting the phase and the Accepted condition is not enough. Every other field
+// here describes a reconcile that rendered a workload and read sensors back,
+// and on this path none of that happened - so left alone they keep reporting
+// the last pass that did. For a tap that was never healthy they are zero and
+// nothing shows, which is why this went unnoticed. For a tap that was working
+// and then lost its target, status ends up contradicting itself: Accepted=False
+// saying the selector matched no nodes, beside TargetsResolved=True saying one
+// node is eligible, matchedTargets=1, and readyTargets=1.
+//
+// readyTargets is the one that matters. It claims a target has a ready sensor
+// while the DaemonSet it refers to has been scaled to zero pods and nothing is
+// capturing - a tap reporting healthy and producing nothing, which is the
+// failure this project's status rules exist to make impossible.
+//
+// The counts go to zero rather than to the number the selector saw. The field
+// means how many targets the tap resolved to, and a tap that is not proceeding
+// resolved to none; where the count is the point of the error, as it is for an
+// ambiguous mirror selector, it is already in the message.
 func (r *NetworkTapReconciler) markError(ctx context.Context, tap *trawlv1alpha1.NetworkTap, reason, message string) error {
 	gen := tap.Generation
 	tap.Status.ObservedGeneration = gen
 	tap.Status.Phase = trawlv1alpha1.TapPhaseError
 
+	tap.Status.MatchedTargets = 0
+	tap.Status.ReadyTargets = 0
+	tap.Status.Targets = nil
+
 	status.Set(&tap.Status.Conditions, status.New(status.TypeAccepted,
 		metav1.ConditionFalse, reason, message, gen))
+
+	// The remaining conditions are answers this pass cannot give. They carry the
+	// same reason so an operator reading any one of them is sent to the same
+	// cause rather than to a stale explanation of its own.
+	for _, condType := range []string{
+		status.TypeTargetsResolved,
+		status.TypeWorkloadReady,
+		status.TypeAnalyzersHealthy,
+		status.TypePacketsObserved,
+	} {
+		status.Set(&tap.Status.Conditions, status.New(condType,
+			metav1.ConditionFalse, reason, message, gen))
+	}
 
 	if err := r.Status().Update(ctx, tap); err != nil {
 		return sanitize.Error(err)
