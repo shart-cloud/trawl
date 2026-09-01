@@ -102,7 +102,7 @@ tap continues.
 - [X] T032 [P] [US1] Add failing Zeek normalization and normative-schema tests for connection/DNS/HTTP/TLS/x509/file/notice/weird fields, Community ID preservation, suspected-duplicate marking, redaction, and malformed-neighbor isolation in `internal/observation/zeek_test.go`
 - [X] T033 [P] [US1] Add failing bounded duplicate-fingerprint window, sensor heartbeat, counter-reset, per-analyzer degradation, last-packet, associative target-status patch, and API outage tests in `internal/sensor/status_reporter_test.go`
 - [X] T033a [P] [US1] Add failing content init tests for upstream fetch success/failure, OCI pull success/corrupt/missing, merge precedence, fallback to upstream-only, and reported feed timestamp and custom digest in `internal/content/content_test.go` and `test/integration/content_init_test.go`
-- [ ] T034 [US1] Add a failing cluster acceptance test for active, updated, deleted, durable mutation audit, audit-ledger outage fail-closed behavior, missing-interface, disappearing-target, analyzer-failure, and recovery scenarios in `test/e2e/networktap_test.go`
+- [X] T034 [US1] Add a failing cluster acceptance test for active, updated, deleted, durable mutation audit, audit-ledger outage fail-closed behavior, missing-interface, disappearing-target, analyzer-failure, and recovery scenarios in `test/e2e/networktap_test.go`
 
 ### Implementation for User Story 1
 

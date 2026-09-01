@@ -142,13 +142,6 @@ func portForwardLoki() (string, error) {
 	return "", fmt.Errorf("Loki did not answer on %s within 30s", url)
 }
 
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
 // --- Talking to the deployed pipeline ---------------------------------------
 
 // selector is the stream selector every investigation query starts from.
@@ -894,21 +887,6 @@ func TestTheManagerServesAuthenticatedMetrics(t *testing.T) {
 		t.Error("the endpoint answered 200 but served no controller_runtime metrics")
 	}
 	t.Logf("metrics: HTTP %s, %s controller_runtime series", lines[0], lines[1])
-}
-
-// kubectl runs a kubectl command, discarding its output.
-func kubectl(args ...string) error {
-	_, err := kubectlOut(args...)
-	return err
-}
-
-// kubectlOut runs a kubectl command and returns its combined output.
-//
-// #nosec G204 -- callers pass constants and this run's identifier; nothing
-// reaches the command line from the environment or from observed traffic.
-func kubectlOut(args ...string) (string, error) {
-	out, err := exec.Command("kubectl", args...).CombinedOutput()
-	return string(out), err
 }
 
 // runProbePod runs one short-lived pod and returns what it printed.

@@ -70,6 +70,16 @@ test-investigation: ## Run the end-to-end investigation test against a deployed 
 # address Loki directly instead of letting the test port-forward to it.
 	go test -tags=investigation ./test/e2e/ -v -timeout 15m
 
+.PHONY: test-acceptance
+test-acceptance: ## Run the NetworkTap cluster acceptance suite against a deployed Trawl (T034).
+# Not part of `make test`: it creates and deletes real NetworkTaps in the
+# installation's namespace and schedules real sensor pods to do it. Every tap it
+# creates binds the loopback interface, so it cannot disturb what the production
+# tap observes. Set TRAWL_E2E_LEDGER_OUTAGE=1 to include the fail-closed spec,
+# which stops the audit ledger and so refuses mutations installation-wide for as
+# long as it runs.
+	go test -tags=acceptance ./test/e2e/ -v -timeout 45m
+
 .PHONY: verify-tools
 verify-tools: ## Verify build tools match the versions pinned in hack/tools.mk.
 	hack/verify-tools.sh
@@ -125,9 +135,11 @@ IMAGE_REPO ?= ghcr.io/shart-cloud/trawl
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
 	"$(GOLANGCI_LINT)" run
-# The investigation suite is behind a build tag, so the run above cannot see it
-# and it would rot unlinted.
+# The cluster suites are behind build tags, so the run above cannot see them and
+# they would rot unlinted. Each tag needs its own pass: golangci-lint builds one
+# configuration at a time, so a single pass would leave the other suite unread.
 	"$(GOLANGCI_LINT)" run --build-tags=investigation ./test/e2e/...
+	"$(GOLANGCI_LINT)" run --build-tags=acceptance ./test/e2e/...
 
 .PHONY: lint-fix
 lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
