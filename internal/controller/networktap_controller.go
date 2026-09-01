@@ -232,6 +232,15 @@ func (r *NetworkTapReconciler) checkProbePortConflict(ctx context.Context, tap *
 		if SensorProbePort(other) != port || !incumbent(other, tap) {
 			continue
 		}
+		// An invalid tap claims no node. It reports its own InvalidSpec and
+		// never gets a workload, so it holds no port - and resolving its
+		// selector anyway is not harmless: metav1.LabelSelectorAsSelector turns
+		// an empty selector into labels.Everything, so a tap that never should
+		// have been stored would appear to occupy its port on every node in the
+		// cluster.
+		if errs := admission.ValidateNetworkTapSpec(&other.Spec); len(errs) > 0 {
+			continue
+		}
 		// Only a tap that shares a node conflicts. Two taps on different nodes
 		// may hold the same port quite happily.
 		otherNodes, err := r.eligibleNodes(ctx, other)
