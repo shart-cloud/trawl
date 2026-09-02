@@ -56,6 +56,11 @@ type ObjectInfo struct {
 	RetainUntil time.Time
 	// Metadata holds user metadata such as the SHA-256 checksum recorded at
 	// upload time.
+	//
+	// Keys are returned lowercased. S3 metadata keys are case-insensitive and a
+	// real backend hands them back canonicalised - "sha256" written, "Sha256"
+	// read - so implementations normalise rather than leaving each caller to
+	// discover which spelling their store happens to use.
 	Metadata map[string]string
 }
 
@@ -89,9 +94,29 @@ type Store interface {
 	Get(ctx context.Context, key string) ([]byte, error)
 
 	// List returns objects under prefix in lexicographic key order, beginning
-	// at startAfter when non-empty. Ordering is what makes cursor-based replay
-	// resumable.
-	List(ctx context.Context, prefix, startAfter string) ([]ObjectInfo, error)
+	// at startAt. Ordering is what makes cursor-based replay resumable.
+	//
+	// startAt is INCLUSIVE: the object at that exact key is part of the result.
+	// This is the clause the two implementations disagreed on for the life of
+	// the project - the parameter was called startAfter, S3's own start-after
+	// is exclusive, and the Fake was inclusive - so it is stated here rather
+	// than left to the name. Sink.Replay resumes from the last key it forwarded
+	// and re-delivers it deliberately: copies keep their stable_key and audit
+	// views collapse by it, so an overlap costs nothing, while a skipped record
+	// is permanently invisible in search. Given the ledger is authoritative,
+	// over-delivery is the safe direction to err in.
+	//
+	// An empty startAt begins at the first key under prefix. A startAt naming an
+	// object that does not exist - retention may have removed it since the
+	// caller last saw it - resumes at the next key rather than failing.
+	//
+	// Only Key, Size, ETag and LastModified are guaranteed. Metadata and
+	// RetainUntil require a Head: a listing does not carry them on every
+	// backend, and returning them from one implementation and not the other is
+	// how a caller comes to depend on the Fake.
+	//
+	// storagetest.RunConformance asserts all of this against any implementation.
+	List(ctx context.Context, prefix, startAt string) ([]ObjectInfo, error)
 
 	// Delete removes a key. Deleting an absent key succeeds, so retention
 	// cleanup is idempotent.
