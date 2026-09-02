@@ -92,7 +92,7 @@ spec:
         # in release manifests, which the constitution forbids, and would let
         # the deployed image change without a manifest change. Refresh it with
         # the digest CI records for the commit being deployed.
-        image: ghcr.io/shart-cloud/trawl/controller-manager@sha256:5ca6c68845d875037952709f25ddea2c4badf274d1aa4f08be50166744cc0137
+        image: ghcr.io/shart-cloud/trawl/controller-manager@sha256:e9779d2255e1828701854aa50cace4b22e752d4eef55f56cae697b310155e5f1
         name: manager
         ports:
         - containerPort: 8081

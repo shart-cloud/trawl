@@ -1056,6 +1056,16 @@ func (a *acceptance) stopLedger(t *testing.T) func() {
 			// cleanup delete included. Without this wait the spec leaves behind
 			// the tap it created, which it saw happen.
 			a.waitForAdmission(t)
+
+			// The run's ledger connection is a port-forward to a pod this spec
+			// deleted, so it survives the outage as a socket to nothing. The
+			// cluster is healthy and the next spec to read the ledger fails on
+			// a refused connection, which reads like a broken ledger rather
+			// than a stale fixture. Dropping it here makes the next reader
+			// reconnect. Safe because the suite is sequential: no other spec
+			// holds this while the outage spec runs.
+			a.ledgerOnce = sync.Once{}
+			a.ledger, a.ledgerErr = nil, nil
 		})
 	}
 }
