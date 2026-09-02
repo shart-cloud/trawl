@@ -72,6 +72,7 @@ import (
 	"trawl.cloud/trawl/internal/observation"
 	"trawl.cloud/trawl/internal/storage"
 	"trawl.cloud/trawl/test/e2e/traffic"
+	"trawl.cloud/trawl/test/integration/harness"
 )
 
 const (
@@ -127,6 +128,10 @@ type acceptance struct {
 	ledgerOnce sync.Once
 	ledger     storage.Store
 	ledgerErr  error
+
+	lokiOnce sync.Once
+	loki     *harness.Loki
+	lokiErr  error
 }
 
 var (
@@ -1516,4 +1521,131 @@ func derefInt64(v *int64) any {
 		return "unreported"
 	}
 	return *v
+}
+
+// clusterID reads the installation's cluster label.
+//
+// Read from the deployed ConfigMap rather than assumed: it is the "cluster"
+// label every audit and observation query selects on, and a test that assumed
+// a value would pass against an installation whose records nobody can find.
+func (a *acceptance) clusterID(t *testing.T) string {
+	t.Helper()
+	raw, err := kubectlOut("get", "configmap", "trawl-config", "-n", a.namespace,
+		"-o", "jsonpath={.data.config\\.yaml}")
+	if err != nil {
+		t.Fatalf("reading the installation config: %v: %s", err, raw)
+	}
+	installCfg, err := config.Load([]byte(raw))
+	if err != nil {
+		t.Fatalf("parsing the installation config: %v", err)
+	}
+	return installCfg.ClusterID
+}
+
+// openLoki attaches to the cluster's Loki, once per run.
+func (a *acceptance) openLoki(t *testing.T) *harness.Loki {
+	t.Helper()
+	a.lokiOnce.Do(func() {
+		url, err := portForwardLoki()
+		if err != nil {
+			a.lokiErr = err
+			return
+		}
+		a.loki = harness.AttachLoki(url)
+	})
+	if a.lokiErr != nil {
+		t.Skipf("no deployed Loki to search: %v", a.lokiErr)
+	}
+	return a.loki
+}
+
+// A committed audit record becomes searchable, not merely durable.
+func TestACommittedAuditRecordBecomesSearchable(t *testing.T) {
+	// FR-036 makes the ledger the durability boundary and Loki the searchable
+	// copy of it. Everything between the two is wiring, and wiring is where
+	// this codebase's defects live: the sink was implemented and unit tested,
+	// the Alloy pipeline was written and contract tested, and for the whole
+	// life of the project nothing connected them. Every existing spec passed,
+	// because each one asserted its own half.
+	//
+	// So this spec deliberately asserts across the seam. It commits through
+	// admission, confirms the record in the ledger, and then requires the same
+	// record - by stable key, which is the identity a duplicate would share -
+	// to come back from a Loki query an operator could type.
+	a := requireAcceptanceCluster(t)
+	loki := a.openLoki(t)
+	name := a.tapName(t)
+	cursor := a.ledgerCursor(t)
+
+	a.applyTap(t, name, defaultTapOptions())
+	a.waitForTap(t, name, activeTimeout, "Active", isActive)
+
+	rec := a.requireAuditRecord(t, cursor, audit.ActionNetworkTapCreate, name)
+	if rec.StableKey == "" {
+		t.Fatal("the committed record carries no stable key, so a duplicate could not be collapsed")
+	}
+
+	// Replay sweeps on an interval and Loki indexes asynchronously, so this
+	// polls. The bound is generous on purpose: the assertion is that the record
+	// arrives at all, and a tight bound here would turn a slow cluster into a
+	// failure that reads like a missing pipeline.
+	query := fmt.Sprintf(`{service_name="trawl-audit", cluster=%q} |= %q`, a.clusterID(t), rec.StableKey)
+	started := time.Now()
+	deadline := started.Add(auditSearchableWithin)
+	for {
+		now := time.Now()
+		results, err := loki.Query(t.Context(), query, now.Add(-30*time.Minute), now)
+		if err != nil {
+			t.Fatalf("querying the audit stream: %v", err)
+		}
+		if found := auditRecordIn(t, results, rec.StableKey); found != nil {
+			if found.Action != rec.Action || found.Decision != rec.Decision {
+				t.Errorf("the searchable copy records %s/%s, the ledger records %s/%s",
+					found.Action, found.Decision, rec.Action, rec.Decision)
+			}
+			if found.LedgerKey != rec.LedgerKey {
+				t.Errorf("the searchable copy points at ledger key %q, want %q; "+
+					"a searchable record that cannot be traced to the durable one is not evidence",
+					found.LedgerKey, rec.LedgerKey)
+			}
+			t.Logf("audit record %s searchable in Loki after %s",
+				rec.StableKey, time.Since(started).Round(time.Second))
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the %s record for %s is in the ledger but never reached Loki within %s; "+
+				"either the manager is not replaying it or the Alloy audit pipeline is not collecting it",
+				rec.Action, name, auditSearchableWithin)
+		}
+		time.Sleep(5 * time.Second)
+	}
+}
+
+// auditSearchableWithin bounds how long the searchable copy may lag the ledger.
+//
+// Two intervals stack: the manager sweeps the ledger every
+// audit.DefaultReplayInterval, and Alloy batches before it writes. The bound is
+// several times their sum so that a slow cluster is not read as a broken one.
+const auditSearchableWithin = 4 * time.Minute
+
+// auditRecordIn returns the record with the given stable key, if any result
+// carries it.
+func auditRecordIn(t *testing.T, results []harness.QueryResult, stableKey string) *audit.Record {
+	t.Helper()
+	for _, r := range results {
+		for _, v := range r.Values {
+			var rec audit.Record
+			if err := json.Unmarshal([]byte(v[1]), &rec); err != nil {
+				// Not every line in the stream has to be a record; the
+				// pipeline drops the manager's ordinary logs, but a
+				// misconfiguration that stopped dropping them would show up
+				// here as noise rather than as a failure.
+				continue
+			}
+			if rec.StableKey == stableKey {
+				return &rec
+			}
+		}
+	}
+	return nil
 }

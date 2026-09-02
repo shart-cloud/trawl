@@ -285,6 +285,33 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The ledger is durable but not searchable. This runnable is what forwards
+	// committed records to stdout, where Alloy collects them into Loki
+	// (config/alloy/trawl-audit.alloy). Without it the pipeline is well-formed
+	// and collects nothing, so an audit query returns an empty result rather
+	// than an error - which is how it went unnoticed that the producer was
+	// never wired at all.
+	auditReplayer, err := audit.NewReplayer(audit.ReplayOptions{
+		Sink: auditSink,
+		Cursor: &audit.ConfigMapCursor{
+			Client:    mgr.GetClient(),
+			Namespace: installCfg.SystemNamespace,
+		},
+		// Stdout, while the manager's logs go to stderr. Both are collected
+		// from the same container, which is why the audit pipeline drops every
+		// line that does not carry the audit schema version.
+		Out:     os.Stdout,
+		Metrics: trawlMetrics,
+	})
+	if err != nil {
+		setupLog.Error(err, "Failed to create the audit replayer")
+		os.Exit(1)
+	}
+	if err := mgr.Add(auditReplayer); err != nil {
+		setupLog.Error(err, "Failed to set up audit replay")
+		os.Exit(1)
+	}
+
 	// healthz stays process liveness only. If it consulted the ledger, a MinIO
 	// outage would restart otherwise-healthy pods and turn a storage blip into
 	// a monitoring outage.

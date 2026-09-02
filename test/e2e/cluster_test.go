@@ -26,8 +26,13 @@ limitations under the License.
 package e2e
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"os/exec"
+	"time"
+
+	"trawl.cloud/trawl/test/integration/harness"
 )
 
 // kubectl runs a kubectl command, discarding its output.
@@ -51,4 +56,35 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// portForwardLoki opens a tunnel to the cluster's Loki for the whole run.
+//
+// The forward is deliberately not torn down per test: every spec sharing it
+// runs in one binary, and Go gives a package-level fixture no cleanup hook. The
+// process dies with the test binary.
+func portForwardLoki() (string, error) {
+	const localPort = 31000
+	// #nosec G204 -- every argument is a constant of this file; nothing here
+	// comes from the environment or from evidence.
+	cmd := exec.Command("kubectl", "port-forward", "-n", "monitoring",
+		"svc/loki", fmt.Sprintf("%d:3100", localPort))
+	cmd.Stdout, cmd.Stderr = nil, nil
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("starting kubectl port-forward: %w", err)
+	}
+
+	url := fmt.Sprintf("http://127.0.0.1:%d", localPort)
+	loki := harness.AttachLoki(url)
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		now := time.Now()
+		if _, err := loki.Query(context.Background(), `{service_name="trawl-observation"}`,
+			now.Add(-time.Minute), now); err == nil {
+			return url, nil
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	_ = cmd.Process.Kill()
+	return "", fmt.Errorf("Loki did not answer on %s within 30s", url)
 }

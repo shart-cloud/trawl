@@ -381,6 +381,39 @@ func TestReplayReportsBacklog(t *testing.T) {
 	}
 }
 
+func TestBacklogExcludesTheCursorRecordItself(t *testing.T) {
+	// Replay's cursor is inclusive, so a drained ledger still lists the cursor's
+	// own object. Counting it as backlog would leave the gauge stuck at 1 and
+	// make an idle pipeline indistinguishable from one record behind - and the
+	// metric's own name is "objects not yet covered by the persisted replay
+	// cursor", which the cursor's object is not.
+	store := storage.NewFake()
+	sink := newTestSink(t, store)
+
+	var last string
+	for _, name := range []string{"a", "b", "c"} {
+		rec := testRecord()
+		rec.StableKey = "admission/key-" + name
+		rec.Resource.Name = name
+		res, err := sink.Commit(t.Context(), rec)
+		if err != nil {
+			t.Fatalf("Commit: %v", err)
+		}
+		last = res.LedgerKey
+	}
+
+	backlog, oldest, err := sink.Backlog(t.Context(), last)
+	if err != nil {
+		t.Fatalf("Backlog: %v", err)
+	}
+	if backlog != 0 {
+		t.Errorf("backlog = %d with everything forwarded, want 0", backlog)
+	}
+	if !oldest.IsZero() {
+		t.Error("Backlog reported an oldest-unforwarded time with nothing unforwarded")
+	}
+}
+
 func TestReplayStopsOnDeliveryFailure(t *testing.T) {
 	// Advancing the cursor past a record that was never delivered would lose it
 	// permanently, so delivery failure must halt replay where it stands.
