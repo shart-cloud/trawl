@@ -21,7 +21,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -194,14 +193,38 @@ func (s *S3Store) Get(ctx context.Context, key string) ([]byte, error) {
 }
 
 // List implements Store, returning objects in lexicographic key order.
-func (s *S3Store) List(ctx context.Context, prefix, startAfter string) ([]ObjectInfo, error) {
+//
+// S3's start-after is exclusive and this contract is inclusive, so the cursor's
+// own object is fetched separately and prepended. That mismatch is not a detail
+// to leave to the reader: passing the cursor straight through, which is what
+// this did, silently skips one record per resume, and Sink.Replay's whole
+// argument is that a skipped record is permanently invisible in search.
+func (s *S3Store) List(ctx context.Context, prefix, startAt string) ([]ObjectInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 
 	var out []ObjectInfo
+	if startAt != "" && strings.HasPrefix(startAt, prefix) {
+		switch info, err := s.Head(ctx, startAt); {
+		case err == nil:
+			// Reduced to the fields a listing guarantees, so one element of the
+			// result is not quietly richer than the rest.
+			out = append(out, ObjectInfo{
+				Key:          info.Key,
+				Size:         info.Size,
+				ETag:         info.ETag,
+				LastModified: info.LastModified,
+			})
+		case errors.Is(err, ErrNotFound):
+			// The cursor object is gone; retention may have removed it since the
+			// caller last saw the key. Listing resumes at the next one.
+		default:
+			return nil, err
+		}
+	}
 	for obj := range s.client.ListObjects(ctx, s.bucket, minio.ListObjectsOptions{
 		Prefix:     prefix,
-		StartAfter: startAfter,
+		StartAfter: startAt,
 		Recursive:  true,
 	}) {
 		if obj.Err != nil {
@@ -240,7 +263,13 @@ func objectInfoFrom(stat minio.ObjectInfo) ObjectInfo {
 		LastModified: stat.LastModified,
 		Metadata:     make(map[string]string, len(stat.UserMetadata)),
 	}
-	maps.Copy(info.Metadata, stat.UserMetadata)
+	// StatObject hands back x-amz-meta-* keys canonicalised, so "sha256" written
+	// comes back "Sha256". The contract says lowercase; without this a caller
+	// that reads info.Metadata["sha256"] works against the Fake and finds
+	// nothing against a real bucket.
+	for k, v := range stat.UserMetadata {
+		info.Metadata[strings.ToLower(k)] = v
+	}
 	return info
 }
 

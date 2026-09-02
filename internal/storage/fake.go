@@ -21,6 +21,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -113,7 +114,7 @@ func (f *Fake) Put(_ context.Context, key string, body []byte, opts PutOptions) 
 		ETag:         hex.EncodeToString(sum[:]),
 		LastModified: f.clock(),
 		RetainUntil:  opts.RetainUntil,
-		Metadata:     opts.Metadata,
+		Metadata:     lowerKeys(opts.Metadata),
 	}
 	if f.swallow {
 		// Report success but persist nothing.
@@ -152,7 +153,7 @@ func (f *Fake) Get(_ context.Context, key string) ([]byte, error) {
 }
 
 // List implements Store, returning keys in lexicographic order.
-func (f *Fake) List(_ context.Context, prefix, startAfter string) ([]ObjectInfo, error) {
+func (f *Fake) List(_ context.Context, prefix, startAt string) ([]ObjectInfo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -167,7 +168,7 @@ func (f *Fake) List(_ context.Context, prefix, startAfter string) ([]ObjectInfo,
 		if prefix != "" && !hasPrefix(k, prefix) {
 			continue
 		}
-		if startAfter != "" && k < startAfter {
+		if startAt != "" && k < startAt {
 			continue
 		}
 		out = append(out, f.objects[k].info)
@@ -238,4 +239,20 @@ func (f *Fake) RetainUntil(key string) (time.Time, bool) {
 
 func hasPrefix(s, prefix string) bool {
 	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
+}
+
+// lowerKeys normalises metadata keys the way a real backend does.
+//
+// S3 metadata keys are case-insensitive and come back canonicalised, so the
+// Fake lowercases too rather than round-tripping whatever spelling the caller
+// used - a fidelity the contract states and storagetest asserts.
+func lowerKeys(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[strings.ToLower(k)] = v
+	}
+	return out
 }

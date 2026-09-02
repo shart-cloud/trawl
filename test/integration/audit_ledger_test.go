@@ -18,11 +18,14 @@ package integration
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	"trawl.cloud/trawl/internal/audit"
 	"trawl.cloud/trawl/internal/storage"
+	"trawl.cloud/trawl/internal/storage/storagetest"
 	"trawl.cloud/trawl/test/integration/harness"
 )
 
@@ -117,15 +120,12 @@ func TestS3StoreListIsLexicographicAndResumable(t *testing.T) {
 		}
 	}
 
-	from, err := store.List(ctx, "audit/v1/", "audit/v1/b.json")
-	if err != nil {
-		t.Fatalf("list from cursor: %v", err)
-	}
-	for _, o := range from {
-		if o.Key < "audit/v1/b.json" {
-			t.Errorf("cursor listing returned an earlier key %q", o.Key)
-		}
-	}
+	// The cursor clause used to be asserted here as "no key earlier than the
+	// cursor came back", which is true whether the cursor's own object is
+	// included or skipped - so it read as coverage while the two Store
+	// implementations disagreed about exactly that. It is now
+	// TestS3StoreSatisfiesTheStoreContract's job, against the same suite the
+	// Fake answers.
 }
 
 func TestAuditSinkCommitsAgainstRealLedger(t *testing.T) {
@@ -225,4 +225,23 @@ func TestArtifactBucketDoesNotApplyRetentionByDefault(t *testing.T) {
 	if _, err := store.Head(ctx, key); !errors.Is(err, storage.ErrNotFound) {
 		t.Errorf("artifact remained after delete: %v", err)
 	}
+}
+
+// The Store contract, asserted against MinIO exactly as it is asserted against
+// the Fake in internal/storage. Running both against one suite is the point:
+// the Fake listed inclusively of the cursor and S3Store exclusively for the
+// life of the project, and every test passed, because nothing ever asked the
+// two the same question.
+func TestS3StoreSatisfiesTheStoreContract(t *testing.T) {
+	m := harness.RequireMinIO(t)
+	store := m.AuditStore(t)
+
+	storagetest.RunConformance(t, func(t *testing.T) (storage.Store, string) {
+		// A real bucket outlives the test that writes to it, so each case gets
+		// a namespace of its own rather than assuming an empty ledger.
+		// Named for the case, so a stray object in the bucket says which
+		// assertion left it there.
+		return store, fmt.Sprintf("audit/v1/conformance/%s-%d/",
+			strings.ReplaceAll(t.Name(), "/", "-"), time.Now().UnixNano())
+	})
 }
