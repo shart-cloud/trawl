@@ -310,10 +310,21 @@ func (s *Sink) Replay(ctx context.Context, cursor string, deliver DeliverFunc) (
 // Backlog reports how many ledger objects sit beyond cursor and how old the
 // oldest of them is, feeding trawl_audit_backlog_objects and
 // trawl_audit_oldest_unforwarded_seconds.
+//
+// Beyond, not from: the cursor names the last record the searchable stream
+// accepted, so its own object is covered and is not backlog. List is inclusive
+// of its cursor because replay wants the overlap, which means the exclusion has
+// to happen here. Without it the gauge would rest at 1 on a fully drained
+// ledger, and a pipeline one record behind would look identical to an idle one.
 func (s *Sink) Backlog(ctx context.Context, cursor string) (int, time.Time, error) {
 	objects, err := s.store.List(ctx, s.prefix+recordInfix, cursor)
 	if err != nil {
 		return 0, time.Time{}, sanitize.Errorf("listing audit ledger: %v", err)
+	}
+	// The cursor object sorts first when it is still present; retention may
+	// have removed it, in which case there is nothing to exclude.
+	if cursor != "" && len(objects) > 0 && objects[0].Key == cursor {
+		objects = objects[1:]
 	}
 	if len(objects) == 0 {
 		return 0, time.Time{}, nil
