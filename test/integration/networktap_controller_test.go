@@ -17,6 +17,7 @@ limitations under the License.
 package integration
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -674,5 +675,222 @@ func TestAnInvalidTapDoesNotOccupyAProbePort(t *testing.T) {
 	c := findCondition(reload(t, valid).Status.Conditions, "Accepted")
 	if c == nil || c.Status != metav1.ConditionTrue {
 		t.Errorf("Accepted = %+v, want True: the tap it collided with is invalid and runs nowhere", c)
+	}
+}
+
+// faultyClient injects one apiserver failure so reconciliation can be observed
+// on the paths where the cluster, not the spec, is what went wrong.
+//
+// Everything else passes through to the real client, the status writer
+// included: a fault that also broke status writes could not tell us whether
+// status was written.
+type faultyClient struct {
+	client.Client
+	failList   func(client.ObjectList) error
+	failCreate func(client.Object) error
+	afterGet   func(client.Object)
+}
+
+// Get can rewrite what the apiserver returned, which is the only way to put an
+// object in front of the reconciler that the apiserver would refuse to store
+// today - a tap written before a CEL rule existed, or restored into etcd.
+func (c *faultyClient) Get(
+	ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption,
+) error {
+	if err := c.Client.Get(ctx, key, obj, opts...); err != nil {
+		return err
+	}
+	if c.afterGet != nil {
+		c.afterGet(obj)
+	}
+	return nil
+}
+
+func (c *faultyClient) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	if c.failList != nil {
+		if err := c.failList(list); err != nil {
+			return err
+		}
+	}
+	return c.Client.List(ctx, list, opts...)
+}
+
+func (c *faultyClient) Create(ctx context.Context, obj client.Object, opts ...client.CreateOption) error {
+	if c.failCreate != nil {
+		if err := c.failCreate(obj); err != nil {
+			return err
+		}
+	}
+	return c.Client.Create(ctx, obj, opts...)
+}
+
+func TestATapWhoseNodesCannotBeListedSaysSoInStatus(t *testing.T) {
+	// A dependency failure left the previous status in place, so a tap that had
+	// reconciled healthily kept reporting that answer while the controller was
+	// unable to reach the nodes it describes. Constitution II: a reported state
+	// must be one the controller has verified this pass.
+	ns := NewNamespace(t)
+	createNode(t, "unlistable-node", map[string]string{"trawl-test": "unlistable"})
+
+	tap := mirrorTap(ns, "nodes-unlistable")
+	tap.Spec.MirrorInterface.NodeSelector = metav1.LabelSelector{
+		MatchLabels: map[string]string{"trawl-test": "unlistable"},
+	}
+	if err := Client().Create(t.Context(), tap); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	r := reconcilerFor(t, ns)
+	reconcile(t, r, tap)
+	if stored := reload(t, tap); stored.Status.Phase != trawlv1alpha1.TapPhasePending {
+		t.Fatalf("phase before the fault = %q, want Pending", stored.Status.Phase)
+	}
+
+	r.Client = &faultyClient{Client: Client(), failList: func(list client.ObjectList) error {
+		if _, ok := list.(*corev1.NodeList); ok {
+			return fmt.Errorf("the node API is unavailable")
+		}
+		return nil
+	}}
+
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{
+		NamespacedName: client.ObjectKeyFromObject(tap),
+	}); err == nil {
+		t.Fatal("Reconcile returned nil; a dependency failure must requeue")
+	}
+
+	stored := reload(t, tap)
+	if stored.Status.Phase != trawlv1alpha1.TapPhaseError {
+		t.Errorf("phase = %q, want Error", stored.Status.Phase)
+	}
+	if c := findCondition(stored.Status.Conditions, "Accepted"); c == nil ||
+		c.Status != metav1.ConditionTrue || c.Reason != "Accepted" {
+		t.Errorf("Accepted = %+v, want True/Accepted: the spec was not what failed", c)
+	}
+	if c := findCondition(stored.Status.Conditions, "TargetsResolved"); c == nil ||
+		c.Status != metav1.ConditionUnknown || c.Reason != "DependencyUnavailable" {
+		t.Errorf("TargetsResolved = %+v, want Unknown/DependencyUnavailable", c)
+	}
+}
+
+func TestATapWhoseWorkloadCannotBeAppliedSaysSoInStatus(t *testing.T) {
+	// The same silence on the write side: the workload apply failed and the tap
+	// said nothing about it.
+	ns := NewNamespace(t)
+	createNode(t, "unappliable-node", map[string]string{"trawl-test": "unappliable"})
+
+	tap := mirrorTap(ns, "workload-unappliable")
+	tap.Spec.MirrorInterface.NodeSelector = metav1.LabelSelector{
+		MatchLabels: map[string]string{"trawl-test": "unappliable"},
+	}
+	if err := Client().Create(t.Context(), tap); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	r := reconcilerFor(t, ns)
+	r.Client = &faultyClient{Client: Client(), failCreate: func(obj client.Object) error {
+		switch obj.(type) {
+		case *appsv1.DaemonSet, *appsv1.Deployment:
+			return fmt.Errorf("the apps API is unavailable")
+		}
+		return nil
+	}}
+
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{
+		NamespacedName: client.ObjectKeyFromObject(tap),
+	}); err == nil {
+		t.Fatal("Reconcile returned nil; a failed apply must requeue")
+	}
+
+	stored := reload(t, tap)
+	if stored.Status.Phase != trawlv1alpha1.TapPhaseError {
+		t.Errorf("phase = %q, want Error", stored.Status.Phase)
+	}
+	if c := findCondition(stored.Status.Conditions, "Accepted"); c == nil ||
+		c.Status != metav1.ConditionTrue || c.Reason != "Accepted" {
+		t.Errorf("Accepted = %+v, want True/Accepted: the spec was not what failed", c)
+	}
+	if c := findCondition(stored.Status.Conditions, "WorkloadReady"); c == nil ||
+		c.Status != metav1.ConditionUnknown || c.Reason != "DependencyUnavailable" {
+		t.Errorf("WorkloadReady = %+v, want Unknown/DependencyUnavailable", c)
+	}
+}
+
+func TestATapWhosePeersCannotBeListedSaysSoInStatus(t *testing.T) {
+	// The probe-port check reads every other tap. That read failing says
+	// nothing about this tap's spec, and left silent it stopped the reconcile
+	// with the previous pass's answer still standing.
+	ns := NewNamespace(t)
+	createNode(t, "peerless-node", map[string]string{"trawl-test": "peerless"})
+
+	tap := mirrorTap(ns, "peers-unlistable")
+	tap.Spec.MirrorInterface.NodeSelector = metav1.LabelSelector{
+		MatchLabels: map[string]string{"trawl-test": "peerless"},
+	}
+	if err := Client().Create(t.Context(), tap); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	r := reconcilerFor(t, ns)
+	r.Client = &faultyClient{Client: Client(), failList: func(list client.ObjectList) error {
+		if _, ok := list.(*trawlv1alpha1.NetworkTapList); ok {
+			return fmt.Errorf("the trawl.cloud API is unavailable")
+		}
+		return nil
+	}}
+
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{
+		NamespacedName: client.ObjectKeyFromObject(tap),
+	}); err == nil {
+		t.Fatal("Reconcile returned nil; a dependency failure must requeue")
+	}
+
+	stored := reload(t, tap)
+	if stored.Status.Phase != trawlv1alpha1.TapPhaseError {
+		t.Errorf("phase = %q, want Error", stored.Status.Phase)
+	}
+	if c := findCondition(stored.Status.Conditions, "Accepted"); c == nil ||
+		c.Status != metav1.ConditionTrue || c.Reason != "Accepted" {
+		t.Errorf("Accepted = %+v, want True/Accepted: the spec was not what failed", c)
+	}
+	if c := findCondition(stored.Status.Conditions, "WorkloadReady"); c == nil ||
+		c.Status != metav1.ConditionUnknown || c.Reason != "DependencyUnavailable" {
+		t.Errorf("WorkloadReady = %+v, want Unknown/DependencyUnavailable", c)
+	}
+}
+
+func TestATapStoredWithNoSourceIsRejectedNotPanicked(t *testing.T) {
+	// The CRD's CEL rules keep a tap's type and its source field in agreement,
+	// but only on write. Reconciling one that disagrees used to dereference the
+	// absent source; the reconciler re-validates precisely because a stored
+	// object may never have passed the webhook.
+	ns := NewNamespace(t)
+	createNode(t, "sourceless-node", map[string]string{"trawl-test": "sourceless"})
+
+	tap := mirrorTap(ns, "source-vanished")
+	tap.Spec.MirrorInterface.NodeSelector = metav1.LabelSelector{
+		MatchLabels: map[string]string{"trawl-test": "sourceless"},
+	}
+	if err := Client().Create(t.Context(), tap); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	r := reconcilerFor(t, ns)
+	reconcile(t, r, tap)
+
+	r.Client = &faultyClient{Client: Client(), afterGet: func(obj client.Object) {
+		if stored, ok := obj.(*trawlv1alpha1.NetworkTap); ok {
+			stored.Spec.MirrorInterface = nil
+		}
+	}}
+	reconcile(t, r, tap)
+
+	stored := reload(t, tap)
+	if stored.Status.Phase != trawlv1alpha1.TapPhaseError {
+		t.Errorf("phase = %q, want Error", stored.Status.Phase)
+	}
+	if c := findCondition(stored.Status.Conditions, "Accepted"); c == nil ||
+		c.Status != metav1.ConditionFalse || c.Reason != "InvalidSpec" {
+		t.Errorf("Accepted = %+v, want False/InvalidSpec", c)
 	}
 }

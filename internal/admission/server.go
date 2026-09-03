@@ -32,10 +32,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 
 	admissionv1 "k8s.io/api/admission/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	"trawl.cloud/trawl/internal/audit"
@@ -177,51 +175,4 @@ func (g *Gate) CommitMutation(ctx context.Context, req admission.Request, decisi
 		return fmt.Errorf("%w: %w", ErrAuditUnavailable, sanitize.Error(err))
 	}
 	return nil
-}
-
-// Denied builds a rejection response with a sanitized, actionable message.
-func Denied(err error) admission.Response {
-	resp := admission.Denied(sanitize.String(err.Error()))
-	resp.Result.Reason = metav1.StatusReasonForbidden
-	return resp
-}
-
-// ServerOptions configures the webhook HTTP surface.
-type ServerOptions struct {
-	// CertDir holds tls.crt and tls.key, mounted from the webhook Secret.
-	CertDir string
-	Port    int
-}
-
-// Readiness reports whether the webhook can admit requests.
-//
-// It includes the audit sink deliberately: a webhook that cannot commit audit
-// records will fail every user mutation closed, so reporting itself ready would
-// be a lie that shows up as confusing admission errors rather than an unready
-// pod.
-func Readiness(gate *Gate) func() error {
-	return func() error {
-		if gate == nil || gate.Audit == nil {
-			return errors.New("audit sink is not configured")
-		}
-		return nil
-	}
-}
-
-// HealthzPath and ReadyzPath are the webhook server's probe endpoints.
-const (
-	HealthzPath = "/healthz"
-	ReadyzPath  = "/readyz"
-)
-
-// ProbeHandler serves a readiness check over plain HTTP for the kubelet.
-func ProbeHandler(check func() error) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		if err := check(); err != nil {
-			http.Error(w, sanitize.String(err.Error()), http.StatusServiceUnavailable)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok\n"))
-	})
 }
