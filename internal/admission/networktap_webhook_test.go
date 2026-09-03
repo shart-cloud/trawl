@@ -271,3 +271,77 @@ func TestValidateImmutableFieldsAllowsAnalyzerChanges(t *testing.T) {
 		t.Errorf("analyzer change rejected: %v", errs)
 	}
 }
+
+func TestValidateRejectsATypeWithNoMatchingSource(t *testing.T) {
+	// The CRD's CEL rules require the source field the type names, but CEL runs
+	// on write. An object stored before the rule existed, or restored straight
+	// into etcd, reaches the reconciler unchecked - and there the missing
+	// source is a nil dereference rather than an error.
+	for _, tc := range []struct {
+		name  string
+		spec  func(*trawlv1alpha1.NetworkTapSpec)
+		field string
+	}{
+		{
+			name:  "mirror type without mirrorInterface",
+			spec:  func(s *trawlv1alpha1.NetworkTapSpec) { s.MirrorInterface = nil },
+			field: "mirrorInterface",
+		},
+		{
+			name: "node type without nodeInterface",
+			spec: func(s *trawlv1alpha1.NetworkTapSpec) {
+				s.Type = trawlv1alpha1.TapSourceNodeInterface
+				s.MirrorInterface = nil
+			},
+			field: "nodeInterface",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := validSpec()
+			tc.spec(spec)
+
+			errs := ValidateNetworkTapSpec(spec)
+			if len(errs) == 0 {
+				t.Fatal("a spec whose type names an absent source was accepted")
+			}
+			if !strings.Contains(errs.ToAggregate().Error(), tc.field) {
+				t.Errorf("error does not name %s: %v", tc.field, errs)
+			}
+		})
+	}
+}
+
+func TestValidateRejectsASourceTheTypeDoesNotName(t *testing.T) {
+	// Two sources, one type: whichever the renderer picks, the other is a
+	// description of what is watched that nothing honours.
+	spec := validSpec()
+	spec.NodeInterface = &trawlv1alpha1.InterfaceSource{
+		Interface: "eth0",
+		NodeSelector: metav1.LabelSelector{
+			MatchLabels: map[string]string{"kubernetes.io/hostname": "sensor-02"},
+		},
+	}
+
+	errs := ValidateNetworkTapSpec(spec)
+	if len(errs) == 0 {
+		t.Fatal("a spec carrying the source its type does not name was accepted")
+	}
+	if !strings.Contains(errs.ToAggregate().Error(), "nodeInterface") {
+		t.Errorf("error does not name nodeInterface: %v", errs)
+	}
+}
+
+func TestValidateRejectsAnUnknownSourceType(t *testing.T) {
+	// An unrecognised type resolves to no source at all, which is the same nil
+	// dereference by a different route.
+	spec := validSpec()
+	spec.Type = "SpanPort"
+
+	errs := ValidateNetworkTapSpec(spec)
+	if len(errs) == 0 {
+		t.Fatal("an unknown source type was accepted")
+	}
+	if !strings.Contains(errs.ToAggregate().Error(), "type") {
+		t.Errorf("error does not name the type field: %v", errs)
+	}
+}

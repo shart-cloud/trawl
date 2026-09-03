@@ -18,6 +18,7 @@ package admission
 
 import (
 	"context"
+	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -147,9 +148,33 @@ func ValidateNetworkTapSpec(spec *trawlv1alpha1.NetworkTapSpec) field.ErrorList 
 			spec.Mode, []string{string(trawlv1alpha1.TapModePassive)}))
 	}
 
+	// The type and the source field it names have to agree. The CRD's CEL rules
+	// say so too, but CEL runs on write: a tap stored before those rules
+	// existed, or restored straight into etcd, arrives here unchecked. Downstream
+	// the disagreement is not an error but a nil dereference - sourceOf resolves
+	// to nothing and the renderer panics - so it is caught as the invalid spec
+	// it is.
 	source, sourcePath := activeSource(spec, specPath)
-	if source != nil {
+	switch {
+	case !knownSourceType(spec.Type):
+		errs = append(errs, field.NotSupported(specPath.Child("type"), spec.Type,
+			[]string{
+				string(trawlv1alpha1.TapSourceMirrorInterface),
+				string(trawlv1alpha1.TapSourceNodeInterface),
+			}))
+	case source == nil:
+		errs = append(errs, field.Required(sourcePath,
+			fmt.Sprintf("type %s requires this source", spec.Type)))
+	default:
 		errs = append(errs, validateInterfaceSource(source, sourcePath)...)
+	}
+
+	// The source the type does not name is not inert: it describes an interface
+	// and a set of nodes that nothing watches, while reading as configuration
+	// that took effect.
+	if unused, unusedPath := inactiveSource(spec, specPath); unused != nil {
+		errs = append(errs, field.Forbidden(unusedPath,
+			fmt.Sprintf("type %s does not use this source", spec.Type)))
 	}
 
 	errs = append(errs, validateAnalyzer(&spec.Analyzers.Suricata,
@@ -158,6 +183,29 @@ func ValidateNetworkTapSpec(spec *trawlv1alpha1.NetworkTapSpec) field.ErrorList 
 		specPath.Child("analyzers", "zeek"))...)
 
 	return errs
+}
+
+// knownSourceType reports whether the type names a source field at all. An
+// unrecognised one names none, so there is nothing for the renderer to read.
+func knownSourceType(t trawlv1alpha1.TapSourceType) bool {
+	return t == trawlv1alpha1.TapSourceMirrorInterface ||
+		t == trawlv1alpha1.TapSourceNodeInterface
+}
+
+// inactiveSource returns the source field the type does not name, when it is
+// set. Nothing reads it, so it is a claim about what is watched that no sensor
+// honours.
+func inactiveSource(spec *trawlv1alpha1.NetworkTapSpec, specPath *field.Path) (*trawlv1alpha1.InterfaceSource, *field.Path) {
+	switch spec.Type {
+	case trawlv1alpha1.TapSourceMirrorInterface:
+		return spec.NodeInterface, specPath.Child("nodeInterface")
+	case trawlv1alpha1.TapSourceNodeInterface:
+		return spec.MirrorInterface, specPath.Child("mirrorInterface")
+	default:
+		// With no recognised type neither field is the active one, and the type
+		// itself is already reported.
+		return nil, specPath
+	}
 }
 
 func activeSource(spec *trawlv1alpha1.NetworkTapSpec, specPath *field.Path) (*trawlv1alpha1.InterfaceSource, *field.Path) {

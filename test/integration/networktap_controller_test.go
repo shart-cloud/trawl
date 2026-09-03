@@ -688,6 +688,22 @@ type faultyClient struct {
 	client.Client
 	failList   func(client.ObjectList) error
 	failCreate func(client.Object) error
+	afterGet   func(client.Object)
+}
+
+// Get can rewrite what the apiserver returned, which is the only way to put an
+// object in front of the reconciler that the apiserver would refuse to store
+// today - a tap written before a CEL rule existed, or restored into etcd.
+func (c *faultyClient) Get(
+	ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption,
+) error {
+	if err := c.Client.Get(ctx, key, obj, opts...); err != nil {
+		return err
+	}
+	if c.afterGet != nil {
+		c.afterGet(obj)
+	}
+	return nil
 }
 
 func (c *faultyClient) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
@@ -840,5 +856,41 @@ func TestATapWhosePeersCannotBeListedSaysSoInStatus(t *testing.T) {
 	if c := findCondition(stored.Status.Conditions, "WorkloadReady"); c == nil ||
 		c.Status != metav1.ConditionUnknown || c.Reason != "DependencyUnavailable" {
 		t.Errorf("WorkloadReady = %+v, want Unknown/DependencyUnavailable", c)
+	}
+}
+
+func TestATapStoredWithNoSourceIsRejectedNotPanicked(t *testing.T) {
+	// The CRD's CEL rules keep a tap's type and its source field in agreement,
+	// but only on write. Reconciling one that disagrees used to dereference the
+	// absent source; the reconciler re-validates precisely because a stored
+	// object may never have passed the webhook.
+	ns := NewNamespace(t)
+	createNode(t, "sourceless-node", map[string]string{"trawl-test": "sourceless"})
+
+	tap := mirrorTap(ns, "source-vanished")
+	tap.Spec.MirrorInterface.NodeSelector = metav1.LabelSelector{
+		MatchLabels: map[string]string{"trawl-test": "sourceless"},
+	}
+	if err := Client().Create(t.Context(), tap); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	r := reconcilerFor(t, ns)
+	reconcile(t, r, tap)
+
+	r.Client = &faultyClient{Client: Client(), afterGet: func(obj client.Object) {
+		if stored, ok := obj.(*trawlv1alpha1.NetworkTap); ok {
+			stored.Spec.MirrorInterface = nil
+		}
+	}}
+	reconcile(t, r, tap)
+
+	stored := reload(t, tap)
+	if stored.Status.Phase != trawlv1alpha1.TapPhaseError {
+		t.Errorf("phase = %q, want Error", stored.Status.Phase)
+	}
+	if c := findCondition(stored.Status.Conditions, "Accepted"); c == nil ||
+		c.Status != metav1.ConditionFalse || c.Reason != "InvalidSpec" {
+		t.Errorf("Accepted = %+v, want False/InvalidSpec", c)
 	}
 }
