@@ -131,27 +131,27 @@ func (r *NetworkTapReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	nodes, err := r.eligibleNodes(ctx, &tap)
 	if err != nil {
 		result = telemetry.ReconcileDependencyUnavailable
-		return ctrl.Result{}, sanitize.Error(err)
+		return ctrl.Result{}, r.reportUnavailable(ctx, &tap, "resolving eligible nodes", err)
 	}
 
 	// checkTargetCardinality writes its own terminal status, so a false result
 	// means "stop here", not "an error occurred". Continuing would let the
 	// status update below overwrite the error it just recorded.
 	if ok, err := r.checkTargetCardinality(ctx, &tap, nodes); !ok {
-		result = telemetry.ReconcileInvalid
+		result = reconcileOutcome(err)
 		return ctrl.Result{}, err
 	}
 
 	// checkProbePortConflict writes its own terminal status, for the same
 	// reason checkTargetCardinality does.
 	if ok, err := r.checkProbePortConflict(ctx, &tap, nodes); !ok {
-		result = telemetry.ReconcileInvalid
+		result = reconcileOutcome(err)
 		return ctrl.Result{}, err
 	}
 
 	if err := r.applyOwnedResources(ctx, &tap); err != nil {
 		result = telemetry.ReconcileError
-		return ctrl.Result{}, sanitize.Error(err)
+		return ctrl.Result{}, r.reportUnavailable(ctx, &tap, "applying the tap's owned resources", err)
 	}
 
 	if err := r.updateStatus(ctx, &tap, len(nodes)); err != nil {
@@ -216,7 +216,7 @@ func (r *NetworkTapReconciler) checkProbePortConflict(ctx context.Context, tap *
 
 	var taps trawlv1alpha1.NetworkTapList
 	if err := r.List(ctx, &taps); err != nil {
-		return false, sanitize.Errorf("listing taps to check probe ports: %v", err)
+		return false, r.reportUnavailable(ctx, tap, "listing taps to check probe ports", err)
 	}
 
 	mine := make(map[string]struct{}, len(nodes))
@@ -498,6 +498,72 @@ func (r *NetworkTapReconciler) finalize(ctx context.Context, tap *trawlv1alpha1.
 	if err := r.Update(ctx, tap); err != nil {
 		if r.Metrics != nil {
 			r.Metrics.FinalizerFailures.WithLabelValues("NetworkTap", status.ReasonPending).Inc()
+		}
+		return sanitize.Error(err)
+	}
+	return nil
+}
+
+// reconcileOutcome labels a stopped reconcile for the metrics.
+//
+// The check helpers stop for two different reasons behind one signature. A nil
+// error means the tap was found invalid and told so in its own status; a
+// non-nil one means talking to the apiserver failed, which is a dependency
+// problem regardless of which call it was.
+func reconcileOutcome(err error) string {
+	if err != nil {
+		return telemetry.ReconcileDependencyUnavailable
+	}
+	return telemetry.ReconcileInvalid
+}
+
+// reportUnavailable records a dependency failure in status and hands back the
+// error that caused it, so the reconcile is retried with backoff.
+//
+// The error returned is always the original one. Replacing it with a failure to
+// write status would lose the only description of what actually broke.
+func (r *NetworkTapReconciler) reportUnavailable(ctx context.Context, tap *trawlv1alpha1.NetworkTap, doing string, cause error) error {
+	if err := r.markUnavailable(ctx, tap, fmt.Sprintf("%s: %v", doing, cause)); err != nil {
+		log.FromContext(ctx).Error(err, "recording a dependency failure in status", "while", doing)
+	}
+	return sanitize.Error(cause)
+}
+
+// markUnavailable records that the tap could not be reconciled because the
+// cluster it depends on could not be read or written.
+//
+// It differs from markError in two ways, both deliberate. Accepted stays True:
+// the spec passed validation on this pass, and telling an operator it was
+// rejected would send them to look at the wrong thing. The remaining conditions
+// go Unknown rather than False, because this pass established nothing about
+// them - False is a claim that they were observed to be wrong.
+//
+// The observations already in status are left alone: a sensor's last report is
+// still the last thing that sensor said. The phase is Error all the same, since
+// a tap whose dependencies are wholly unavailable is not one an analyst should
+// read as monitoring - which is the same reasoning markError sets out at
+// length, arrived at from the other side.
+func (r *NetworkTapReconciler) markUnavailable(ctx context.Context, tap *trawlv1alpha1.NetworkTap, message string) error {
+	gen := tap.Generation
+	tap.Status.ObservedGeneration = gen
+	tap.Status.Phase = trawlv1alpha1.TapPhaseError
+
+	status.Set(&tap.Status.Conditions, status.New(status.TypeAccepted,
+		metav1.ConditionTrue, status.ReasonAccepted, "spec accepted", gen))
+
+	for _, condType := range []string{
+		status.TypeTargetsResolved,
+		status.TypeWorkloadReady,
+		status.TypeAnalyzersHealthy,
+		status.TypePacketsObserved,
+	} {
+		status.Set(&tap.Status.Conditions, status.New(condType,
+			metav1.ConditionUnknown, status.ReasonDependencyUnavailable, message, gen))
+	}
+
+	if err := r.Status().Update(ctx, tap); err != nil {
+		if r.Metrics != nil {
+			r.Metrics.StatusUpdateFailures.WithLabelValues("NetworkTap", status.ReasonDependencyUnavailable).Inc()
 		}
 		return sanitize.Error(err)
 	}
