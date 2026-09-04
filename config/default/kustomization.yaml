@@ -25,6 +25,11 @@ resources:
 # Default-deny plus per-component allowlists. Without this the namespace
 # holding the audit and storage credentials is open to every pod.
 - ../networkpolicy
+# The audit sink Service. Everything that is not the controller manager commits
+# audit records through it, because only the manager holds ledger credentials
+# (ADR-0003). It was written but never listed here, so it was never applied and
+# the name its clients dial did not resolve.
+- ../audit
 # [CERTMANAGER] To enable cert-manager, uncomment all sections with 'CERTMANAGER'. 'WEBHOOK' components are required.
 #- ../certmanager
 # [PROMETHEUS] To enable prometheus monitor, uncomment all sections with 'PROMETHEUS'.

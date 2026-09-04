@@ -40,12 +40,17 @@ spec:
         - port: 8443
           protocol: TCP
     # The audit sink, reachable only from Trawl's own components.
+    #
+    # 9444, not the 8443 the Service publishes: a NetworkPolicy port is the
+    # port on the receiving pod, and the Service forwards 8443 to 9444. Naming
+    # the Service port here opened the metrics port instead and left the sink
+    # closed to the components that have no other way to record what they did.
     - from:
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: trawl
       ports:
-        - port: 8443
+        - port: 9444
           protocol: TCP
   egress:
     # DNS.

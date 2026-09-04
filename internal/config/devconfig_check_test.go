@@ -76,6 +76,31 @@ func TestDevConfigCredentialPathsAreMounted(t *testing.T) {
 			t.Errorf("%s is mounted from volume %q, which is not backed by a Secret", want.field, volume)
 		}
 	}
+
+	// The audit sink names files rather than directories, so what has to be
+	// mounted is the directory each one sits in. Without them the manager
+	// cannot serve the sink, and every component that has no ledger
+	// credentials of its own -- which ADR-0003 makes all of them -- loses the
+	// only way it has to record what it did.
+	for _, want := range []struct {
+		field string
+		path  string
+	}{
+		{"auditSink.certFile", cfg.AuditSink.CertFile},
+		{"auditSink.keyFile", cfg.AuditSink.KeyFile},
+		{"auditSink.caFile", cfg.AuditSink.CAFile},
+	} {
+		dir := filepath.Dir(want.path)
+		volume, ok := mounts[dir]
+		if !ok {
+			t.Errorf("%s is %s, but the manager mounts nothing at %s; the listener would not start",
+				want.field, want.path, dir)
+			continue
+		}
+		if secret, ok := volumes[volume]; !ok || secret == "" {
+			t.Errorf("%s is mounted from volume %q, which is not backed by a Secret", want.field, volume)
+		}
+	}
 }
 
 // managerCredentialSurface returns the manager container's read-only mount

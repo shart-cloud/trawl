@@ -56,6 +56,12 @@ func valid() *Config {
 		AuditClientIdentities: []string{
 			"trawl-controller-manager", "trawl-event-worker", "trawl-artifact-gateway",
 		},
+		AuditSink: AuditSinkConfig{
+			ListenAddr: DefaultAuditSinkListenAddr,
+			CertFile:   "/var/run/secrets/trawl/audit-sink/tls.crt",
+			KeyFile:    "/var/run/secrets/trawl/audit-sink/tls.key",
+			CAFile:     "/var/run/secrets/trawl/audit-sink/ca.crt",
+		},
 		CaptureRetentionCeiling: Duration(30 * 24 * time.Hour),
 		SensorAgentResources: ResourceRequirements{
 			RequestsCPU:    "50m",
@@ -233,6 +239,34 @@ func TestAuditClientIdentitiesRequired(t *testing.T) {
 	}
 }
 
+func TestAuditSinkTLSMaterialRequired(t *testing.T) {
+	// There is no self-signed fallback for the sink. Without a serving
+	// certificate it cannot start, and without a CA it would accept any
+	// client, so each of these is required rather than defaulted.
+	for name, clear := range map[string]func(*Config){
+		"certFile": func(c *Config) { c.AuditSink.CertFile = "" },
+		"keyFile":  func(c *Config) { c.AuditSink.KeyFile = "" },
+		"caFile":   func(c *Config) { c.AuditSink.CAFile = "" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := valid()
+			clear(c)
+			if err := c.Validate(); err == nil {
+				t.Errorf("Validate accepted an audit sink with no %s", name)
+			}
+		})
+	}
+}
+
+func TestAuditSinkListenAddrDefaults(t *testing.T) {
+	c := valid()
+	c.AuditSink.ListenAddr = ""
+	c.ApplyDefaults()
+	if c.AuditSink.ListenAddr != DefaultAuditSinkListenAddr {
+		t.Errorf("listenAddr = %q, want %q", c.AuditSink.ListenAddr, DefaultAuditSinkListenAddr)
+	}
+}
+
 func TestSensorAgentResourcesRequired(t *testing.T) {
 	// Sensor-agent resources come from installation config, never the
 	// NetworkTap CRD, so an operator cannot under-provision it per tap.
@@ -348,6 +382,10 @@ auditLedger:
   bucket: trawl-audit
   credentialsPath: /etc/trawl/audit
 auditClientIdentities: [trawl-controller-manager]
+auditSink:
+  certFile: /etc/trawl/audit-sink/tls.crt
+  keyFile: /etc/trawl/audit-sink/tls.key
+  caFile: /etc/trawl/audit-sink/ca.crt
 sensorAgentResources:
   requestsCPU: 50m
   requestsMemory: 64Mi

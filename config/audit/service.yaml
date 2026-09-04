@@ -7,8 +7,10 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: trawl-audit
-  namespace: trawl-system
+  # config/default prepends "trawl-" and sets the namespace, so this renders
+  # as trawl-audit in trawl-system -- the name internal/audit's client dials.
+  name: audit
+  namespace: system
   labels:
     app.kubernetes.io/name: trawl
     app.kubernetes.io/component: audit-sink
@@ -18,6 +20,8 @@ spec:
     app.kubernetes.io/name: trawl
     app.kubernetes.io/component: controller-manager
   ports:
+    # The pod serves on 9444 (config/manager/manager.yaml, containerPort
+      # "audit"). Clients dial the Service on 8443.
     - name: audit
       port: 8443
       targetPort: audit

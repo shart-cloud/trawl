@@ -37,3 +37,111 @@ spec:
     algorithm: ECDSA
     size: 384
     rotationPolicy: Always
+---
+# The installation CA, and the chain that hangs off it.
+#
+# The webhook certificate above is self-signed because the only party that has
+# to trust it is the API server, which is handed the bundle directly. The audit
+# sink is a different problem: both ends are Trawl components, each has to
+# authenticate the other, and there is no third party to distribute a bundle.
+# That needs a CA both sides can be pointed at, so Trawl issues its own rather
+# than assuming the cluster has one to borrow.
+#
+# The sink is what makes ADR-0003 workable. Ledger credentials live only in the
+# controller manager, so every other component records what it did by calling
+# the sink -- and FR-036 makes a component that cannot record an action refuse
+# to complete it. A certificate problem here is therefore an outage of those
+# components' write paths, not a lost log line.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  # Rendered as trawl-ca by config/default's namePrefix, and referenced under
+  # that name by the issuer below (kustomizeconfig.yaml rewrites issuerRef).
+  name: ca
+  namespace: system
+spec:
+  isCA: true
+  commonName: trawl-ca
+  secretName: trawl-ca
+  duration: 43800h # 5 years
+  renewBefore: 8760h # 1 year
+  privateKey:
+    algorithm: ECDSA
+    size: 384
+    # Not Always: rotating the CA key invalidates every certificate issued
+    # from it at once, and the sink's clients would fail closed together.
+    rotationPolicy: Never
+  issuerRef:
+    kind: Issuer
+    name: selfsigned-issuer
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: ca-issuer
+  namespace: system
+spec:
+  ca:
+    secretName: trawl-ca
+---
+# The audit sink's serving certificate.
+#
+# The Secret carries tls.crt, tls.key and ca.crt, which is the whole of what
+# the listener needs: the first two to present, the third to verify its
+# clients. That is why the manager mounts this one Secret and nothing else for
+# the sink.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: audit-sink-cert
+  namespace: system
+spec:
+  secretName: audit-sink-cert
+  dnsNames:
+    - trawl-audit.trawl-system.svc
+    - trawl-audit.trawl-system.svc.cluster.local
+  duration: 2160h # 90 days
+  # The listener re-reads the files when they change (internal/audit/server.go),
+  # so a renewal is not a restart.
+  renewBefore: 720h # 30 days
+  privateKey:
+    algorithm: ECDSA
+    size: 384
+    rotationPolicy: Always
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+  issuerRef:
+    kind: Issuer
+    name: ca-issuer
+---
+# The artifact gateway's client identity for the audit sink.
+#
+# Issued here rather than in Slice B so the CA chain lives in one file. The
+# common name is what the sink matches against auditClientIdentities, so it and
+# the config entry have to agree exactly; a mismatch is a 403 on every commit
+# and therefore a gateway that refuses every download.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: artifact-gateway-audit-client
+  namespace: system
+spec:
+  secretName: artifact-gateway-audit-client
+  commonName: trawl-artifact-gateway.trawl-system.svc
+  duration: 2160h # 90 days
+  renewBefore: 720h # 30 days
+  privateKey:
+    algorithm: ECDSA
+    size: 384
+    rotationPolicy: Always
+  # Client authentication only. This identifies a writer of audit records; it
+  # must not be usable to stand up something that serves them.
+  usages:
+    - digital signature
+    - key encipherment
+    - client auth
+  issuerRef:
+    kind: Issuer
+    name: ca-issuer
