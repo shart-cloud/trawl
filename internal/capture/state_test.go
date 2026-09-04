@@ -99,11 +99,15 @@ func TestIsTerminal(t *testing.T) {
 }
 
 func TestCanTransitionMatrix(t *testing.T) {
+	// Forward moves may skip: the reconciler writes the phase the facts imply,
+	// so a capture stored and verified inside one pass goes straight from
+	// Capturing to Completed. Backwards moves and any move out of a terminal
+	// phase other than Completed -> Expired are what the lifecycle forbids.
 	legal := map[trawlv1alpha1.CapturePhase][]trawlv1alpha1.CapturePhase{
-		"":          {"Pending", "Failed"},
-		"Pending":   {"Capturing", "Failed"},
-		"Capturing": {"Storing", "Failed"},
-		"Storing":   {"Completed", "Failed"},
+		"":          {"Pending", "Capturing", "Storing", "Completed", "Expired", "Failed"},
+		"Pending":   {"Capturing", "Storing", "Completed", "Expired", "Failed"},
+		"Capturing": {"Storing", "Completed", "Expired", "Failed"},
+		"Storing":   {"Completed", "Expired", "Failed"},
 		"Completed": {"Expired"},
 		"Failed":    {},
 		"Expired":   {},

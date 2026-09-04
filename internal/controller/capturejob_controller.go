@@ -576,6 +576,17 @@ func (r *CaptureJobReconciler) persist(ctx context.Context, job *trawlv1alpha1.C
 	from := job.Status.Phase
 
 	if outcome.Phase != from {
+		if !capture.CanTransition(from, outcome.Phase) {
+			// Nothing an observation can say should move a capture backwards
+			// or out of a terminal phase, so reaching here is a bug in the
+			// derivation rather than a state the cluster got into. The pass is
+			// dropped whole: an outcome whose phase is impossible is not one
+			// to trust the rest of for conditions either, and dropping it
+			// leaves the object as the ledger last described it.
+			log.FromContext(ctx).Error(nil, "refusing an impossible capture phase transition",
+				"from", from, "to", outcome.Phase)
+			return nil
+		}
 		if err := r.auditTransition(ctx, job, outcome); err != nil {
 			r.markAuditUnavailable(job, err)
 			if werr := r.writeStatus(ctx, job, status.ReasonAuditUnavailable); werr != nil {
