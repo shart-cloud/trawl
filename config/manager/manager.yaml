@@ -98,6 +98,13 @@ spec:
         - containerPort: 8081
           name: health
           protocol: TCP
+        # The audit sink. config/audit/service.yaml forwards its 8443 to this
+        # port by name, so the name is load-bearing: a Service targetPort that
+        # names no container port resolves to nothing and every client of the
+        # sink fails closed.
+        - containerPort: 9444
+          name: audit
+          protocol: TCP
         securityContext:
           readOnlyRootFilesystem: true
           allowPrivilegeEscalation: false
@@ -145,11 +152,17 @@ spec:
             mountPath: /var/run/secrets/trawl/audit
             readOnly: true
           # Declared by the installation configuration and provisioned by
-          # hack/dev-storage.sh. Nothing constructs the artifact store until
-          # US3 adds capture, so this mount is present for the credential
-          # separation ADR-0003 requires, not because it is read yet.
+          # hack/dev-storage.sh. Read by the capture controller when it
+          # verifies and expires artifacts, and kept separate from the audit
+          # credential because ADR-0003 requires that separation.
           - name: artifact-credentials
             mountPath: /var/run/secrets/trawl/artifacts
+            readOnly: true
+          # cert-manager writes tls.crt, tls.key and ca.crt here: what the sink
+          # presents, and what it verifies its clients against. One Secret
+          # rather than three mounts because the chain is one chain.
+          - name: audit-sink-cert
+            mountPath: /var/run/secrets/trawl/audit-sink
             readOnly: true
       volumes:
         - name: config
@@ -163,5 +176,9 @@ spec:
         - name: artifact-credentials
           secret:
             secretName: trawl-artifact-storage
+        # Issued by config/certmanager/certificate.yaml from the Trawl CA.
+        - name: audit-sink-cert
+          secret:
+            secretName: audit-sink-cert
       serviceAccountName: controller-manager
       terminationGracePeriodSeconds: 10

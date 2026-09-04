@@ -309,6 +309,28 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Everything that is not this process commits audit records through this
+	// listener, because ledger credentials live here and nowhere else
+	// (ADR-0003). config/audit/service.yaml has always pointed at it; until
+	// now nothing served the port it names, so the Service resolved to a
+	// closed port and any client of it would have failed closed forever.
+	auditServer, err := audit.NewSinkServer(audit.SinkServerOptions{
+		Sink:              auditSink,
+		ListenAddr:        installCfg.AuditSink.ListenAddr,
+		CertFile:          installCfg.AuditSink.CertFile,
+		KeyFile:           installCfg.AuditSink.KeyFile,
+		CAFile:            installCfg.AuditSink.CAFile,
+		AllowedIdentities: installCfg.AuditClientIdentities,
+	})
+	if err != nil {
+		setupLog.Error(sanitize.Error(err), "Failed to create the audit sink listener")
+		os.Exit(1)
+	}
+	if err := mgr.Add(auditServer); err != nil {
+		setupLog.Error(err, "Failed to set up the audit sink listener")
+		os.Exit(1)
+	}
+
 	// The ledger is durable but not searchable. This runnable is what forwards
 	// committed records to stdout, where Alloy collects them into Loki
 	// (config/alloy/trawl-audit.alloy). Without it the pipeline is well-formed

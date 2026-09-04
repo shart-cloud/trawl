@@ -68,9 +68,26 @@ data:
     auditRetention: 90d
     captureRetentionCeiling: 7d
 
+    # The mTLS common names permitted to commit audit records. Matched against
+    # the client certificate the sink was presented, so each name here must be
+    # the commonName of a Certificate in config/certmanager/certificate.yaml;
+    # a mismatch is a 403 on every commit from that component, and FR-036 turns
+    # that into the component refusing the action it could not record.
     auditClientIdentities:
       - trawl-controller-manager.trawl-system.svc
       - trawl-event-worker.trawl-system.svc
+      - trawl-artifact-gateway.trawl-system.svc
+
+    # The listener those clients reach, served by the controller manager
+    # because it is the only holder of ledger credentials (ADR-0003). The files
+    # are the audit-sink-cert Secret cert-manager issues from the Trawl CA and
+    # config/manager/manager.yaml mounts; ca.crt in that Secret is the CA the
+    # clients' own certificates are checked against.
+    auditSink:
+      listenAddr: ":9444"
+      certFile: /var/run/secrets/trawl/audit-sink/tls.crt
+      keyFile: /var/run/secrets/trawl/audit-sink/tls.key
+      caFile: /var/run/secrets/trawl/audit-sink/ca.crt
 
     # Not a NetworkTap field on purpose: an under-provisioned sensor drops
     # observations silently, so it is not something a tap author can get wrong.

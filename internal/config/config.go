@@ -52,6 +52,12 @@ const (
 	// DefaultAuditRetention is the middle of the permitted 90-730 day range.
 	DefaultAuditRetention = 365 * 24 * time.Hour
 
+	// DefaultAuditSinkListenAddr is the port the audit sink listens on. It is
+	// deliberately not the webhook's: the webhook is dialled by the API server
+	// with its own self-signed certificate, while this is dialled by Trawl's
+	// own components with client certificates from the installation CA.
+	DefaultAuditSinkListenAddr = ":9444"
+
 	// DefaultCaptureRetentionCeiling caps how long any capture may be kept.
 	DefaultCaptureRetentionCeiling = 30 * 24 * time.Hour
 
@@ -109,6 +115,9 @@ type Config struct {
 	// audit records to the sink.
 	AuditClientIdentities []string `json:"auditClientIdentities"`
 
+	// AuditSink is the listener that serves those clients.
+	AuditSink AuditSinkConfig `json:"auditSink,omitempty"`
+
 	// CaptureRetentionCeiling is the longest retention any capture may request.
 	CaptureRetentionCeiling Duration `json:"captureRetentionCeiling,omitempty"`
 
@@ -154,6 +163,30 @@ type CaptureConfig struct {
 	// which lives on the work volume.
 	RunnerResources   ResourceRequirements `json:"runnerResources,omitempty"`
 	ReporterResources ResourceRequirements `json:"reporterResources,omitempty"`
+}
+
+// AuditSinkConfig is the mTLS listener through which everything that is not
+// the controller manager commits audit records.
+//
+// ADR-0003 gives ledger credentials to the manager alone, so the gateway, the
+// event worker and the webhooks have no way to write history except through
+// this listener. That makes it a hard dependency of theirs rather than an
+// optional feature: without it they cannot record what they did, and FR-036
+// says an action that cannot be recorded must not complete.
+//
+// TLS material is mounted, never inlined, and the client certificate's common
+// name is checked against AuditClientIdentities. The CA that signs these is
+// Trawl's own, not the webhook's self-signed issuer, because here both ends
+// are Trawl components and each must authenticate the other.
+type AuditSinkConfig struct {
+	// ListenAddr defaults to DefaultAuditSinkListenAddr.
+	ListenAddr string `json:"listenAddr,omitempty"`
+
+	// CertFile and KeyFile are the sink's serving certificate; CAFile is the
+	// bundle its clients' certificates are verified against.
+	CertFile string `json:"certFile"`
+	KeyFile  string `json:"keyFile"`
+	CAFile   string `json:"caFile"`
 }
 
 // LokiConfig addresses the log store used for observations and audit replay.
@@ -313,6 +346,9 @@ func (c *Config) ApplyDefaults() {
 	if c.AuditRetention == 0 {
 		c.AuditRetention = Duration(DefaultAuditRetention)
 	}
+	if c.AuditSink.ListenAddr == "" {
+		c.AuditSink.ListenAddr = DefaultAuditSinkListenAddr
+	}
 	if c.CaptureRetentionCeiling == 0 {
 		c.CaptureRetentionCeiling = Duration(DefaultCaptureRetentionCeiling)
 	}
@@ -389,6 +425,14 @@ func (c *Config) Validate() error {
 	req("hubble.certFile", c.Hubble.CertFile)
 	req("hubble.keyFile", c.Hubble.KeyFile)
 	req("hubble.serverName", c.Hubble.ServerName)
+
+	// The sink has no self-signed fallback. Serving it without a certificate,
+	// or without a CA to check clients against, would either not start or
+	// accept anyone, so these are required rather than defaulted.
+	req("auditSink.certFile", c.AuditSink.CertFile)
+	req("auditSink.keyFile", c.AuditSink.KeyFile)
+	req("auditSink.caFile", c.AuditSink.CAFile)
+	req("auditSink.listenAddr", c.AuditSink.ListenAddr)
 
 	errs = append(errs, validateBucket("artifacts", c.Artifacts)...)
 	errs = append(errs, validateBucket("auditLedger", c.AuditLedger)...)
