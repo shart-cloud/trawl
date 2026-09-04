@@ -18,11 +18,19 @@ package gateway
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -30,14 +38,28 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // artifactServer stands in for both halves of a download: the gateway that
-// redirects and the object store that serves the bytes. They are one TLS server
-// so the redirect is same-host — which is exactly the case where net/http would
-// forward the Authorization header, and so the case worth testing.
+// redirects, and the object store that serves the bytes.
+//
+// They are two TLS servers with two different certificates, because that is
+// what a real deployment looks like: Trawl issues the gateway's certificate and
+// has no say over object storage's. An earlier version of this fixture served
+// both roles from one server, which made the redirect same-host and every
+// certificate the same — and so could not see that the client was checking the
+// bucket against Trawl's CA. The dev environment could not see it either,
+// because its MinIO is plaintext.
+//
+// The same-host case still has to be covered, since it is where net/http would
+// forward the Authorization header; TestClientNeverSendsTheTokenToObjectStorage
+// keeps that shape deliberately.
 type artifactServer struct {
 	*httptest.Server
+
+	// objects is the separate object-storage server.
+	objects *httptest.Server
 
 	mu               sync.Mutex
 	objectAuthHeader string
@@ -77,6 +99,41 @@ func newArtifactServer(t *testing.T, body []byte) *artifactServer {
 		if !s.omitChecksum {
 			w.Header().Set(HeaderSHA256, checksum)
 		}
+		w.Header().Set("Location", s.objects.URL+"/objects/capture.pcapng?X-Amz-Signature=deadbeef")
+		w.WriteHeader(http.StatusSeeOther)
+	})
+	objects := http.NewServeMux()
+	objects.HandleFunc("GET /objects/{name}", func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		s.objectAuthHeader = r.Header.Get("Authorization")
+		s.objectRequests++
+		s.mu.Unlock()
+
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(s.body)
+	})
+
+	// Its own certificate, not httptest's. Every httptest.NewTLSServer presents
+	// the same built-in certificate, so two of them would be indistinguishable
+	// to a trust store — which is precisely the confusion this fixture exists
+	// to rule out.
+	s.objects = newTLSServerWithOwnCert(t, objects)
+	s.Server = httptest.NewTLSServer(mux)
+	t.Cleanup(s.Close)
+	return s
+}
+
+// sameHostServer serves the gateway and the objects from one server, so the
+// redirect is same-host: the case where net/http forwards Authorization.
+func newSameHostServer(t *testing.T, body []byte) *artifactServer {
+	t.Helper()
+	s := &artifactServer{body: body}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc(DownloadPath, func(w http.ResponseWriter, _ *http.Request) {
+		sum := sha256.Sum256(s.body)
+		w.Header().Set("X-Request-ID", "req-1")
+		w.Header().Set(HeaderSHA256, hex.EncodeToString(sum[:]))
 		w.Header().Set("Location", s.URL+"/objects/capture.pcapng?X-Amz-Signature=deadbeef")
 		w.WriteHeader(http.StatusSeeOther)
 	})
@@ -91,6 +148,7 @@ func newArtifactServer(t *testing.T, body []byte) *artifactServer {
 	})
 
 	s.Server = httptest.NewTLSServer(mux)
+	s.objects = s.Server
 	t.Cleanup(s.Close)
 	return s
 }
@@ -113,11 +171,29 @@ func newTestClient(t *testing.T, s *artifactServer) *Client {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	// The test server's certificate is generated per run and is not TLS 1.3
-	// only; trust it through the same pool but allow the handshake the server
-	// actually offers.
+	// The test servers' certificates are generated per run and are not TLS 1.3
+	// only, so the negotiated floor is relaxed for both clients.
 	c.http.Transport.(*http.Transport).TLSClientConfig.MinVersion = 0
+
+	// The storage client uses system roots in production, which cannot contain
+	// an httptest certificate. Standing in for them here is the object server's
+	// own CA — deliberately NOT the gateway's, so the two trust stores stay
+	// distinct exactly as they are in a real deployment.
+	storageTLS := c.storage.Transport.(*http.Transport).TLSClientConfig
+	storageTLS.MinVersion = 0
+	storageTLS.RootCAs = poolFor(t, s.objects)
 	return c
+}
+
+// poolFor builds a CA pool trusting one test server.
+func poolFor(t *testing.T, s *httptest.Server) *x509.CertPool {
+	t.Helper()
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pem.EncodeToMemory(
+		&pem.Block{Type: "CERTIFICATE", Bytes: s.Certificate().Raw})) {
+		t.Fatal("test server certificate was not usable as a CA")
+	}
+	return pool
 }
 
 func TestClientDownloadsAndVerifies(t *testing.T) {
@@ -139,7 +215,11 @@ func TestClientDownloadsAndVerifies(t *testing.T) {
 // across a same-host redirect, and the redirect target is object storage: the
 // Kubernetes token would be handed to a service with no business seeing it.
 func TestClientNeverSendsTheTokenToObjectStorage(t *testing.T) {
-	s := newArtifactServer(t, []byte("bytes"))
+	// Same-host on purpose: net/http strips Authorization on a cross-host
+	// redirect by itself, so a two-server fixture would pass this test without
+	// the client doing anything. The leak only exists when the redirect target
+	// shares the gateway's host, which is the shape used here.
+	s := newSameHostServer(t, []byte("bytes"))
 	c := newTestClient(t, s)
 
 	// Deliberately not fatal. What this test is about is what the object store
@@ -248,4 +328,40 @@ func TestClientErrorsCarryNoSecret(t *testing.T) {
 			t.Errorf("error leaked %q: %v", secret, err)
 		}
 	}
+}
+
+// newTLSServerWithOwnCert starts a TLS server presenting a freshly generated
+// self-signed certificate, distinct from httptest's shared one.
+func newTLSServerWithOwnCert(t *testing.T, handler http.Handler) *httptest.Server {
+	t.Helper()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generating a key: %v", err)
+	}
+	template := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "object-storage.test"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		DNSNames:              []string{"localhost"},
+		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("creating a certificate: %v", err)
+	}
+
+	server := httptest.NewUnstartedServer(handler)
+	server.TLS = &tls.Config{Certificates: []tls.Certificate{{
+		Certificate: [][]byte{der},
+		PrivateKey:  key,
+	}}}
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	return server
 }

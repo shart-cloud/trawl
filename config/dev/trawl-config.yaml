@@ -105,6 +105,12 @@ data:
       # sweeping every capture in the cluster.
       downloadsPerMinute: 30
       downloadBurst: 10
+      # A ceiling on authentication attempts across all callers, valid or not.
+      # The per-caller limit above cannot cover these: a rejected token has no
+      # identity to key on, and every attempt is a TokenReview against the API
+      # server.
+      authAttemptsPerMinute: 600
+      authAttemptBurst: 200
       certFile: /var/run/secrets/trawl/gateway-tls/tls.crt
       keyFile: /var/run/secrets/trawl/gateway-tls/tls.key
       auditClient:

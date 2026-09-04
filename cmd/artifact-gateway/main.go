@@ -137,8 +137,10 @@ func main() {
 		Audit:     auditClient,
 		Metrics:   metrics,
 
-		DownloadsPerMinute: cfg.Gateway.DownloadsPerMinute,
-		DownloadBurst:      cfg.Gateway.DownloadBurst,
+		DownloadsPerMinute:    cfg.Gateway.DownloadsPerMinute,
+		DownloadBurst:         cfg.Gateway.DownloadBurst,
+		AuthAttemptsPerMinute: cfg.Gateway.AuthAttemptsPerMinute,
+		AuthAttemptBurst:      cfg.Gateway.AuthAttemptBurst,
 	})
 	if err != nil {
 		fatal("building the gateway", err)

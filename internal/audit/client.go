@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"trawl.cloud/trawl/internal/sanitize"
+	"trawl.cloud/trawl/internal/tlsutil"
 )
 
 // SinkPath is the endpoint the controller manager exposes for audit commits.
@@ -72,9 +73,15 @@ func NewClient(opts ClientOptions) (*Client, error) {
 	if opts.Endpoint == "" {
 		return nil, errors.New("audit client requires an endpoint")
 	}
-	cert, err := tls.LoadX509KeyPair(opts.CertFile, opts.KeyFile)
+	// Reloaded rather than pinned. cert-manager renews this certificate on its
+	// own schedule and nothing restarts the pod when it does, so a client
+	// holding the certificate it loaded at startup eventually presents an
+	// expired one. The sink then rejects the handshake, every commit fails, and
+	// because a commit that fails means the action must not complete (FR-036),
+	// the caller stops being able to do its job at all.
+	reloader, err := tlsutil.NewCertReloader("audit client", opts.CertFile, opts.KeyFile)
 	if err != nil {
-		return nil, sanitize.Errorf("loading audit client certificate: %v", err)
+		return nil, err
 	}
 	caPEM, err := os.ReadFile(opts.CAFile)
 	if err != nil {
@@ -91,10 +98,10 @@ func NewClient(opts ClientOptions) (*Client, error) {
 			Timeout: clientTimeout,
 			Transport: &http.Transport{
 				TLSClientConfig: &tls.Config{
-					Certificates: []tls.Certificate{cert},
-					RootCAs:      pool,
-					ServerName:   opts.ServerName,
-					MinVersion:   tls.VersionTLS13,
+					GetClientCertificate: reloader.GetClientCertificate,
+					RootCAs:              pool,
+					ServerName:           opts.ServerName,
+					MinVersion:           tls.VersionTLS13,
 				},
 			},
 		},

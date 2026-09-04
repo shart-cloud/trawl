@@ -86,15 +86,19 @@ func (f *fakeJobs) count() int {
 
 // recordingCommitter is an audit sink that can be switched off.
 type recordingCommitter struct {
-	mu      sync.Mutex
-	err     error
-	records []audit.Record
+	mu       sync.Mutex
+	err      error
+	onCommit func()
+	records  []audit.Record
 }
 
 func (c *recordingCommitter) Commit(_ context.Context, rec audit.Record) (audit.CommitResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.records = append(c.records, rec)
+	if c.onCommit != nil {
+		c.onCommit()
+	}
 	if c.err != nil {
 		return audit.CommitResult{Result: audit.ResultUnavailable}, c.err
 	}
@@ -839,5 +843,128 @@ func TestDownloadRateLimitRefills(t *testing.T) {
 	clock = clock.Add(2 * time.Second)
 	if rec := f.get(analystToken, testNamespace, testJobName); rec.Code != http.StatusSeeOther {
 		t.Errorf("after the budget refilled: status %d, want 303", rec.Code)
+	}
+}
+
+// The per-caller limit is keyed on an identity a rejected token never has, so
+// it cannot bound a flood of garbage tokens. Each of those is a TokenReview
+// against the API server, and the gateway's ingress is open to any source.
+func TestRejectedTokensCannotDriveUnboundedTokenReviews(t *testing.T) {
+	f := newFixture(t)
+	const ceiling = 4
+	h, err := New(Options{
+		Reviewer: f.reviewer, Jobs: f.jobs, Store: f.store, Presigner: f.presigner,
+		Audit: f.audit, Metrics: f.metrics, ErrorLog: f.logs,
+		Now:                   func() time.Time { return now },
+		AuthAttemptsPerMinute: 60,
+		AuthAttemptBurst:      ceiling,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	f.handler = h
+
+	// Count what actually reaches the API server.
+	var reviews int
+	f.reviewer.OnAuthenticate = func() { reviews++ }
+
+	for i := range ceiling {
+		if rec := f.get("garbage-token", testNamespace, testJobName); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d: status %d, want 401", i+1, rec.Code)
+		}
+	}
+
+	rec := f.get("garbage-token", testNamespace, testJobName)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status %d past the ceiling, want 429", rec.Code)
+	}
+	if reviews != ceiling {
+		t.Errorf("submitted %d token reviews for %d attempts past the ceiling; "+
+			"a rejected token still reached the API server", reviews, ceiling)
+	}
+}
+
+// The URL must not outlive the deadline even when the steps between the
+// decision and the signature take time — the live Head, and an audit commit
+// that is allowed ten seconds.
+func TestPresignTTLIsRecomputedAfterTheAuditCommit(t *testing.T) {
+	f := newFixture(t)
+	clock := now
+
+	job := completedJob()
+	job.Status.RetentionDeadline = &metav1.Time{Time: now.Add(5 * time.Second)}
+	f.jobs.jobs[testNamespace+"/"+testJobName] = job
+
+	// The commit is where the time goes, so that is where the clock advances.
+	f.audit.onCommit = func() { clock = clock.Add(30 * time.Second) }
+
+	h, err := New(Options{
+		Reviewer: f.reviewer, Jobs: f.jobs, Store: f.store, Presigner: f.presigner,
+		Audit: f.audit, Metrics: f.metrics, ErrorLog: f.logs,
+		Now: func() time.Time { return clock },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	f.handler = h
+
+	rec := f.get(analystToken, testNamespace, testJobName)
+	if rec.Code != http.StatusGone {
+		t.Fatalf("status %d, want 410: the deadline passed while the commit was in flight", rec.Code)
+	}
+	if calls := f.presigner.Calls(); len(calls) != 0 {
+		t.Errorf("minted a URL valid for %s past the retention deadline", calls[0].TTL)
+	}
+}
+
+// The one response where an operator most needs something to search for must
+// still satisfy the contract's error shape — including when the correlation ID
+// itself could not be generated, which is the path that produced an empty
+// request_id and no header at all.
+func TestUnavailableResponsesAlwaysCarryARequestID(t *testing.T) {
+	t.Run("when the request id cannot be generated", func(t *testing.T) {
+		original := randRead
+		randRead = func([]byte) (int, error) { return 0, errors.New("entropy source failed") }
+		t.Cleanup(func() { randRead = original })
+
+		f := newFixture(t)
+		rec := f.get(analystToken, testNamespace, testJobName)
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status %d, want 503", rec.Code)
+		}
+		var body errorBody
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decoding the body: %v", err)
+		}
+		if body.RequestID == "" {
+			t.Error("request_id is empty; the contract requires a non-empty value")
+		}
+		if rec.Header().Get("X-Request-ID") == "" {
+			t.Error("no X-Request-ID header on an error response")
+		}
+		// Nothing may be served on this path: without a unique ID two
+		// downloads would share an audit key and the second would vanish.
+		if calls := f.presigner.Calls(); len(calls) != 0 {
+			t.Error("served a download with no usable correlation ID")
+		}
+	})
+
+	f := newFixture(t)
+	f.reviewer.AuthenticateErr = errors.New("apiserver down")
+
+	rec := f.get(analystToken, testNamespace, testJobName)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status %d, want 503", rec.Code)
+	}
+	var body errorBody
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decoding the body: %v", err)
+	}
+	// minLength 1 in the contract, and a required response header.
+	if body.RequestID == "" {
+		t.Error("request_id is empty; the contract requires a non-empty value")
+	}
+	if rec.Header().Get("X-Request-ID") == "" {
+		t.Error("no X-Request-ID header on an error response")
 	}
 }

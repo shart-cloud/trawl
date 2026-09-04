@@ -46,6 +46,25 @@ const (
 
 	// callerIdleTimeout is how long an unused entry is kept.
 	callerIdleTimeout = 10 * time.Minute
+
+	// DefaultAuthAttemptsPerMinute bounds authentication attempts across all
+	// callers, whether or not the token turns out to be valid.
+	//
+	// The per-caller limit cannot cover this: it is keyed on an identity that
+	// only exists once a token has been accepted, so a stream of garbage tokens
+	// never reaches it. Each attempt is a TokenReview against the API server,
+	// and the gateway's ingress is open to any source because the analyst
+	// reaching it is outside the cluster - so without this, anyone who can
+	// reach the port can make Trawl generate unbounded API server load.
+	//
+	// Set well above what real use produces. It is a ceiling on abuse, not a
+	// throttle on work, and when it engages the gateway is already under
+	// attack.
+	DefaultAuthAttemptsPerMinute = 600
+
+	// DefaultAuthAttemptBurst allows a rollout or a scripted batch to arrive at
+	// once without tripping the ceiling.
+	DefaultAuthAttemptBurst = 200
 )
 
 // limiter applies a per-caller request rate.
@@ -125,4 +144,22 @@ func (l *limiter) evictStaleLocked(now time.Time) {
 	if len(l.callers) >= maxTrackedCallers {
 		clear(l.callers)
 	}
+}
+
+// newAttemptLimiter bounds authentication attempts across all callers.
+//
+// One bucket, not one per source: behind an ingress every request shares a
+// source address, so a per-source bucket would either be a single bucket
+// wearing a disguise or would let one address exhaust everyone else's. A global
+// ceiling is honest about what it protects - the API server - and about its
+// cost, which is that a sustained flood degrades authentication for everyone
+// until it stops.
+func newAttemptLimiter(perMinute, burst int) *rate.Limiter {
+	if perMinute <= 0 {
+		perMinute = DefaultAuthAttemptsPerMinute
+	}
+	if burst <= 0 {
+		burst = DefaultAuthAttemptBurst
+	}
+	return rate.NewLimiter(rate.Limit(float64(perMinute)/60.0), burst)
 }

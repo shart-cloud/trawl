@@ -77,7 +77,14 @@ type ClientOptions struct {
 // HTTP server without building a binary.
 type Client struct {
 	baseURL *url.URL
-	http    *http.Client
+
+	// http talks to the gateway, and only to the gateway: it trusts one CA and
+	// carries the bearer token.
+	http *http.Client
+
+	// storage follows the redirect. A separate client on purpose - the two
+	// hops have opposite requirements, and one client cannot satisfy both.
+	storage *http.Client
 }
 
 // NewClient builds a Client that trusts only the CA in opts.
@@ -119,7 +126,31 @@ func NewClient(opts ClientOptions) (*Client, error) {
 				return http.ErrUseLastResponse
 			},
 			Transport: &http.Transport{
+				// Exactly one CA, and TLS 1.3: the only thing this client is
+				// allowed to talk to is a gateway Trawl issued a certificate
+				// for, and both ends of that connection are ours.
 				TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS13},
+			},
+		},
+		storage: &http.Client{
+			Timeout: clientTimeout,
+			// System roots, because object storage is not Trawl's to issue
+			// certificates for: it may be a cloud endpoint with a public CA, or
+			// an appliance with the operator's own. Trusting only the Trawl CA
+			// here would reject every real bucket, and the dev environment
+			// would not show it because its MinIO is plaintext.
+			//
+			// TLS 1.2 rather than 1.3 for the same reason: the floor has to be
+			// one a third-party endpoint can actually meet.
+			//
+			// Redirects are followed normally. S3 answers a cross-region or
+			// bucket-style request with a 301 or 307, and refusing to follow it
+			// would report a working bucket as a storage failure. Nothing is
+			// forwarded that matters: this request is built from scratch and
+			// carries no Authorization header, and the signature travels in the
+			// URL the gateway chose.
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12},
 			},
 		},
 	}, nil
@@ -131,6 +162,12 @@ func NewClient(opts ClientOptions) (*Client, error) {
 // The checksum the gateway reports is verified against the bytes as they are
 // written, so a truncated or substituted object fails here rather than at the
 // analyst's desk. token is sent to the gateway and to nothing else.
+//
+// Bytes reach out before the checksum can be known, because the checksum is
+// computed from them: on any error the caller must discard what was written
+// rather than keep it. A partial or unverified artifact is indistinguishable
+// from a good one by inspection, which is why the CLI writes to a temporary
+// name and renames only after this returns nil.
 func (c *Client) Download(ctx context.Context, token, namespace, name string, out io.Writer) (int64, error) {
 	target := c.baseURL.JoinPath("api", "v1", "namespaces", namespace, "capturejobs", name, "download")
 
@@ -165,7 +202,7 @@ func (c *Client) Download(ctx context.Context, token, namespace, name string, ou
 		return 0, sanitize.Errorf("building the artifact request: %v", err)
 	}
 
-	objectResp, err := c.http.Do(objectReq)
+	objectResp, err := c.storage.Do(objectReq)
 	if err != nil {
 		return 0, sanitize.Errorf("fetching the artifact: %v", err)
 	}

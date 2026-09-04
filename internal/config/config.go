@@ -240,6 +240,17 @@ type GatewayConfig struct {
 	DownloadsPerMinute int `json:"downloadsPerMinute,omitempty"`
 	DownloadBurst      int `json:"downloadBurst,omitempty"`
 
+	// AuthAttemptsPerMinute and AuthAttemptBurst bound authentication attempts
+	// across all callers, valid or not. Zero means the gateway's defaults.
+	//
+	// A separate ceiling from the two above because the per-caller limit is
+	// keyed on an identity a rejected token never has: without this, anyone who
+	// can reach the port could make Trawl submit unbounded TokenReviews to the
+	// API server. Set it well above real use - it is a ceiling on abuse, not a
+	// throttle on work.
+	AuthAttemptsPerMinute int `json:"authAttemptsPerMinute,omitempty"`
+	AuthAttemptBurst      int `json:"authAttemptBurst,omitempty"`
+
 	// AuditClient is how the gateway reaches the sink. It holds no ledger
 	// credentials of its own (ADR-0003), so this is its only way to record a
 	// download - and FR-036 means a download it cannot record is one it must
@@ -582,6 +593,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.DownloadBurst < 0 {
 		errs = append(errs, "gateway.downloadBurst must not be negative")
+	}
+	if c.Gateway.AuthAttemptsPerMinute < 0 {
+		errs = append(errs, "gateway.authAttemptsPerMinute must not be negative")
+	}
+	if c.Gateway.AuthAttemptBurst < 0 {
+		errs = append(errs, "gateway.authAttemptBurst must not be negative")
 	}
 
 	errs = append(errs, validateResources("capture.runnerResources", c.Capture.RunnerResources)...)

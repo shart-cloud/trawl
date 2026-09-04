@@ -55,8 +55,26 @@ func NewCertReloader(name, certFile, keyFile string) (*CertReloader, error) {
 	return r, nil
 }
 
-// GetCertificate satisfies tls.Config's callback of the same name.
+// GetCertificate satisfies tls.Config's callback of the same name, for a
+// listener presenting a serving certificate.
 func (r *CertReloader) GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	return r.current()
+}
+
+// GetClientCertificate satisfies tls.Config's callback of the same name, for a
+// client presenting a certificate to an mTLS server.
+//
+// The client side needs this as much as the server side. A client that pinned
+// its certificate at startup keeps presenting it after cert-manager has
+// renewed, and when the old one finally expires the server rejects the
+// handshake - which for the audit sink means every commit fails, and because
+// commits fail closed (FR-036), every download is refused until somebody
+// restarts the pod.
+func (r *CertReloader) GetClientCertificate(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+	return r.current()
+}
+
+func (r *CertReloader) current() (*tls.Certificate, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
