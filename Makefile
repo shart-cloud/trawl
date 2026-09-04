@@ -158,6 +158,10 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 build: manifests generate fmt vet ## Build manager binary.
 	go build -o bin/manager ./cmd/controller-manager
 
+.PHONY: trawlctl
+trawlctl: fmt vet ## Build the trawlctl client binary into bin/.
+	go build -o bin/trawlctl ./cmd/trawlctl
+
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/controller-manager

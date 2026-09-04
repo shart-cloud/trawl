@@ -218,6 +218,13 @@ kubectl -n trawl-system get secret trawl-ca -o jsonpath='{.data.ca\.crt}' \
   | base64 -d > test/e2e/certs/gateway-ca.crt
 ```
 
+Build the client and put it on the path — it ships as a binary, not an image,
+because it runs on the analyst's workstation and never in the cluster:
+
+```bash
+make trawlctl && export PATH="$PWD/bin:$PATH"
+```
+
 ```bash
 kubectl -n trawl-system create token trawl-acceptance-analyst \
   --audience=trawl-artifact-gateway --duration=10m | \
