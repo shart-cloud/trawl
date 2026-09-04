@@ -41,10 +41,9 @@ import (
 	"trawl.cloud/trawl/internal/telemetry"
 )
 
-// AuditCommitter is the subset of the audit client the webhook path needs.
-type AuditCommitter interface {
-	Commit(ctx context.Context, rec audit.Record) (audit.CommitResult, error)
-}
+// AuditCommitter is what the webhook path commits records through. It is the
+// shared audit.Committer, named here so existing callers keep compiling.
+type AuditCommitter = audit.Committer
 
 // Gate enforces namespace scope and the durable-audit requirement for every
 // Trawl resource mutation.

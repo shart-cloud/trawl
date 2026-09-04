@@ -145,7 +145,7 @@ func analyzerSecurityContext() *corev1.SecurityContext {
 	return &corev1.SecurityContext{
 		Capabilities: &corev1.Capabilities{
 			Drop: []corev1.Capability{"ALL"},
-			Add:  []corev1.Capability{"NET_RAW", "NET_ADMIN"},
+			Add:  []corev1.Capability{capNetRaw, capNetAdmin},
 		},
 		Privileged:               ptr.To(false),
 		AllowPrivilegeEscalation: ptr.To(false),
@@ -331,8 +331,8 @@ func (r *WorkloadRenderer) volumes(configMapName string) []corev1.Volume {
 						// to verify the API server against. kube-root-ca.crt is
 						// published into every namespace by the cluster.
 						ConfigMap: &corev1.ConfigMapProjection{
-							LocalObjectReference: corev1.LocalObjectReference{Name: "kube-root-ca.crt"},
-							Items:                []corev1.KeyToPath{{Key: "ca.crt", Path: "ca.crt"}},
+							LocalObjectReference: corev1.LocalObjectReference{Name: rootCAConfigMap},
+							Items:                []corev1.KeyToPath{{Key: rootCAKey, Path: rootCAKey}},
 						},
 					}},
 				},

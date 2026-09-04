@@ -47,6 +47,16 @@ rules:
   - update
   - watch
 - apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
+- apiGroups:
   - rbac.authorization.k8s.io
   resources:
   - rolebindings
@@ -61,6 +71,7 @@ rules:
 - apiGroups:
   - trawl.cloud
   resources:
+  - capturejobs
   - networktaps
   verbs:
   - get
@@ -71,12 +82,14 @@ rules:
 - apiGroups:
   - trawl.cloud
   resources:
+  - capturejobs/finalizers
   - networktaps/finalizers
   verbs:
   - update
 - apiGroups:
   - trawl.cloud
   resources:
+  - capturejobs/status
   - networktaps/status
   verbs:
   - get

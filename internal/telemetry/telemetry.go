@@ -311,13 +311,25 @@ func (m *Metrics) initSeries() {
 		m.TriggerEventsTotal.WithLabelValues(s, "accepted")
 		m.TriggerGapTotal.WithLabelValues(s, "Unknown")
 	}
-	m.CaptureRequestsTotal.WithLabelValues("manual", "accepted")
+	for _, rt := range requestTypes {
+		m.CaptureStartLatency.WithLabelValues(rt)
+		m.CaptureSizeBytes.WithLabelValues(rt)
+		for _, r := range requestResults {
+			m.CaptureRequestsTotal.WithLabelValues(rt, r)
+		}
+	}
 	m.CaptureTransitionsTotal.WithLabelValues("Pending", "Capturing")
-	m.CaptureStartLatency.WithLabelValues("manual")
-	m.CaptureStoreLatency.WithLabelValues("success")
-	m.CaptureSizeBytes.WithLabelValues("manual")
-	m.CaptureBoundStopTotal.WithLabelValues("duration")
-	m.ArtifactOperationsTotal.WithLabelValues("upload", "success")
+	for _, r := range artifactResults {
+		m.CaptureStoreLatency.WithLabelValues(r)
+	}
+	for _, b := range bounds {
+		m.CaptureBoundStopTotal.WithLabelValues(b)
+	}
+	for _, op := range artifactOps {
+		for _, r := range artifactResults {
+			m.ArtifactOperationsTotal.WithLabelValues(op, r)
+		}
+	}
 	m.ArtifactDownloadTotal.WithLabelValues(AuditDecisionAllowed)
 }
 

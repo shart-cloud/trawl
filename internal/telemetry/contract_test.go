@@ -207,6 +207,11 @@ func TestLabelValueEnumsAreClosed(t *testing.T) {
 		{"record result", []string{"accepted", "unsupported", "malformed"}, IsValidRecordResult},
 		{"trigger source", []string{"suricata_loki", "hubble_relay"}, IsValidTriggerSource},
 		{"policy decision", []string{"not_matched", "created", "duplicate", "rate_limited", "disarmed", "failed"}, IsValidPolicyDecision},
+		{"request type", []string{"manual", "policy"}, IsValidRequestType},
+		{"request result", []string{"accepted", "rejected", "started", "failed"}, IsValidRequestResult},
+		{"bound", []string{"duration", "size", "cancelled", "error"}, IsValidBound},
+		{"artifact operation", []string{"upload", "verify", "presign", "delete"}, IsValidArtifactOp},
+		{"artifact result", []string{"success", "failure", "unavailable"}, IsValidArtifactResult},
 	}
 
 	for _, tc := range cases {

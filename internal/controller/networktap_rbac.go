@@ -24,8 +24,12 @@ import (
 	trawlv1alpha1 "trawl.cloud/trawl/api/v1alpha1"
 )
 
-// verbGet is the only verb the sensor needs on the tap's spec.
-const verbGet = "get"
+// verbGet is the only verb the sensor needs on the tap's spec; verbPatch is
+// the only one a status writer needs.
+const (
+	verbGet   = "get"
+	verbPatch = "patch"
+)
 
 // ServiceAccount renders the identity for a tap's sensor pods.
 func (r *WorkloadRenderer) ServiceAccount(tap *trawlv1alpha1.NetworkTap) *corev1.ServiceAccount {
@@ -67,7 +71,7 @@ func (r *WorkloadRenderer) StatusRole(tap *trawlv1alpha1.NetworkTap) *rbacv1.Rol
 			// resourceNames is what turns "may patch tap status" into "may
 			// patch this tap's status".
 			ResourceNames: []string{tap.Name},
-			Verbs:         []string{verbGet, "patch", "update"},
+			Verbs:         []string{verbGet, verbPatch, "update"},
 		}, {
 			// Reading the owning tap's spec is needed to know which analyzers
 			// are expected. Also scoped to the one object.
