@@ -218,6 +218,13 @@ kubectl -n trawl-system get secret trawl-ca -o jsonpath='{.data.ca\.crt}' \
   | base64 -d > test/e2e/certs/gateway-ca.crt
 ```
 
+Build the client and put it on the path — it ships as a binary, not an image,
+because it runs on the analyst's workstation and never in the cluster:
+
+```bash
+make trawlctl && export PATH="$PWD/bin:$PATH"
+```
+
 ```bash
 kubectl -n trawl-system create token trawl-acceptance-analyst \
   --audience=trawl-artifact-gateway --duration=10m | \
@@ -233,8 +240,10 @@ sha256sum manual-tls.pcapng
 Expected: the checksum equals `status.sha256`; the redirect and credential do not
 appear in logs. The Capture Management dashboard shows the same non-secret copyable
 `trawlctl` command and the Overview now includes recent capture activity. Repeat
-with a token from `trawl-acceptance-viewer`; expect `403` and no evidence that an
-artifact exists. The two service accounts are bound to the `trawl-capture-analyst`
+with a token from `trawl-acceptance-viewer` and a different `--output` (an
+existing one is refused before the gateway is called, which would hide the
+refusal being checked for); expect `403` and no evidence that an artifact
+exists. The two service accounts are bound to the `trawl-capture-analyst`
 and `trawl-capture-viewer` ClusterRoles respectively; the difference between them
 is the `capturejobs/download` subresource, which is what separates "may see that a
 capture happened" from "may read the traffic".

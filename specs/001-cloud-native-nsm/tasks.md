@@ -205,7 +205,7 @@ expired paths.
 - [ ] T087 [US3] Implement deadline calculation, immediate download denial, upload-aware hourly deletion, object absence verification, retry conditions, and `Expired` transition in `internal/controller/retention.go`
 - [X] T088 [P] [US3] Implement audience-bound Kubernetes TokenReview and resource-name/subresource SubjectAccessReview clients with deny-by-default caching in `internal/authz/kubernetes.go`
 - [X] T089 [US3] Implement the artifact gateway download handler and CLI client library with live CaptureJob/object verification, five-minute/deadline presign calculation, enumeration-safe errors, no-store responses, rate limits, and durable audit acknowledgement before redirect in `internal/gateway/handler.go` and `internal/gateway/client.go`
-- [ ] T090 [US3] Wire TLS serving, auth/audit/storage clients, probes, metrics, request IDs, graceful shutdown, and log redaction in `cmd/artifact-gateway/main.go`, and implement bearer-producing kubeconfig-exec or token-stdin download without credential arguments in `cmd/trawlctl/main.go`
+- [X] T090 [US3] Wire TLS serving, auth/audit/storage clients, probes, metrics, request IDs, graceful shutdown, and log redaction in `cmd/artifact-gateway/main.go`, and implement bearer-producing kubeconfig-exec or token-stdin download without credential arguments in `cmd/trawlctl/main.go`
 - [X] T091 [US3] Deploy the gateway and capture reporter permissions with explicit ServiceAccounts, resource-name-scoped reporter status Roles, `capturejobs/download` roles, TokenReview/SubjectAccessReview access, artifact-only storage Secret mounts, audit-sink mTLS, TLS, and NetworkPolicies in `config/gateway/deployment.yaml` and `config/rbac/artifact-gateway-role.yaml`
 - [ ] T092 [US3] Generate and review the CaptureJob CRD/cluster-wide namespace-rejecting webhook/namespaced RBAC, manual analyst and retention-admin roles, successful/invalid samples, and capture image digest patch in `config/crd/bases/trawl.cloud_capturejobs.yaml`, `config/rbac/capturejob-roles.yaml`, and `config/samples/`
 - [ ] T093 [US3] Extend Trawl Overview with recent capture activity and add execution lifecycle, artifact health, retention, storage usage, and non-secret copyable `trawlctl` commands to `config/grafana/dashboards/trawl-overview.json` and `config/grafana/dashboards/capture-management.json`
@@ -262,8 +262,25 @@ diverge.
   `config/gateway/deployment.yaml` and refreshed by `hack/refresh-digests.sh`.
   `config.Images` is for images the operator renders at runtime; an unused field
   there would be exactly the dead wiring this slice existed to remove.
-- T090: the `cmd/trawlctl` half is NOT done - it is Slice B2. The gateway half
-  (TLS serving, clients, metrics, request IDs, graceful shutdown, redaction) is.
+- T090: `cmd/trawlctl` takes its bearer token from stdin or from the standard
+  output of a command it runs (`--token-exec`, whose own arguments follow a
+  `--`), never from an argument or the environment. It refuses an existing
+  `--output`, writes to `<output>.part`, and renames only after
+  `gateway.Client.Download` has verified the checksum - a failure leaves the
+  final name untouched, which `TestTheFinalNameNeverHoldsUnverifiedBytes`
+  asserts from inside the object store while the transfer is still running.
+  Exit codes: 0 success, 1 a failed or refused download, 2 a usage error.
+- T090: the client binary has no image and no `images.yml` entry. It runs on the
+  analyst's workstation; `make trawlctl` builds it, and quickstart §6 says so.
+- Not a tasks.md item: `test/integration/manual_capture_test.go` is the plan's
+  Slice B3 integration half. The plan calls it T074, but tasks.md's T074 is the
+  retention test in Slice C - the numbers do not line up, so nothing was ticked
+  for it. It drives the real reconciler against MinIO to Completed, then
+  downloads through an in-process gateway with `gateway.Client`: a presigned URL
+  from a real object store, the bytes it serves, and the ledger record. The
+  TokenReview and SubjectAccessReview are faked, because envtest issues no
+  audience-scoped service account tokens and its RBAC has no bindings to
+  consult; `internal/authz` covers the real reviewer.
 - T091: `artifact-gateway-tls` is added to `config/certmanager/certificate.yaml`
   now that the Service DNS name exists; B0 deliberately deferred it. It carries
   localhost/127.0.0.1 in its SANs because the documented access path is a
