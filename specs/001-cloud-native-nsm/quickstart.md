@@ -178,10 +178,21 @@ attempt number, direction, duration, and pass/fail result; do not save record bo
 
 ## 6. User Story 3 — Manual bounded capture
 
+The sample names `targetNode: talos-sensor-01`, the placeholder every sample in
+this repository uses. It is not a node on your cluster. Read the node the tap
+actually reports and substitute it, rather than editing the committed sample:
+
+```bash
+NODE=$(kubectl -n trawl-system get networktap node-eno1 \
+  -o jsonpath='{.status.targets[0].nodeName}')
+echo "$NODE"
+```
+
 Apply the sample manual request after confirming its target is active:
 
 ```bash
-kubectl apply -f config/samples/trawl_v1alpha1_capturejob_manual.yaml
+sed "s/talos-sensor-01/$NODE/" \
+  config/samples/trawl_v1alpha1_capturejob_manual.yaml | kubectl apply -f -
 kubectl -n trawl-system wait capturejob/manual-tls \
   --for=jsonpath='{.status.phase}'=Completed --timeout=5m
 kubectl -n trawl-system get capturejob manual-tls -o yaml
@@ -202,6 +213,28 @@ Validate authorization through a separate terminal running:
 
 ```bash
 kubectl -n trawl-system port-forward service/trawl-artifact-gateway 8443:443
+```
+
+The gateway does not serve packet bytes itself. It authorizes the caller and
+answers `303` with a short-lived presigned URL for the object store named by
+`storage.profiles[].endpoint` in the Trawl config, and the CLI then follows that
+redirect itself. **The workstation must therefore be able to reach that endpoint
+under the exact hostname it is signed for** — the SigV4 signature covers the
+`host` header, so reaching the same bucket by another name fails. With a
+production object store this is already true. With the in-cluster development
+MinIO of `config/dev/trawl-config.yaml`, whose endpoint is
+`minio.trawl-system.svc.cluster.local:9000`, it is not: forward it as well and
+map the name, or the download stops at the redirect with `no such host`.
+
+The forward occupies a third terminal; the host mapping is a one-off on the
+workstation, and is worth removing again when the acceptance is finished.
+
+```bash
+kubectl -n trawl-system port-forward service/minio 9000:9000
+```
+
+```bash
+echo "127.0.0.1 minio.trawl-system.svc.cluster.local" | sudo tee -a /etc/hosts
 ```
 
 From the first terminal, pipe a short-lived, explicitly authorized analyst service-

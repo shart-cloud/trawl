@@ -324,6 +324,44 @@ diverge.
   resource settings in the installation config.
 - Follow-up hardening, out of scope for US3: controller-issued presigned PUT
   URLs so the privileged runner holds no long-lived bucket credential.
+- Slice B3 live acceptance ran on the single-node homelab cluster on 2026-09-04
+  against the `1c81d87` build. `manual-tls` went `Pending -> Capturing ->
+  Storing -> Completed` on the first attempt: 102 packets, 11972 bytes,
+  `stopReason: Duration`, `ArtifactVerified=True`, and a seven-day retention
+  deadline. The analyst download returned bytes whose SHA-256 equals
+  `status.sha256`, `capinfos` counts the same 102 packets, no `.part` survived,
+  and the file is written 0600. The viewer is refused with a sanitized
+  `{403, request_id}` that matches its ledger record; the `denied` record omits
+  the resource UID, so a refusal does not confirm the artifact exists. Both
+  `artifact.download` records carry no URL-bearing field. The invalid-filter
+  sample fails with `InvalidFilter`, `FilterValid=False`, and no artifact.
+- Quickstart §6 could not be run as written, for two reasons now fixed there.
+  The samples name `targetNode: talos-sensor-01`, a placeholder no real cluster
+  has; §6 now reads the node from the tap and substitutes it rather than the
+  samples carrying a homelab hostname into a public repository. The field to
+  read is `status.targets[].nodeName`, not `.node`.
+- The gateway answers `303` with a presigned URL for the endpoint named by
+  `storage.profiles[].endpoint`, and the CLI follows it from the workstation.
+  Nothing in the codebase distinguishes an in-cluster endpoint from one a client
+  can reach, so with the development MinIO of `config/dev/trawl-config.yaml` the
+  documented flow stops at `no such host` after a port-forward of the gateway
+  alone. The SigV4 signature covers the `host` header, so the bucket has to be
+  reached under the name it was signed for; §6 now forwards MinIO and maps that
+  name. A production object store is reachable already, which is why this only
+  shows up here. An operator-configured external presign endpoint is the real
+  fix and is not in US3.
+- The "no presigned URL in any log" check currently passes vacuously: both
+  artifact-gateway pods emit zero log lines, startup included, while the
+  controller-manager logs normally, and MinIO's access log is off. The grep for
+  `X-Amz-Signature` therefore found nothing because there was nothing to search,
+  not because a URL was withheld. The gateway's silence is an operability gap in
+  its own right and is not yet explained.
+- Not in tasks.md: `.gitignore` gained the two artifacts §6 has the operator
+  create - `*.pcapng` and `test/e2e/certs/` - because neither was ignored and
+  captured traffic and credentials are never committed. It also gained
+  `/artifact-gateway`, `/capture-reporter` and `/trawlctl`, which were missing
+  from the list of binaries a `go build ./cmd/x` without `-o` drops in the
+  repository root.
 
 **Checkpoint**: US3 provides bounded, restart-safe manual evidence collection and
 authorized retrieval without requiring automatic policy evaluation.
