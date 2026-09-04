@@ -46,6 +46,11 @@ type Fake struct {
 	// AuthorizeErr, when set, is returned instead of any decision.
 	AuthorizeErr error
 
+	// OnAuthenticate is called on every authentication attempt that reaches
+	// this reviewer, so a test can count what would have been a TokenReview
+	// against a real API server.
+	OnAuthenticate func()
+
 	authorized []Attributes
 }
 
@@ -54,6 +59,9 @@ func (f *Fake) Authenticate(_ context.Context, token string) (Identity, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	if f.OnAuthenticate != nil {
+		f.OnAuthenticate()
+	}
 	if f.AuthenticateErr != nil {
 		return Identity{}, f.AuthenticateErr
 	}
