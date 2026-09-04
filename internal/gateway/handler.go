@@ -38,6 +38,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/time/rate"
+
 	trawlv1alpha1 "trawl.cloud/trawl/api/v1alpha1"
 	"trawl.cloud/trawl/internal/audit"
 	"trawl.cloud/trawl/internal/authz"
@@ -94,6 +96,13 @@ const (
 	maxNameLen      = 253
 )
 
+// unavailableRequestID stands in when no correlation ID could be generated.
+//
+// A fixed value, and deliberately not one that could be mistaken for a real ID:
+// no download is served on this path, so it never reaches the ledger and cannot
+// collapse two records onto one key.
+const unavailableRequestID = "unavailable"
+
 // ErrJobNotFound is returned by a CaptureJobGetter when no such job exists.
 var ErrJobNotFound = errors.New("capturejob not found")
 
@@ -122,6 +131,11 @@ type Options struct {
 	DownloadsPerMinute int
 	DownloadBurst      int
 
+	// AuthAttemptsPerMinute and AuthAttemptBurst bound authentication attempts
+	// across all callers, valid or not. Zero means the defaults.
+	AuthAttemptsPerMinute int
+	AuthAttemptBurst      int
+
 	// Now defaults to time.Now. The retention deadline is a time comparison, so
 	// tests need to stand either side of it without sleeping.
 	Now func() time.Time
@@ -132,8 +146,9 @@ type Options struct {
 
 // Handler serves the artifact download API.
 type Handler struct {
-	opts  Options
-	limit *limiter
+	opts     Options
+	limit    *limiter
+	attempts *rate.Limiter
 }
 
 // New validates opts and returns a Handler.
@@ -171,8 +186,9 @@ func New(opts Options) (*Handler, error) {
 		opts.ErrorLog = os.Stderr
 	}
 	return &Handler{
-		opts:  opts,
-		limit: newLimiter(opts.DownloadsPerMinute, opts.DownloadBurst, opts.Now),
+		opts:     opts,
+		limit:    newLimiter(opts.DownloadsPerMinute, opts.DownloadBurst, opts.Now),
+		attempts: newAttemptLimiter(opts.AuthAttemptsPerMinute, opts.AuthAttemptBurst),
 	}, nil
 }
 
@@ -205,14 +221,13 @@ func (h *Handler) download(w http.ResponseWriter, r *http.Request) {
 		// would make every download after the first collapse onto one record -
 		// the same evidence-suppression hole that keeping the ID out of the
 		// caller's hands exists to close.
+		// Still a contract-shaped response: request_id is required and must be
+		// non-empty, and this is the reply where an operator most needs
+		// something to search for. The marker says plainly that correlation is
+		// unavailable rather than leaving an empty string to puzzle over.
 		h.opts.Metrics.ArtifactDownloadTotal.WithLabelValues(telemetry.DownloadUnavailable).Inc()
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_ = json.NewEncoder(w).Encode(errorBody{
-			Code:    CodeUnavailable,
-			Message: "a dependency is unavailable; retry shortly",
-		})
+		writeError(w, unavailableRequestID, http.StatusServiceUnavailable, CodeUnavailable,
+			"a dependency is unavailable; retry shortly")
 		return
 	}
 	ctx := r.Context()
@@ -232,6 +247,18 @@ func (h *Handler) download(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Before Authenticate, because Authenticate is a TokenReview against the API
+	// server and a rejected token never reaches the per-caller limiter below -
+	// that one is keyed on an identity a rejected token does not have. Without
+	// this, anyone who can reach the port could make Trawl generate unbounded
+	// API server load with garbage tokens.
+	if !h.attempts.AllowN(h.opts.Now(), 1) {
+		w.Header().Set("Retry-After", "1")
+		h.deny(w, requestID, http.StatusTooManyRequests, CodeRateLimited,
+			"too many authentication attempts; retry shortly", telemetry.DownloadRateLimited)
+		return
+	}
+
 	identity, err := h.opts.Reviewer.Authenticate(ctx, token)
 	switch {
 	case errors.Is(err, authz.ErrUnauthenticated):
@@ -243,9 +270,10 @@ func (h *Handler) download(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// After authentication so the limit is per caller rather than per address,
-	// and before authorization so a caller who is over their limit cannot use
-	// this endpoint to hammer the API server's SubjectAccessReview path.
+	// The per-caller limit, which needs an identity and so can only be applied
+	// once there is one. It bounds what a single authorized credential can do -
+	// notably, sweeping every capture in the cluster - while the global ceiling
+	// above bounds what an unauthenticated flood can cost.
 	if !h.limit.allow(identity) {
 		w.Header().Set("Retry-After", "1")
 		h.deny(w, requestID, http.StatusTooManyRequests, CodeRateLimited,
@@ -316,17 +344,28 @@ func (h *Handler) download(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Never past the retention deadline, and never longer than the presign
-	// ceiling. Without the clamp a URL minted a minute before the deadline
-	// would still be redeemable four minutes after it, which is a retention
-	// policy that quietly does not hold.
-	ttl := min(storage.MaxPresignTTL, job.Status.RetentionDeadline.Sub(now))
-
 	// Audit before the redirect, and fail closed. This is the last point at
 	// which refusing costs nothing: once the URL is out, the download has
 	// happened whether or not the ledger heard about it.
 	if err := h.auditGrant(ctx, requestID, identity, job); err != nil {
 		h.unavailable(w, requestID, "recording the download", err)
+		return
+	}
+
+	// Never past the retention deadline, and never longer than the presign
+	// ceiling. Without the clamp a URL minted a minute before the deadline
+	// would still be redeemable four minutes after it, which is a retention
+	// policy that quietly does not hold.
+	//
+	// Computed here rather than from the `now` used for the decision above: the
+	// live Head and the blocking audit commit sit in between, and the commit
+	// alone is allowed ten seconds. For a capture whose deadline is seconds
+	// away, a lifetime that was positive when the decision was taken can be
+	// negative by the time the URL is actually minted.
+	ttl := min(storage.MaxPresignTTL, job.Status.RetentionDeadline.Sub(h.opts.Now()))
+	if ttl <= 0 {
+		h.deny(w, requestID, http.StatusGone, CodeExpired,
+			"the capture's retention deadline has passed", telemetry.DownloadExpired)
 		return
 	}
 
@@ -540,9 +579,16 @@ func validName(s string) bool {
 // it carries no user or artifact data, and it appears in the ledger, in logs and
 // in the response. It must also be unique, because the audit record's
 // idempotency key is built from it.
+//
+// randRead is a variable so the failure branch can be exercised. crypto/rand
+// does not fail on any supported platform, which is exactly why the branch
+// would otherwise be written once and never run - and an unrun branch on the
+// audit path is how the placeholder-ID bug got written in the first place.
+var randRead = rand.Read
+
 func newRequestID() (string, error) {
 	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
+	if _, err := randRead(b[:]); err != nil {
 		return "", sanitize.Errorf("generating a request id: %v", err)
 	}
 	return hex.EncodeToString(b[:]), nil
