@@ -126,8 +126,13 @@ func ActionFor(kind string, op admissionv1.Operation) (string, error) {
 			return audit.ActionCapturePolicyDelete, nil
 		}
 	case "CaptureJob":
-		if op == admissionv1.Create {
+		// Create is Manual by default; the CaptureJob webhook substitutes the
+		// policy action when the request type says so, via CommitMutationAs.
+		switch op {
+		case admissionv1.Create:
 			return audit.ActionCaptureJobManualCreate, nil
+		case admissionv1.Update:
+			return audit.ActionRetentionChange, nil
 		}
 	}
 	return "", fmt.Errorf("no audit action for %s %s", kind, op)
@@ -139,13 +144,18 @@ func ActionFor(kind string, op admissionv1.Operation) (string, error) {
 // mutation that reaches etcd always has a durable record behind it. The reverse
 // order would permit an unaudited change whenever the ledger failed in between.
 func (g *Gate) CommitMutation(ctx context.Context, req admission.Request, decision, reason string) error {
-	if g.Audit == nil {
-		return ErrAuditUnavailable
-	}
-
 	action, err := ActionFor(req.Kind.Kind, req.Operation)
 	if err != nil {
 		return err
+	}
+	return g.CommitMutationAs(ctx, req, action, decision, reason)
+}
+
+// CommitMutationAs is CommitMutation with the action chosen by the caller,
+// for kinds where the operation alone does not determine it.
+func (g *Gate) CommitMutationAs(ctx context.Context, req admission.Request, action, decision, reason string) error {
+	if g.Audit == nil {
+		return ErrAuditUnavailable
 	}
 
 	rec := audit.Record{

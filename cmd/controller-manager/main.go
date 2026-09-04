@@ -274,14 +274,17 @@ func main() {
 
 	// The gate holds the audit sink because FR-036 makes a durable audit commit
 	// a precondition of admission, not a side effect of it.
-	if err := (&admission.NetworkTapWebhook{
-		Gate: &admission.Gate{
-			SystemNamespace: installCfg.SystemNamespace,
-			Audit:           auditSink,
-			Metrics:         trawlMetrics,
-		},
-	}).SetupWithManager(mgr); err != nil {
+	gate := &admission.Gate{
+		SystemNamespace: installCfg.SystemNamespace,
+		Audit:           auditSink,
+		Metrics:         trawlMetrics,
+	}
+	if err := (&admission.NetworkTapWebhook{Gate: gate}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to set up the NetworkTap webhook")
+		os.Exit(1)
+	}
+	if err := (&admission.CaptureJobWebhook{Gate: gate, Config: installCfg}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to set up the CaptureJob webhook")
 		os.Exit(1)
 	}
 

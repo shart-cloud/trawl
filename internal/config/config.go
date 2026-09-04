@@ -55,6 +55,24 @@ const (
 	// DefaultCaptureRetentionCeiling caps how long any capture may be kept.
 	DefaultCaptureRetentionCeiling = 30 * 24 * time.Hour
 
+	// DefaultCaptureStartupBudget bounds the time from Job creation to the
+	// first packet: image pull, interface open, filter compilation.
+	DefaultCaptureStartupBudget = 5 * time.Minute
+
+	// DefaultCaptureUploadBudget bounds the time from capture end to a verified
+	// artifact. A 1 GiB capture over a modest link fits comfortably.
+	DefaultCaptureUploadBudget = 15 * time.Minute
+
+	// DefaultEventWorkerServiceAccount is the identity permitted to create
+	// Policy-typed CaptureJobs. It is a service account name in the system
+	// namespace; the webhook matches it against the API server's user info.
+	DefaultEventWorkerServiceAccount = "event-worker"
+
+	// DefaultCaptureCredentialsSecret is the name of the Secret the capture
+	// runner mounts for artifact-bucket credentials. It is a reference, not a
+	// credential; the operator never reads the Secret.
+	DefaultCaptureCredentialsSecret = "trawl-artifact-credentials" //nolint:gosec // Secret name, not a secret.
+
 	// DefaultContentRefreshInterval is how often analyzer workloads roll to
 	// pick up upstream detection content (FR-044).
 	DefaultContentRefreshInterval = 24 * time.Hour
@@ -99,8 +117,43 @@ type Config struct {
 	// field: an under-provisioned sensor drops observations silently.
 	SensorAgentResources ResourceRequirements `json:"sensorAgentResources"`
 
+	// Capture governs capture runner Jobs and who may act on CaptureJobs.
+	Capture CaptureConfig `json:"capture,omitempty"`
+
 	Content ContentConfig `json:"content"`
 	Images  ImageConfig   `json:"images"`
+}
+
+// CaptureConfig governs the capture runner and CaptureJob authorization.
+//
+// Identity fields are matched against the API server's authenticated user info
+// in the admission webhook. They are configuration, not policy the object can
+// carry, so a requester cannot promote itself.
+type CaptureConfig struct {
+	// EventWorkerServiceAccount is the only identity permitted to create
+	// Policy-typed CaptureJobs. Name only; the namespace is SystemNamespace.
+	EventWorkerServiceAccount string `json:"eventWorkerServiceAccount,omitempty"`
+
+	// RetentionAdminGroups and RetentionAdminUsers may change a CaptureJob's
+	// retention after creation. Nobody else can, including the requester.
+	RetentionAdminGroups []string `json:"retentionAdminGroups,omitempty"`
+	RetentionAdminUsers  []string `json:"retentionAdminUsers,omitempty"`
+
+	// CredentialsSecret is the Secret in SystemNamespace the runner mounts for
+	// artifact-bucket credentials. The operator never reads it.
+	CredentialsSecret string `json:"credentialsSecret,omitempty"`
+
+	// StartupBudget and UploadBudget, added to the requested duration, form
+	// the runner Job's activeDeadlineSeconds. They are the only way a hung
+	// runner ends.
+	StartupBudget Duration `json:"startupBudget,omitempty"`
+	UploadBudget  Duration `json:"uploadBudget,omitempty"`
+
+	// RunnerResources and ReporterResources are rendered into every runner
+	// Job. The runner's memory limit is separate from the capture size bound,
+	// which lives on the work volume.
+	RunnerResources   ResourceRequirements `json:"runnerResources,omitempty"`
+	ReporterResources ResourceRequirements `json:"reporterResources,omitempty"`
 }
 
 // LokiConfig addresses the log store used for observations and audit replay.
@@ -149,12 +202,25 @@ type ContentConfig struct {
 
 // ImageConfig holds digest-pinned references for every image Trawl renders.
 type ImageConfig struct {
-	Suricata      string `json:"suricata"`
-	Zeek          string `json:"zeek"`
-	SensorAgent   string `json:"sensorAgent"`
-	CaptureRunner string `json:"captureRunner"`
-	ContentInit   string `json:"contentInit"`
+	Suricata        string `json:"suricata"`
+	Zeek            string `json:"zeek"`
+	SensorAgent     string `json:"sensorAgent"`
+	CaptureRunner   string `json:"captureRunner"`
+	CaptureReporter string `json:"captureReporter"`
+	ContentInit     string `json:"contentInit"`
 }
+
+// Default runner and reporter sizing. The runner's memory limit is separate
+// from the capture size bound, which lives on the work volume; the reporter
+// only polls a directory and patches status.
+var (
+	defaultRunnerResources = ResourceRequirements{
+		RequestsCPU: "100m", RequestsMemory: "128Mi", LimitsCPU: "1", LimitsMemory: "1Gi", //nolint:goconst // Sizing literals, not a shared constant.
+	}
+	defaultReporterResources = ResourceRequirements{
+		RequestsCPU: "10m", RequestsMemory: "32Mi", LimitsCPU: "100m", LimitsMemory: "128Mi",
+	}
+)
 
 // RFC 1123 label, the Kubernetes namespace rule.
 var namespaceRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
@@ -253,6 +319,28 @@ func (c *Config) ApplyDefaults() {
 	if c.Content.RefreshInterval == 0 {
 		c.Content.RefreshInterval = Duration(DefaultContentRefreshInterval)
 	}
+	c.Capture.applyDefaults()
+}
+
+func (c *CaptureConfig) applyDefaults() {
+	if c.EventWorkerServiceAccount == "" {
+		c.EventWorkerServiceAccount = DefaultEventWorkerServiceAccount
+	}
+	if c.CredentialsSecret == "" {
+		c.CredentialsSecret = DefaultCaptureCredentialsSecret
+	}
+	if c.StartupBudget == 0 {
+		c.StartupBudget = Duration(DefaultCaptureStartupBudget)
+	}
+	if c.UploadBudget == 0 {
+		c.UploadBudget = Duration(DefaultCaptureUploadBudget)
+	}
+	if c.RunnerResources == (ResourceRequirements{}) {
+		c.RunnerResources = defaultRunnerResources
+	}
+	if c.ReporterResources == (ResourceRequirements{}) {
+		c.ReporterResources = defaultReporterResources
+	}
 }
 
 // Load parses YAML installation configuration, applies defaults, and validates.
@@ -338,6 +426,17 @@ func (c *Config) Validate() error {
 
 	errs = append(errs, validateResources("sensorAgentResources", c.SensorAgentResources)...)
 
+	req("capture.eventWorkerServiceAccount", c.Capture.EventWorkerServiceAccount)
+	req("capture.credentialsSecret", c.Capture.CredentialsSecret)
+	if c.Capture.StartupBudget <= 0 {
+		errs = append(errs, "capture.startupBudget must be positive")
+	}
+	if c.Capture.UploadBudget <= 0 {
+		errs = append(errs, "capture.uploadBudget must be positive")
+	}
+	errs = append(errs, validateResources("capture.runnerResources", c.Capture.RunnerResources)...)
+	errs = append(errs, validateResources("capture.reporterResources", c.Capture.ReporterResources)...)
+
 	req("content.suricataFeedURL", c.Content.SuricataFeedURL)
 	req("content.zeekScriptRepo", c.Content.ZeekScriptRepo)
 	if c.Content.RefreshInterval <= 0 {
@@ -345,11 +444,12 @@ func (c *Config) Validate() error {
 	}
 
 	for field, ref := range map[string]string{
-		"images.suricata":      c.Images.Suricata,
-		"images.zeek":          c.Images.Zeek,
-		"images.sensorAgent":   c.Images.SensorAgent,
-		"images.captureRunner": c.Images.CaptureRunner,
-		"images.contentInit":   c.Images.ContentInit,
+		"images.suricata":        c.Images.Suricata,
+		"images.zeek":            c.Images.Zeek,
+		"images.sensorAgent":     c.Images.SensorAgent,
+		"images.captureRunner":   c.Images.CaptureRunner,
+		"images.captureReporter": c.Images.CaptureReporter,
+		"images.contentInit":     c.Images.ContentInit,
 	} {
 		if !digestRE.MatchString(ref) {
 			errs = append(errs, field+" must be digest-pinned (repository@sha256:...)")

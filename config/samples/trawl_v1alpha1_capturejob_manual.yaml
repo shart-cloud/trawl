@@ -1,0 +1,19 @@
+# A manual bounded capture on one node of an active tap.
+#
+# Every execution field is immutable once admitted. The capture stops at the
+# first bound it reaches — 60 seconds or 64 MiB — and the artifact is kept for
+# seven days unless a retention admin shortens or extends that.
+apiVersion: trawl.cloud/v1alpha1
+kind: CaptureJob
+metadata:
+  name: manual-tls
+  namespace: trawl-system
+spec:
+  requestType: Manual
+  tapRef:
+    name: node-eno1
+  targetNode: talos-sensor-01
+  filter: "tcp port 443"
+  duration: 60s
+  maxSize: 64Mi
+  retention: 7d

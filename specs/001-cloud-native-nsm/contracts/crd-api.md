@@ -383,6 +383,7 @@ CaptureJobStatus
 ├── artifact?: ArtifactReference
 ├── retentionDeadline?: metav1.Time
 ├── failure?: CaptureFailure
+├── runnerResult?: RunnerResult                        reporter-owned
 └── conditions[]: metav1.Condition
 
 ArtifactReference
@@ -397,7 +398,27 @@ CaptureFailure
 ├── message: string                                    sanitized, max 512 bytes
 ├── failedPhase: Pending | Capturing | Storing
 └── attempts: int32
+
+RunnerResult
+├── outcome: Succeeded | Failed
+├── reason?: FailureReason
+├── stopReason?: Duration | Size | Cancelled | Error
+├── packetCount?: int64
+├── sizeBytes?: int64
+├── sha256?: string
+├── exitCode: int32
+└── message?: string                                   sanitized, max 512 bytes
 ```
+
+`runnerResult`, `resolvedInterface`, `startedAt`, `captureEndedAt` and the
+`FilterValid` / `CaptureStarted` conditions are written by the reporter sidecar
+through server-side apply as field owner `trawl-capture-reporter`. The controller
+owns every other status field and derives the terminal phase from `runnerResult`
+together with what it can verify in object storage; it never trusts the runner's
+claim of success without the artifact.
+
+The requester's authenticated username is stamped by the mutating webhook in the
+`trawl.cloud/requester` annotation and cannot be changed afterwards.
 
 Required condition types: `Accepted`, `TargetReady`, `FilterValid`,
 `CaptureStarted`, `ArtifactVerified`, `Downloadable`, `RetentionEnforced`.

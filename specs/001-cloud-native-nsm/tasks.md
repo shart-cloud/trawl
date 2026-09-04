@@ -180,7 +180,7 @@ expired paths.
 
 ### Tests for User Story 3
 
-- [ ] T068 [P] [US3] Add failing CaptureJob API tests for configured-namespace enforcement, defaults, bounds, manual/policy caller unions, execution immutability, authorized retention-only updates, durable-audit failure, and non-resurrection in `api/v1alpha1/capturejob_types_test.go`
+- [x] T068 [P] [US3] Add failing CaptureJob API tests for configured-namespace enforcement, defaults, bounds, manual/policy caller unions, execution immutability, authorized retention-only updates, durable-audit failure, and non-resurrection in `api/v1alpha1/capturejob_types_test.go`
 - [ ] T069 [P] [US3] Add failing lifecycle tests for every legal/illegal transition, observed facts, zero-packet completion, failure reasons, downloadability, and expiry in `internal/capture/state_test.go`
 - [ ] T070 [P] [US3] Add failing dumpcap-runner tests for BPF dry-run before socket open, duration/size first-bound stop, snaplen, cancellation, sanitized failures, and <=1MiB overshoot in `internal/capture/runner_test.go`
 - [ ] T071 [P] [US3] Add failing real-MinIO tests for stable object keys, conditional upload, manifest/checksum verification, missing/mismatch handling, presign ceiling, and idempotent delete in `test/integration/artifact_storage_test.go`
@@ -191,8 +191,8 @@ expired paths.
 
 ### Implementation for User Story 3
 
-- [ ] T076 [US3] Define CaptureJob execution, policy snapshot, artifact, failure, phase, condition, print-column, status-subresource, and validation types in `api/v1alpha1/capturejob_types.go`
-- [ ] T077 [US3] Implement CaptureJob defaulting and validation for configured-namespace enforcement, caller identity, manual/policy fields, execution immutability, bounded pre-expiry retention changes, controlled delete policy, and durable audit acknowledgement in `internal/admission/capturejob_webhook.go`
+- [x] T076 [US3] Define CaptureJob execution, policy snapshot, artifact, failure, phase, condition, print-column, status-subresource, and validation types in `api/v1alpha1/capturejob_types.go`
+- [x] T077 [US3] Implement CaptureJob defaulting and validation for configured-namespace enforcement, caller identity, manual/policy fields, execution immutability, bounded pre-expiry retention changes, controlled delete policy, and durable audit acknowledgement in `internal/admission/capturejob_webhook.go`
 - [ ] T078 [P] [US3] Implement duration/size/snaplen parsing, supported placeholder-free manual BPF validation requests, and safe runner arguments in `internal/capture/bounds.go` and `internal/capture/filter.go`
 - [ ] T079 [P] [US3] Implement the artifact manifest, stable namespace/UID object key, SHA-256 calculation, packet-count parsing, and verification comparison in `internal/capture/manifest.go`
 - [ ] T080 [US3] Implement the capture runner sequence plus atomic versioned runner/reporter protocol for target/interface checks, BPF dry-run, post-socket `CaptureStarted`, bounded dumpcap execution, pre-upload `CaptureEnded`, compact terminal result, conditional upload, and sanitized exits in `internal/capture/runner.go` and `internal/capture/reporter.go`
@@ -211,6 +211,30 @@ expired paths.
 - [ ] T093 [US3] Extend Trawl Overview with recent capture activity and add execution lifecycle, artifact health, retention, storage usage, and non-secret copyable `trawlctl` commands to `config/grafana/dashboards/trawl-overview.json` and `config/grafana/dashboards/capture-management.json`
 - [ ] T094 [US3] Complete real dumpcap/reporter/MinIO/audit-ledger/gateway/CLI integration fixtures, including checksum comparison and secret-leak assertions, in `test/integration/manual_capture_test.go`
 - [ ] T095 [US3] Make the full manual capture/CLI matrix pass and record sanitized lifecycle and timing evidence in `test/e2e/manual_capture_test.go` and `test/e2e/results/manual-capture.md`
+
+### US3 implementation notes (deviations from the task text)
+
+Recorded as they are made, so the task list and the tree do not silently
+diverge.
+
+- T068: the API tests are envtest cases in `test/integration/capturejob_api_test.go`
+  (repo convention; they share `suite_test.go`), not `api/v1alpha1/capturejob_types_test.go`.
+  Caller identity, retention authorization and durable-audit failure are unit
+  tests in `internal/admission/capturejob_webhook_test.go`, since they depend
+  on the admission request rather than the schema.
+- T076: `status.runnerResult` (`RunnerResult{outcome, reason, stopReason,
+  packetCount, sizeBytes, sha256, exitCode, message}`) is added beyond
+  `contracts/crd-api.md` as the reporter-owned carrier for the runner's terminal
+  outcome; `crd-api.md` is updated alongside. The requester is recorded in the
+  `trawl.cloud/requester` annotation, stamped by the mutating webhook from the
+  API server's user info and immutable afterwards.
+- T077: retention-admin identity is installation configuration
+  (`capture.retentionAdminGroups` / `capture.retentionAdminUsers`), and the
+  event worker identity for `requestType: Policy` is
+  `capture.eventWorkerServiceAccount` in the system namespace. Deletion is
+  namespace-gated only at admission; the controller's finalizer records it as
+  `artifact.expire` records with the outcome. Filter validation at admission is
+  size and character set only; BPF compilation happens in the runner (T080).
 
 **Checkpoint**: US3 provides bounded, restart-safe manual evidence collection and
 authorized retrieval without requiring automatic policy evaluation.

@@ -1,0 +1,610 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: capturejobs.trawl.cloud
+spec:
+  group: trawl.cloud
+  names:
+    kind: CaptureJob
+    listKind: CaptureJobList
+    plural: capturejobs
+    shortNames:
+    - capture
+    - captures
+    singular: capturejob
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.requestType
+      name: Type
+      type: string
+    - jsonPath: .spec.tapRef.name
+      name: Tap
+      type: string
+    - jsonPath: .spec.targetNode
+      name: Node
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.sizeBytes
+      name: Size
+      type: integer
+    - jsonPath: .status.retentionDeadline
+      name: Expires
+      type: date
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: CaptureJob requests one bounded packet capture and records its
+          evidence.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              CaptureJobSpec asks for one bounded packet capture.
+
+              Every execution field is immutable: a capture whose filter or bounds changed
+              after it ran would be evidence of something other than what the status
+              describes. The rules are CEL so the API server enforces them even if the
+              webhook is down. Retention is the single exception and is gated by the
+              webhook on caller identity and deadline.
+
+              Durations are Go duration strings; retention additionally accepts whole
+              days (`30d`). CEL's duration() does not know `d`, so the day form is
+              range-checked on its integer prefix.
+            properties:
+              deduplicationKey:
+                description: |-
+                  DeduplicationKey identifies the trigger window this job answers, so a
+                  repeated event does not produce a second capture.
+                pattern: ^sha256:[0-9a-f]{64}$
+                type: string
+              duration:
+                description: Duration bounds wall-clock capture time, 1s to 1h.
+                pattern: ^([0-9]+(ms|s|m|h))+$
+                type: string
+              filter:
+                description: |-
+                  Filter is a BPF expression. Its syntax is checked structurally here and
+                  compiled by the runner before any packet is read; an empty filter
+                  captures everything the bounds allow.
+                maxLength: 1024
+                type: string
+              maxSize:
+                anyOf:
+                - type: integer
+                - type: string
+                description: |-
+                  MaxSize bounds the artifact, 1Mi to 1Gi. Whichever of Duration and
+                  MaxSize is reached first ends the capture.
+                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                x-kubernetes-int-or-string: true
+              policyRef:
+                description: PolicyRef pins the policy generation that created a Policy
+                  request.
+                properties:
+                  generation:
+                    description: Generation is the policy spec generation that was
+                      armed.
+                    format: int64
+                    minimum: 1
+                    type: integer
+                  name:
+                    description: Name is the CapturePolicy name in the same namespace.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  uid:
+                    description: UID is the policy's UID at trigger time.
+                    type: string
+                required:
+                - generation
+                - name
+                - uid
+                type: object
+              requestType:
+                default: Manual
+                description: RequestType says whether an analyst or a policy asked
+                  for this capture.
+                enum:
+                - Manual
+                - Policy
+                type: string
+              retention:
+                default: 30d
+                description: |-
+                  Retention is how long the artifact is kept after completion, 1h to
+                  30d, further capped by the installation's captureRetentionCeiling.
+                pattern: ^([0-9]+(ms|s|m|h))+$|^[0-9]+d$
+                type: string
+              snaplen:
+                default: 0
+                description: Snaplen bounds bytes kept per packet; 0 means whole packets.
+                format: int32
+                type: integer
+              tapRef:
+                description: |-
+                  TapRef names the NetworkTap whose interface is captured. The tap must
+                  be observing on the target node when the job is scheduled; afterwards
+                  the tap's fate does not affect the capture.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+              targetNode:
+                description: |-
+                  TargetNode is the node to capture on. Required for Manual requests; a
+                  Policy request may omit it only to record that target resolution failed.
+                maxLength: 253
+                type: string
+              trigger:
+                description: Trigger records what fired the policy.
+                properties:
+                  eventTime:
+                    description: EventTime is when the source says the event happened.
+                    format: date-time
+                    type: string
+                  fingerprint:
+                    description: Fingerprint is the deduplication fingerprint of the
+                      triggering event.
+                    pattern: ^sha256:[0-9a-f]{64}$
+                    type: string
+                  flow:
+                    description: Flow is the matched 5-tuple.
+                    properties:
+                      communityID:
+                        maxLength: 128
+                        type: string
+                      destinationIP:
+                        maxLength: 45
+                        type: string
+                      destinationPort:
+                        format: int32
+                        maximum: 65535
+                        minimum: 0
+                        type: integer
+                      protocol:
+                        maxLength: 16
+                        type: string
+                      sourceIP:
+                        maxLength: 45
+                        type: string
+                      sourcePort:
+                        format: int32
+                        maximum: 65535
+                        minimum: 0
+                        type: integer
+                    type: object
+                  hubble:
+                    description: Hubble carries drop context when Source is HubbleDrop.
+                    properties:
+                      count:
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      destinationNamespace:
+                        maxLength: 253
+                        type: string
+                      reason:
+                        maxLength: 64
+                        type: string
+                      sourceNamespace:
+                        maxLength: 253
+                        type: string
+                    required:
+                    - reason
+                    type: object
+                  observedAt:
+                    description: ObservedAt is when the event worker saw it.
+                    format: date-time
+                    type: string
+                  source:
+                    description: Source is which event stream produced the trigger.
+                    enum:
+                    - SuricataAlert
+                    - HubbleDrop
+                    type: string
+                  suricata:
+                    description: Suricata carries alert context when Source is SuricataAlert.
+                    properties:
+                      category:
+                        maxLength: 128
+                        type: string
+                      message:
+                        maxLength: 512
+                        type: string
+                      revision:
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      ruleID:
+                        format: int64
+                        minimum: 0
+                        type: integer
+                      severity:
+                        format: int32
+                        maximum: 4
+                        minimum: 1
+                        type: integer
+                    required:
+                    - ruleID
+                    - severity
+                    type: object
+                required:
+                - eventTime
+                - fingerprint
+                - observedAt
+                - source
+                type: object
+                x-kubernetes-validations:
+                - message: source SuricataAlert requires suricata
+                  rule: self.source != 'SuricataAlert' || has(self.suricata)
+                - message: source HubbleDrop requires hubble
+                  rule: self.source != 'HubbleDrop' || has(self.hubble)
+            required:
+            - duration
+            - maxSize
+            - tapRef
+            type: object
+            x-kubernetes-validations:
+            - message: requestType is immutable
+              rule: self.requestType == oldSelf.requestType
+            - message: tapRef is immutable
+              rule: self.tapRef == oldSelf.tapRef
+            - message: targetNode is immutable
+              rule: has(self.targetNode) == has(oldSelf.targetNode) && (!has(self.targetNode)
+                || self.targetNode == oldSelf.targetNode)
+            - message: filter is immutable
+              rule: has(self.filter) == has(oldSelf.filter) && (!has(self.filter)
+                || self.filter == oldSelf.filter)
+            - message: duration is immutable
+              rule: self.duration == oldSelf.duration
+            - message: snaplen is immutable
+              rule: self.snaplen == oldSelf.snaplen
+            - message: maxSize is immutable
+              rule: string(self.maxSize) == string(oldSelf.maxSize)
+            - message: policyRef is immutable
+              rule: has(self.policyRef) == has(oldSelf.policyRef) && (!has(self.policyRef)
+                || self.policyRef == oldSelf.policyRef)
+            - message: trigger is immutable
+              rule: has(self.trigger) == has(oldSelf.trigger) && (!has(self.trigger)
+                || self.trigger == oldSelf.trigger)
+            - message: deduplicationKey is immutable
+              rule: has(self.deduplicationKey) == has(oldSelf.deduplicationKey) &&
+                (!has(self.deduplicationKey) || self.deduplicationKey == oldSelf.deduplicationKey)
+            - message: requestType Manual requires targetNode
+              rule: self.requestType != 'Manual' || has(self.targetNode)
+            - message: requestType Manual forbids policyRef, trigger, and deduplicationKey
+              rule: self.requestType != 'Manual' || (!has(self.policyRef) && !has(self.trigger)
+                && !has(self.deduplicationKey))
+            - message: requestType Policy requires policyRef, trigger, and deduplicationKey
+              rule: self.requestType != 'Policy' || (has(self.policyRef) && has(self.trigger)
+                && has(self.deduplicationKey))
+            - message: duration must be between 1s and 1h
+              rule: duration(self.duration) >= duration('1s') && duration(self.duration)
+                <= duration('1h')
+            - message: snaplen must be 0 or between 64 and 262144
+              rule: self.snaplen == 0 || (self.snaplen >= 64 && self.snaplen <= 262144)
+            - message: maxSize must be between 1Mi and 1Gi
+              rule: quantity(string(self.maxSize)).compareTo(quantity('1Mi')) >= 0
+                && quantity(string(self.maxSize)).compareTo(quantity('1Gi')) <= 0
+            - message: retention must be between 1h and 30d
+              rule: 'self.retention.endsWith(''d'') ? (int(self.retention.substring(0,
+                size(self.retention) - 1)) >= 1 && int(self.retention.substring(0,
+                size(self.retention) - 1)) <= 30) : (duration(self.retention) >= duration(''1h'')
+                && duration(self.retention) <= duration(''720h''))'
+          status:
+            description: |-
+              CaptureJobStatus is the observed state.
+
+              Field ownership is split between two writers and enforced by server-side
+              apply field management: the reporter sidecar owns resolvedInterface,
+              startedAt, captureEndedAt, runnerResult, and the FilterValid and
+              CaptureStarted conditions; the controller owns everything else.
+            properties:
+              artifact:
+                description: Artifact locates the verified object.
+                properties:
+                  etag:
+                    description: ETag is the object's ETag when the store returned
+                      one.
+                    type: string
+                  key:
+                    description: Key is the object key inside the profile's bucket.
+                    type: string
+                  profile:
+                    description: Profile is the installation storage profile the artifact
+                      lives in.
+                    type: string
+                  verifiedAt:
+                    description: |-
+                      VerifiedAt is when the controller last confirmed size and checksum
+                      against the stored object.
+                    format: date-time
+                    type: string
+                  versionID:
+                    description: VersionID is the object version when the bucket is
+                      versioned.
+                    type: string
+                required:
+                - key
+                - profile
+                - verifiedAt
+                type: object
+              captureEndedAt:
+                description: CaptureEndedAt is when the capture stopped (node clock).
+                format: date-time
+                type: string
+              completedAt:
+                description: |-
+                  CompletedAt is when the artifact was verified (controller clock). The
+                  retention deadline is computed from it.
+                format: date-time
+                type: string
+              conditions:
+                description: Conditions carry the detailed reasons behind Phase.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              failure:
+                description: Failure explains a Failed phase.
+                properties:
+                  attempts:
+                    description: |-
+                      Attempts counts runner executions. It is 1 in this release; the field
+                      exists so a retry policy later is additive.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  failedPhase:
+                    description: FailedPhase is the phase the job was in when it failed.
+                    enum:
+                    - Pending
+                    - Capturing
+                    - Storing
+                    - Completed
+                    - Failed
+                    - Expired
+                    type: string
+                  message:
+                    description: |-
+                      Message is sanitized detail, bounded so a tool's stderr cannot become
+                      an unbounded status field.
+                    maxLength: 512
+                    type: string
+                  reason:
+                    description: Reason is the closed-enum cause.
+                    enum:
+                    - InvalidFilter
+                    - InvalidBounds
+                    - TapInactive
+                    - TargetUnavailable
+                    - InterfaceUnavailable
+                    - RunnerCreateFailed
+                    - CaptureFailed
+                    - SizeExceeded
+                    - UploadFailed
+                    - ArtifactMissing
+                    - ArtifactMismatch
+                    - RetentionDeleteFailed
+                    - InternalError
+                    type: string
+                required:
+                - failedPhase
+                - reason
+                type: object
+              observedGeneration:
+                description: ObservedGeneration is the spec generation this status
+                  describes.
+                format: int64
+                type: integer
+              packetCount:
+                description: |-
+                  PacketCount is the verified packet count. Zero is a real answer and is
+                  distinguishable from unknown.
+                format: int64
+                type: integer
+              phase:
+                description: Phase is the lifecycle position.
+                enum:
+                - Pending
+                - Capturing
+                - Storing
+                - Completed
+                - Failed
+                - Expired
+                type: string
+              requestedAt:
+                description: RequestedAt is when the request was accepted.
+                format: date-time
+                type: string
+              resolvedInterface:
+                description: ResolvedInterface is the interface the runner opened.
+                type: string
+              resolvedTapUID:
+                description: |-
+                  ResolvedTapUID is the UID of the tap at scheduling time, so a tap
+                  recreated under the same name is not mistaken for the one captured.
+                type: string
+              retentionDeadline:
+                description: |-
+                  RetentionDeadline is completedAt + spec.retention. Downloads are denied
+                  from this instant.
+                format: date-time
+                type: string
+              runnerJobRef:
+                description: RunnerJobRef names the batch Job executing the capture.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+              runnerResult:
+                description: RunnerResult is the runner's relayed terminal outcome.
+                properties:
+                  exitCode:
+                    description: ExitCode is the runner process exit code.
+                    format: int32
+                    type: integer
+                  message:
+                    description: Message is sanitized detail.
+                    maxLength: 512
+                    type: string
+                  outcome:
+                    description: Outcome is the runner's own verdict.
+                    enum:
+                    - Succeeded
+                    - Failed
+                    type: string
+                  packetCount:
+                    description: PacketCount is the number of packets the runner counted
+                      in the file.
+                    format: int64
+                    type: integer
+                  reason:
+                    description: Reason is set when Outcome is Failed.
+                    enum:
+                    - InvalidFilter
+                    - InvalidBounds
+                    - TapInactive
+                    - TargetUnavailable
+                    - InterfaceUnavailable
+                    - RunnerCreateFailed
+                    - CaptureFailed
+                    - SizeExceeded
+                    - UploadFailed
+                    - ArtifactMissing
+                    - ArtifactMismatch
+                    - RetentionDeleteFailed
+                    - InternalError
+                    type: string
+                  sha256:
+                    description: SHA256 is the hex digest the runner computed.
+                    pattern: ^[0-9a-f]{64}$
+                    type: string
+                  sizeBytes:
+                    description: SizeBytes is the artifact size the runner uploaded.
+                    format: int64
+                    type: integer
+                  stopReason:
+                    description: StopReason is which bound ended capture.
+                    enum:
+                    - Duration
+                    - Size
+                    - Cancelled
+                    - Error
+                    type: string
+                required:
+                - outcome
+                type: object
+              sha256:
+                description: SHA256 is the verified hex digest of the artifact.
+                pattern: ^[0-9a-f]{64}$
+                type: string
+              sizeBytes:
+                description: SizeBytes is the verified artifact size.
+                format: int64
+                type: integer
+              startedAt:
+                description: StartedAt is when the capture socket opened (node clock).
+                format: date-time
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
