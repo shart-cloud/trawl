@@ -481,26 +481,71 @@ func remedy(reason trawlv1alpha1.FailureReason) string {
 	}
 }
 
-// Downloadable reports whether a capture may be served now.
+// DownloadDecision is why a capture may or may not be served now.
+//
+// Downloadable answers the question the controller asks - may this be served,
+// yes or no - which is all a status condition needs. The gateway has to answer
+// a second question the bool cannot carry: a caller who is refused is owed the
+// difference between "not yet" and "not any more". The artifact API gives those
+// separate status codes (409 and 410) because they call for different actions:
+// wait and retry, or stop asking.
+type DownloadDecision string
+
+const (
+	// DownloadAllowed means every precondition holds and the artifact may be served.
+	DownloadAllowed DownloadDecision = "allowed"
+
+	// DownloadNotReady means the capture has not produced a servable artifact:
+	// it is still running, it failed, or its verification is not recorded. The
+	// answer may change on its own.
+	DownloadNotReady DownloadDecision = "not-ready"
+
+	// DownloadExpired means the retention deadline has passed, independently of
+	// whether the object has actually been deleted yet. The answer will not
+	// change.
+	DownloadExpired DownloadDecision = "expired"
+)
+
+// DecideDownload reports whether a capture may be served now, and why not when
+// it may not.
 //
 // The retention deadline is exclusive: at the instant itself the answer is
 // no. observedGeneration must match so a retention change the controller has
 // not yet applied cannot be read as either an extension or a shortening.
-func Downloadable(job *trawlv1alpha1.CaptureJob, now time.Time) bool {
+//
+// Expiry is tested before readiness because it dominates: once the deadline has
+// passed the answer is no regardless of what the rest of the status says, and
+// the caller must not be told to retry.
+func DecideDownload(job *trawlv1alpha1.CaptureJob, now time.Time) DownloadDecision {
 	s := job.Status
+	if s.RetentionDeadline != nil && !now.Before(s.RetentionDeadline.Time) {
+		return DownloadExpired
+	}
+	if s.Phase == trawlv1alpha1.CapturePhaseExpired {
+		return DownloadExpired
+	}
 	if s.Phase != trawlv1alpha1.CapturePhaseCompleted || s.Failure != nil {
-		return false
+		return DownloadNotReady
 	}
 	if s.Artifact == nil || s.SHA256 == "" || s.RetentionDeadline == nil {
-		return false
-	}
-	if !now.Before(s.RetentionDeadline.Time) {
-		return false
+		return DownloadNotReady
 	}
 	if s.ObservedGeneration != job.Generation {
-		return false
+		return DownloadNotReady
 	}
-	return status.IsTrue(s.Conditions, status.TypeArtifactVerified, job.Generation)
+	if !status.IsTrue(s.Conditions, status.TypeArtifactVerified, job.Generation) {
+		return DownloadNotReady
+	}
+	return DownloadAllowed
+}
+
+// Downloadable reports whether a capture may be served now.
+//
+// It is the single-bool view of DecideDownload. Deriving it rather than
+// repeating the preconditions is what stops the status condition and the
+// gateway from ever disagreeing about whether an artifact may be served.
+func Downloadable(job *trawlv1alpha1.CaptureJob, now time.Time) bool {
+	return DecideDownload(job, now) == DownloadAllowed
 }
 
 // RetentionDeadline is completedAt plus the retention period.

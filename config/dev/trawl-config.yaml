@@ -89,6 +89,31 @@ data:
       keyFile: /var/run/secrets/trawl/audit-sink/tls.key
       caFile: /var/run/secrets/trawl/audit-sink/ca.crt
 
+    # The artifact gateway: the one component that hands packet data to a
+    # person. Its serving certificate comes from artifact-gateway-tls, and its
+    # client certificate from artifact-gateway-audit-client -- whose common name
+    # must appear in auditClientIdentities above, or every download is refused
+    # because it cannot be recorded (FR-036).
+    gateway:
+      listenAddr: ":8443"
+      # Download tokens must be minted for this audience. Deliberately not the
+      # API server's: a default service-account token would otherwise be
+      # replayable here from any pod in the cluster.
+      tokenAudience: trawl-artifact-gateway
+      # Per authenticated caller, not per address: every request arrives from
+      # the same ingress, and the case worth bounding is one credential
+      # sweeping every capture in the cluster.
+      downloadsPerMinute: 30
+      downloadBurst: 10
+      certFile: /var/run/secrets/trawl/gateway-tls/tls.crt
+      keyFile: /var/run/secrets/trawl/gateway-tls/tls.key
+      auditClient:
+        endpoint: https://trawl-audit.trawl-system.svc:8443
+        serverName: trawl-audit.trawl-system.svc
+        caFile: /var/run/secrets/trawl/audit-client/ca.crt
+        certFile: /var/run/secrets/trawl/audit-client/tls.crt
+        keyFile: /var/run/secrets/trawl/audit-client/tls.key
+
     # Not a NetworkTap field on purpose: an under-provisioned sensor drops
     # observations silently, so it is not something a tap author can get wrong.
     sensorAgentResources:

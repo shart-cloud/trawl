@@ -145,3 +145,45 @@ spec:
   issuerRef:
     kind: Issuer
     name: ca-issuer
+---
+# The artifact gateway's serving certificate.
+#
+# Deferred from Slice B0 on purpose: it needs the Service DNS name, and the
+# Service did not exist until the gateway did. It is issued from the same Trawl
+# CA as everything else here, which is what lets the supported CLI verify the
+# gateway with one bundle - the CLI sends a bearer token to whatever answers on
+# this address, so an unverifiable server is a credential-harvesting
+# opportunity rather than a warning to click through.
+#
+# 127.0.0.1 is in the SAN list because the documented access path is a
+# port-forward (quickstart section 6). Without it the CLI would have to be
+# pointed at a name that does not resolve on the analyst's workstation, and the
+# first thing anyone would reach for is a flag to skip verification.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: artifact-gateway-tls
+  namespace: system
+spec:
+  secretName: artifact-gateway-tls
+  dnsNames:
+    - trawl-artifact-gateway.trawl-system.svc
+    - trawl-artifact-gateway.trawl-system.svc.cluster.local
+    - localhost
+  ipAddresses:
+    - 127.0.0.1
+  duration: 2160h # 90 days
+  # The listener re-reads the files when they change (internal/tlsutil), so a
+  # renewal is not a restart.
+  renewBefore: 720h # 30 days
+  privateKey:
+    algorithm: ECDSA
+    size: 384
+    rotationPolicy: Always
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+  issuerRef:
+    kind: Issuer
+    name: ca-issuer

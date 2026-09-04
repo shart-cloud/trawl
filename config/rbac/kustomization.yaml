@@ -21,3 +21,9 @@ resources:
 # The event worker runs under its own identity: it consumes Hubble flows and
 # has no reason to hold the manager's write access to taps and workloads.
 - event-worker-role.yaml
+# The artifact gateway asks the API server who a caller is and whether they may
+# download; these three grants are what asking costs.
+- artifact-gateway-role.yaml
+# The roles an analyst, a viewer or a retention admin is bound to. Nothing here
+# grants anything until an administrator creates a binding.
+- capturejob-roles.yaml

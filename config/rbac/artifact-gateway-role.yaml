@@ -1,0 +1,57 @@
+# Least-privilege identity for the artifact gateway.
+#
+# The gateway decides nothing itself: it asks the API server who the caller is
+# and whether they may download, then obeys the answer. These three grants are
+# exactly what asking costs.
+#
+# Note what is absent. No secrets, no pods, no write access to anything, and no
+# capturejobs/status - a gateway that could edit a CaptureJob could mark an
+# expired capture downloadable again.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: artifact-gateway
+  namespace: trawl-system
+  labels:
+    app.kubernetes.io/name: trawl
+    app.kubernetes.io/component: artifact-gateway
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: artifact-gateway
+rules:
+  # Authenticating the caller's bearer token, bound to the gateway's audience.
+  #
+  # This is a powerful verb - it validates any token presented to it - which is
+  # why the gateway holds it and nothing else does. It cannot mint tokens, only
+  # check them.
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+  # Asking whether the authenticated caller may download. Delegating to RBAC is
+  # what keeps access governed by bindings an administrator can read and revoke
+  # with the tools they already use, rather than by a list inside this process.
+  - apiGroups: ["authorization.k8s.io"]
+    resources: ["subjectaccessreviews"]
+    verbs: ["create"]
+  # Reading the CaptureJob to find the artifact key and check that it is
+  # verified and unexpired. Cluster-scoped because the gateway serves whatever
+  # namespace a caller is authorized in; `get` only, with no list or watch, so a
+  # compromised gateway cannot enumerate captures it was never asked about.
+  - apiGroups: ["trawl.cloud"]
+    resources: ["capturejobs"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: artifact-gateway
+subjects:
+  - kind: ServiceAccount
+    name: artifact-gateway
+    namespace: trawl-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: artifact-gateway

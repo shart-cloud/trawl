@@ -58,6 +58,22 @@ const (
 	// own components with client certificates from the installation CA.
 	DefaultAuditSinkListenAddr = ":9444"
 
+	// DefaultGatewayListenAddr is the port the artifact gateway serves HTTPS on.
+	DefaultGatewayListenAddr = ":8443"
+
+	// DefaultGatewayTokenAudience is the audience a download token must be
+	// bound to.
+	//
+	// It is deliberately not the API server's own audience. A service account's
+	// default token carries that one, so accepting it would let a token read
+	// out of any pod in the cluster be replayed to fetch packet captures; a
+	// Trawl-specific audience means the token had to be minted for this
+	// gateway on purpose.
+	//nolint:gosec // G101: an audience is a public identifier that tokens are
+	// bound to, not a credential. It is published in the CLI's own
+	// documentation and in every quickstart command.
+	DefaultGatewayTokenAudience = "trawl-artifact-gateway"
+
 	// DefaultCaptureRetentionCeiling caps how long any capture may be kept.
 	DefaultCaptureRetentionCeiling = 30 * 24 * time.Hour
 
@@ -129,6 +145,9 @@ type Config struct {
 	// Capture governs capture runner Jobs and who may act on CaptureJobs.
 	Capture CaptureConfig `json:"capture,omitempty"`
 
+	// Gateway configures the artifact download API.
+	Gateway GatewayConfig `json:"gateway,omitempty"`
+
 	Content ContentConfig `json:"content"`
 	Images  ImageConfig   `json:"images"`
 }
@@ -187,6 +206,63 @@ type AuditSinkConfig struct {
 	CertFile string `json:"certFile"`
 	KeyFile  string `json:"keyFile"`
 	CAFile   string `json:"caFile"`
+}
+
+// GatewayConfig configures the artifact gateway: how it is reached, whose
+// tokens it accepts, and how it records what it served.
+//
+// The gateway is the only component that hands packet data to a human, so every
+// field here is a control on that path rather than a tuning knob. None of them
+// is defaulted to something permissive: an unset certificate is a gateway that
+// does not start, which is the correct failure.
+type GatewayConfig struct {
+	// ListenAddr defaults to DefaultGatewayListenAddr.
+	ListenAddr string `json:"listenAddr,omitempty"`
+
+	// TokenAudience defaults to DefaultGatewayTokenAudience. Tokens not bound
+	// to it are refused.
+	TokenAudience string `json:"tokenAudience,omitempty"`
+
+	// CertFile and KeyFile are the gateway's serving certificate. There is no
+	// self-signed fallback: the CLI sends a bearer token to whatever answers,
+	// so an unauthenticated server is a credential-harvesting opportunity.
+	CertFile string `json:"certFile"`
+	KeyFile  string `json:"keyFile"`
+
+	// DownloadsPerMinute and DownloadBurst bound one caller's download rate.
+	// Zero means the gateway's defaults.
+	//
+	// The bound is per authenticated identity, not per address: in any real
+	// deployment every request arrives from the same ingress, so an
+	// address-based limit would either do nothing or let one analyst throttle
+	// the rest. What it is for is an authorized credential being used to sweep
+	// every capture at once.
+	DownloadsPerMinute int `json:"downloadsPerMinute,omitempty"`
+	DownloadBurst      int `json:"downloadBurst,omitempty"`
+
+	// AuditClient is how the gateway reaches the sink. It holds no ledger
+	// credentials of its own (ADR-0003), so this is its only way to record a
+	// download - and FR-036 means a download it cannot record is one it must
+	// refuse.
+	AuditClient AuditClientConfig `json:"auditClient"`
+}
+
+// AuditClientConfig is the mTLS client half of the audit sink connection.
+//
+// The certificate's common name has to appear in the sink's
+// AuditClientIdentities exactly. A mismatch is not a degraded mode: it is a 403
+// on every commit, and therefore a gateway that refuses every download.
+type AuditClientConfig struct {
+	// Endpoint is the sink base URL, e.g.
+	// https://trawl-audit.trawl-system.svc:8443
+	Endpoint string `json:"endpoint"`
+
+	// ServerName is the name verified in the sink's certificate.
+	ServerName string `json:"serverName"`
+
+	CAFile   string `json:"caFile"`
+	CertFile string `json:"certFile"`
+	KeyFile  string `json:"keyFile"`
 }
 
 // LokiConfig addresses the log store used for observations and audit replay.
@@ -356,6 +432,16 @@ func (c *Config) ApplyDefaults() {
 		c.Content.RefreshInterval = Duration(DefaultContentRefreshInterval)
 	}
 	c.Capture.applyDefaults()
+	c.Gateway.applyDefaults()
+}
+
+func (g *GatewayConfig) applyDefaults() {
+	if g.ListenAddr == "" {
+		g.ListenAddr = DefaultGatewayListenAddr
+	}
+	if g.TokenAudience == "" {
+		g.TokenAudience = DefaultGatewayTokenAudience
+	}
 }
 
 func (c *CaptureConfig) applyDefaults() {
@@ -478,6 +564,26 @@ func (c *Config) Validate() error {
 	if c.Capture.UploadBudget <= 0 {
 		errs = append(errs, "capture.uploadBudget must be positive")
 	}
+	// Every one of these is required for the same reason the sink's are: there
+	// is no safe fallback for a missing certificate on a path that serves
+	// packet data, and no way to record a download without the client half.
+	req("gateway.listenAddr", c.Gateway.ListenAddr)
+	req("gateway.tokenAudience", c.Gateway.TokenAudience)
+	req("gateway.certFile", c.Gateway.CertFile)
+	req("gateway.keyFile", c.Gateway.KeyFile)
+	req("gateway.auditClient.endpoint", c.Gateway.AuditClient.Endpoint)
+	req("gateway.auditClient.serverName", c.Gateway.AuditClient.ServerName)
+	req("gateway.auditClient.caFile", c.Gateway.AuditClient.CAFile)
+	req("gateway.auditClient.certFile", c.Gateway.AuditClient.CertFile)
+	req("gateway.auditClient.keyFile", c.Gateway.AuditClient.KeyFile)
+	// Negative would be nonsense; zero is "use the default" and is allowed.
+	if c.Gateway.DownloadsPerMinute < 0 {
+		errs = append(errs, "gateway.downloadsPerMinute must not be negative")
+	}
+	if c.Gateway.DownloadBurst < 0 {
+		errs = append(errs, "gateway.downloadBurst must not be negative")
+	}
+
 	errs = append(errs, validateResources("capture.runnerResources", c.Capture.RunnerResources)...)
 	errs = append(errs, validateResources("capture.reporterResources", c.Capture.ReporterResources)...)
 

@@ -62,6 +62,19 @@ func valid() *Config {
 			KeyFile:    "/var/run/secrets/trawl/audit-sink/tls.key",
 			CAFile:     "/var/run/secrets/trawl/audit-sink/ca.crt",
 		},
+		Gateway: GatewayConfig{
+			ListenAddr:    DefaultGatewayListenAddr,
+			TokenAudience: DefaultGatewayTokenAudience,
+			CertFile:      "/var/run/secrets/trawl/gateway-tls/tls.crt",
+			KeyFile:       "/var/run/secrets/trawl/gateway-tls/tls.key",
+			AuditClient: AuditClientConfig{
+				Endpoint:   "https://trawl-audit.trawl-system.svc:8443",
+				ServerName: "trawl-audit.trawl-system.svc",
+				CAFile:     "/var/run/secrets/trawl/audit-client/ca.crt",
+				CertFile:   "/var/run/secrets/trawl/audit-client/tls.crt",
+				KeyFile:    "/var/run/secrets/trawl/audit-client/tls.key",
+			},
+		},
 		CaptureRetentionCeiling: Duration(30 * 24 * time.Hour),
 		SensorAgentResources: ResourceRequirements{
 			RequestsCPU:    "50m",
@@ -386,6 +399,15 @@ auditSink:
   certFile: /etc/trawl/audit-sink/tls.crt
   keyFile: /etc/trawl/audit-sink/tls.key
   caFile: /etc/trawl/audit-sink/ca.crt
+gateway:
+  certFile: /etc/trawl/gateway-tls/tls.crt
+  keyFile: /etc/trawl/gateway-tls/tls.key
+  auditClient:
+    endpoint: https://trawl-audit.trawl-system.svc:8443
+    serverName: trawl-audit.trawl-system.svc
+    caFile: /etc/trawl/audit-client/ca.crt
+    certFile: /etc/trawl/audit-client/tls.crt
+    keyFile: /etc/trawl/audit-client/tls.key
 sensorAgentResources:
   requestsCPU: 50m
   requestsMemory: 64Mi

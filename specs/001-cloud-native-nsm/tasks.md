@@ -185,7 +185,7 @@ expired paths.
 - [x] T070 [P] [US3] Add failing dumpcap-runner tests for BPF dry-run before socket open, duration/size first-bound stop, snaplen, cancellation, sanitized failures, and <=1MiB overshoot in `internal/capture/runner_test.go`
 - [x] T071 [P] [US3] Add failing real-MinIO tests for stable object keys, conditional upload, manifest/checksum verification, missing/mismatch handling, presign ceiling, and idempotent delete in `test/integration/artifact_storage_test.go`
 - [x] T072 [P] [US3] Add failing envtest cases for target resolution, stable Job/reporter creation, reporter field ownership and progress patches, existing Job/object adoption, storage failure, audit failure, controller restart, and one terminal result in `internal/controller/capturejob_controller_test.go`
-- [ ] T073 [P] [US3] Add failing OpenAPI/handler/CLI tests for TokenReview audience, `capturejobs/download` SubjectAccessReview, enumeration resistance, lifecycle responses, no-store headers, short redirects, and durable audit acknowledgement before redirect in `internal/gateway/handler_test.go` and `internal/gateway/client_test.go`
+- [X] T073 [P] [US3] Add failing OpenAPI/handler/CLI tests for TokenReview audience, `capturejobs/download` SubjectAccessReview, enumeration resistance, lifecycle responses, no-store headers, short redirects, and durable audit acknowledgement before redirect in `internal/gateway/handler_test.go` and `internal/gateway/client_test.go`
 - [ ] T074 [P] [US3] Add failing fake-clock tests for exact deadline denial, authorized shortening/extension, upload protection, hourly deletion retry, 24-hour bound, and metadata preservation in `internal/controller/retention_test.go`
 - [ ] T075 [US3] Add a failing end-to-end manual capture matrix for reporter-driven progress, successful CLI download, invalid-filter, inactive-source, unavailable-target, zero-packet, full-storage, audit outage, restart, unauthorized-download, and expiry cases in `test/e2e/manual_capture_test.go`
 
@@ -203,10 +203,10 @@ expired paths.
 - [x] T085 [US3] Implement CaptureJob reconciliation, active tap/target resolution, Job observation/adoption, reporter-owned progress consumption, S3 HEAD verification, durable audit before lifecycle commits, conditions, retries, and terminal convergence in `internal/controller/capturejob_controller.go`
 - [x] T086 [US3] Implement the guarded lifecycle transition and artifact-downloadability logic used by the reconciler and gateway in `internal/capture/state.go`
 - [ ] T087 [US3] Implement deadline calculation, immediate download denial, upload-aware hourly deletion, object absence verification, retry conditions, and `Expired` transition in `internal/controller/retention.go`
-- [ ] T088 [P] [US3] Implement audience-bound Kubernetes TokenReview and resource-name/subresource SubjectAccessReview clients with deny-by-default caching in `internal/authz/kubernetes.go`
-- [ ] T089 [US3] Implement the artifact gateway download handler and CLI client library with live CaptureJob/object verification, five-minute/deadline presign calculation, enumeration-safe errors, no-store responses, rate limits, and durable audit acknowledgement before redirect in `internal/gateway/handler.go` and `internal/gateway/client.go`
+- [X] T088 [P] [US3] Implement audience-bound Kubernetes TokenReview and resource-name/subresource SubjectAccessReview clients with deny-by-default caching in `internal/authz/kubernetes.go`
+- [X] T089 [US3] Implement the artifact gateway download handler and CLI client library with live CaptureJob/object verification, five-minute/deadline presign calculation, enumeration-safe errors, no-store responses, rate limits, and durable audit acknowledgement before redirect in `internal/gateway/handler.go` and `internal/gateway/client.go`
 - [ ] T090 [US3] Wire TLS serving, auth/audit/storage clients, probes, metrics, request IDs, graceful shutdown, and log redaction in `cmd/artifact-gateway/main.go`, and implement bearer-producing kubeconfig-exec or token-stdin download without credential arguments in `cmd/trawlctl/main.go`
-- [ ] T091 [US3] Deploy the gateway and capture reporter permissions with explicit ServiceAccounts, resource-name-scoped reporter status Roles, `capturejobs/download` roles, TokenReview/SubjectAccessReview access, artifact-only storage Secret mounts, audit-sink mTLS, TLS, and NetworkPolicies in `config/gateway/deployment.yaml` and `config/rbac/artifact-gateway-role.yaml`
+- [X] T091 [US3] Deploy the gateway and capture reporter permissions with explicit ServiceAccounts, resource-name-scoped reporter status Roles, `capturejobs/download` roles, TokenReview/SubjectAccessReview access, artifact-only storage Secret mounts, audit-sink mTLS, TLS, and NetworkPolicies in `config/gateway/deployment.yaml` and `config/rbac/artifact-gateway-role.yaml`
 - [ ] T092 [US3] Generate and review the CaptureJob CRD/cluster-wide namespace-rejecting webhook/namespaced RBAC, manual analyst and retention-admin roles, successful/invalid samples, and capture image digest patch in `config/crd/bases/trawl.cloud_capturejobs.yaml`, `config/rbac/capturejob-roles.yaml`, and `config/samples/`
 - [ ] T093 [US3] Extend Trawl Overview with recent capture activity and add execution lifecycle, artifact health, retention, storage usage, and non-secret copyable `trawlctl` commands to `config/grafana/dashboards/trawl-overview.json` and `config/grafana/dashboards/capture-management.json`
 - [ ] T094 [US3] Complete real dumpcap/reporter/MinIO/audit-ledger/gateway/CLI integration fixtures, including checksum comparison and secret-leak assertions, in `test/integration/manual_capture_test.go`
@@ -235,6 +235,43 @@ diverge.
   namespace-gated only at admission; the controller's finalizer records it as
   `artifact.expire` records with the outcome. Filter validation at admission is
   size and character set only; BPF compilation happens in the runner (T080).
+- T073/T089: the download route is the OpenAPI contract's
+  `/api/v1/namespaces/{namespace}/capturejobs/{name}/download`, not the plan
+  prose's `/v1/captures/...`, and the refusal codes follow the contract rather
+  than the plan's "enumeration-safe 404 for everything": 403 for a denied
+  SubjectAccessReview (decided before the CaptureJob is read, so it reveals
+  nothing about existence), then 404/409/410 for an authorized caller. The
+  quickstart agrees - a viewer gets 403.
+- T073/T089: `X-Trawl-SHA256` is added to the 303 beyond the original contract,
+  which defined no way for the CLI to learn the expected checksum. The CLI talks
+  to nothing but the gateway, so without it a truncated or substituted object
+  would download cleanly. `artifact-api.openapi.yaml` is updated alongside.
+- T089: the request ID is always generated by the gateway and never taken from
+  the request, because it forms part of the download audit record's idempotency
+  key - a caller-chosen value would let a repeat download collapse onto an
+  earlier record and disappear from the ledger.
+- T089: the per-caller rate limit is keyed by authenticated identity rather than
+  source address (every request arrives from the same ingress), and is applied
+  after authentication but before authorization so a throttled caller cannot
+  hammer the API server's SubjectAccessReview path.
+- T088: `capture.DecideDownload` was extracted so `Downloadable` and the gateway
+  cannot disagree; the bool is now derived from it. The gateway needs the reason
+  a download is refused (409 versus 410), which the bool cannot carry.
+- T090: `config.Images.ArtifactGateway` was NOT added. The gateway is a static
+  Deployment like the event worker, so its image is pinned in
+  `config/gateway/deployment.yaml` and refreshed by `hack/refresh-digests.sh`.
+  `config.Images` is for images the operator renders at runtime; an unused field
+  there would be exactly the dead wiring this slice existed to remove.
+- T090: the `cmd/trawlctl` half is NOT done - it is Slice B2. The gateway half
+  (TLS serving, clients, metrics, request IDs, graceful shutdown, redaction) is.
+- T091: `artifact-gateway-tls` is added to `config/certmanager/certificate.yaml`
+  now that the Service DNS name exists; B0 deliberately deferred it. It carries
+  localhost/127.0.0.1 in its SANs because the documented access path is a
+  port-forward, and without them the first thing anyone reaches for is a flag to
+  skip verification.
+- Not in tasks.md: `internal/tlsutil` now holds the certificate reloader the
+  audit sink had privately, since the gateway needs the same renewal behaviour;
+  the manager's metrics container port (8443) is declared, which it never was.
 - T072: the controller tests are envtest cases in
   `test/integration/capturejob_controller_test.go`, for the same reason as T068.
 - T079: the packet count comes from walking the pcapng blocks of the finished

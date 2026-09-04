@@ -1,0 +1,69 @@
+# The roles a human or a service account is bound to in order to work with
+# captures.
+#
+# These are the other half of the gateway's design: it holds no policy of its
+# own, so what an analyst may download is decided entirely by which of these
+# they are bound to. They are ClusterRoles so an administrator can bind them in
+# whichever namespaces a team is responsible for; nothing here grants anything
+# until a binding exists.
+#
+# `capturejobs/download` is a virtual subresource. Nothing serves it on the API
+# server - it exists so that permission to read a CaptureJob's metadata can be
+# separated from permission to read the packets it captured. Those are very
+# different things: the first says a capture happened, the second is the traffic
+# itself.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: capture-analyst
+  labels:
+    app.kubernetes.io/name: trawl
+rules:
+  # Requesting a capture and following it.
+  - apiGroups: ["trawl.cloud"]
+    resources: ["capturejobs"]
+    verbs: ["create", "get", "list", "watch"]
+  # Fetching the packets. The SubjectAccessReview the gateway submits names
+  # exactly this.
+  - apiGroups: ["trawl.cloud"]
+    resources: ["capturejobs/download"]
+    verbs: ["get"]
+  # Seeing which taps exist, so a request can name a real one.
+  - apiGroups: ["trawl.cloud"]
+    resources: ["networktaps"]
+    verbs: ["get", "list", "watch"]
+---
+# Read the record of a capture without reading the traffic.
+#
+# This is the role that makes the download subresource worth having: a viewer
+# can audit that a capture was taken, by whom, and how big it was, and cannot
+# open it.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: capture-viewer
+  labels:
+    app.kubernetes.io/name: trawl
+rules:
+  - apiGroups: ["trawl.cloud"]
+    resources: ["capturejobs", "networktaps"]
+    verbs: ["get", "list", "watch"]
+---
+# Change how long a capture is kept.
+#
+# The verbs look broad, and RBAC cannot express "only spec.retention". The
+# admission webhook is what narrows them: it rejects an update that touches
+# anything else, rejects one after the retention deadline has passed, and
+# rejects one from a subject outside capture.retentionAdminGroups. This binding
+# is therefore necessary but not sufficient, which is the intended shape - RBAC
+# says who may ask, admission says what may change.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: retention-admin
+  labels:
+    app.kubernetes.io/name: trawl
+rules:
+  - apiGroups: ["trawl.cloud"]
+    resources: ["capturejobs"]
+    verbs: ["get", "list", "watch", "patch", "update"]

@@ -22,7 +22,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -49,6 +51,7 @@ type Fake struct {
 	conditional map[string]bool
 
 	putErr  error
+	headErr error
 	swallow bool
 	clock   func() time.Time
 	seq     int
@@ -83,6 +86,18 @@ func (f *Fake) FailPut(err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.putErr = err
+}
+
+// FailHead makes every subsequent Head return err, simulating a backend that
+// is reachable for neither verification nor listing.
+//
+// Distinct from an absent object: ErrNotFound is an answer, and this is the
+// absence of one. A caller that cannot tell them apart reports an outage as a
+// deleted artifact.
+func (f *Fake) FailHead(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.headErr = err
 }
 
 // SwallowPuts makes Put report success without persisting, simulating a backend
@@ -148,6 +163,9 @@ func (f *Fake) Head(_ context.Context, key string) (ObjectInfo, error) {
 	defer f.mu.Unlock()
 
 	f.headCounts[key]++
+	if f.headErr != nil {
+		return ObjectInfo{}, f.headErr
+	}
 	obj, ok := f.objects[key]
 	if !ok {
 		return ObjectInfo{}, ErrNotFound
@@ -270,4 +288,68 @@ func lowerKeys(m map[string]string) map[string]string {
 		out[strings.ToLower(k)] = v
 	}
 	return out
+}
+
+// FakePresigner is an in-memory Presigner for handler tests.
+//
+// It records the lifetime it was asked for so a test can assert the caller's
+// clamp against the retention deadline, and it applies the same MaxPresignTTL
+// ceiling the real one does — a fake that minted longer-lived URLs than the
+// backend would let a TTL bug pass.
+type FakePresigner struct {
+	mu sync.Mutex
+
+	// Err, when set, is returned instead of a URL.
+	Err error
+
+	// Base is the URL the signature is appended to. Empty means a default.
+	Base string
+
+	calls []PresignCall
+}
+
+// PresignCall is one recorded PresignGet.
+type PresignCall struct {
+	Key string
+	TTL time.Duration
+}
+
+// PresignGet implements Presigner.
+func (f *FakePresigner) PresignGet(_ context.Context, key string, ttl time.Duration) (*url.URL, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.calls = append(f.calls, PresignCall{Key: key, TTL: ttl})
+	if f.Err != nil {
+		return nil, f.Err
+	}
+	if ttl <= 0 {
+		return nil, ErrPresignExpired
+	}
+	if ttl > MaxPresignTTL {
+		ttl = MaxPresignTTL
+	}
+
+	base := f.Base
+	if base == "" {
+		base = "https://objects.invalid/artifacts"
+	}
+	u, err := url.Parse(base + "/" + key)
+	if err != nil {
+		return nil, err
+	}
+	q := u.Query()
+	// Named like the real thing so a test asserting no signature leaks into a
+	// log or an error body is testing against the string it would really see.
+	q.Set("X-Amz-Expires", strconv.Itoa(int(ttl.Seconds())))
+	q.Set("X-Amz-Signature", "fake-signature")
+	u.RawQuery = q.Encode()
+	return u, nil
+}
+
+// Calls returns the presign requests made so far, in order.
+func (f *FakePresigner) Calls() []PresignCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.calls)
 }

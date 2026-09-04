@@ -1,0 +1,167 @@
+# trawl-artifact-gateway.
+#
+# The one component a person's credential reaches, and the one that hands over
+# packet data. It is a separate workload from the controller manager because of
+# ADR-0003: the manager holds the audit ledger's credential, and the process
+# that serves downloads must not be able to rewrite the record of what it
+# served.
+#
+# It holds read-only artifact-bucket credentials, a client certificate for the
+# audit sink, and its own serving certificate. It holds no ledger credentials
+# and no Kubernetes write access at all.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: artifact-gateway
+  namespace: trawl-system
+  labels:
+    app.kubernetes.io/name: trawl
+    app.kubernetes.io/component: artifact-gateway
+spec:
+  # Two replicas, unlike the event worker. Nothing here is a singleton: every
+  # request is decided from live API server and object store state, so there is
+  # no lease to hold and no duplicate work to avoid. A download is what an
+  # analyst reaches for during an incident, which is exactly when a node is
+  # likely to be the thing going wrong.
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: trawl
+      app.kubernetes.io/component: artifact-gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: trawl
+        app.kubernetes.io/component: artifact-gateway
+    spec:
+      serviceAccountName: artifact-gateway
+      # Restricted-compatible. This workload never touches the packet path: it
+      # signs a URL and redirects, so it needs no capability, no host namespace
+      # and no writable root.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        # Group-owns the mounted secrets so the 0440 keys are readable by this
+        # process and by nothing else.
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      # Keep the replicas off one node, or the second replica buys nothing.
+      # Preferred rather than required: this cluster is a single node today, and
+      # a required rule would leave the second replica permanently Pending.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: trawl
+                    app.kubernetes.io/component: artifact-gateway
+      containers:
+        - name: artifact-gateway
+          # Placeholder digest, repointed by hack/refresh-digests.sh. A tag here
+          # would let the deployed image change without a manifest change.
+          image: ghcr.io/shart-cloud/trawl/artifact-gateway@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          args:
+            - --config=/etc/trawl/config.yaml
+          ports:
+            - name: https
+              containerPort: 8443
+            - name: metrics
+              containerPort: 9110
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          livenessProbe:
+            # Served by the API itself, over its own TLS. The contract puts
+            # health on the API so it answers "can this serve a download",
+            # rather than "is a second listener up".
+            httpGet:
+              path: /healthz
+              port: https
+              scheme: HTTPS
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          readinessProbe:
+            # Follows the API server and the artifact bucket. A gateway that
+            # cannot reach either can answer nothing, and should leave the
+            # Service's endpoints rather than serve 503s.
+            httpGet:
+              path: /readyz
+              port: https
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: config
+              mountPath: /etc/trawl
+              readOnly: true
+            - name: artifact-credentials
+              mountPath: /var/run/secrets/trawl/artifacts
+              readOnly: true
+            - name: gateway-tls
+              mountPath: /var/run/secrets/trawl/gateway-tls
+              readOnly: true
+            - name: audit-client
+              mountPath: /var/run/secrets/trawl/audit-client
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: trawl-config
+        - name: artifact-credentials
+          secret:
+            # The same Secret the manager and the capture runner read. The
+            # gateway only ever reads and presigns; write access lives with the
+            # runner's copy of this credential, not with a policy here.
+            secretName: trawl-artifact-storage
+            defaultMode: 0440
+        - name: gateway-tls
+          secret:
+            # cert-manager issues this from the Trawl CA. The CLI verifies it,
+            # so a missing or expired one is a gateway nobody should trust.
+            secretName: artifact-gateway-tls
+            defaultMode: 0440
+        - name: audit-client
+          secret:
+            # The client half of the audit sink connection. Its common name must
+            # appear in auditClientIdentities, or every commit is a 403 and
+            # therefore every download is refused.
+            secretName: artifact-gateway-audit-client
+            defaultMode: 0440
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: artifact-gateway
+  namespace: trawl-system
+  labels:
+    app.kubernetes.io/name: trawl
+    app.kubernetes.io/component: artifact-gateway
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: trawl
+    app.kubernetes.io/component: artifact-gateway
+  ports:
+    # Callers dial 443; the pod serves 8443. A NetworkPolicy port is the pod's,
+    # not the Service's - the mistake that left the audit sink closed in B0.
+    - name: https
+      port: 443
+      targetPort: https
+      protocol: TCP
