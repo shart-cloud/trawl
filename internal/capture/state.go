@@ -92,23 +92,44 @@ func IsTerminal(p trawlv1alpha1.CapturePhase) bool {
 
 // CanTransition reports whether the lifecycle permits moving from one phase
 // to another. The empty phase is a freshly created object.
+//
+// Progress may skip phases, and describing the lifecycle as a chain of single
+// steps does not survive contact with the cluster: the reconciler is
+// level-triggered and writes the phase the facts it observed imply, so a
+// capture whose artifact is already verified when the next pass looks moves
+// Capturing -> Completed and Storing is never written. What the lifecycle
+// actually forbids is moving backwards and leaving a terminal phase, and that
+// is what this reports on.
 func CanTransition(from, to trawlv1alpha1.CapturePhase) bool {
 	if to == trawlv1alpha1.CapturePhaseFailed {
-		return !IsTerminal(from) && from != trawlv1alpha1.CapturePhaseExpired
+		return !IsTerminal(from)
 	}
-	switch from {
-	case "":
-		return to == trawlv1alpha1.CapturePhasePending
+	if IsTerminal(from) {
+		// Expiry is the one move out of a terminal phase: the artifact of a
+		// completed capture outlives the capture, until retention ends it.
+		return from == trawlv1alpha1.CapturePhaseCompleted && to == trawlv1alpha1.CapturePhaseExpired
+	}
+	return phaseOrder(to) > phaseOrder(from)
+}
+
+// phaseOrder is the lifecycle's forward ordering, which is what "backwards"
+// is measured against. Failed is absent on purpose: it is reachable from
+// every non-terminal phase and so is ordered against none of them.
+func phaseOrder(p trawlv1alpha1.CapturePhase) int {
+	switch p {
 	case trawlv1alpha1.CapturePhasePending:
-		return to == trawlv1alpha1.CapturePhaseCapturing
+		return 1
 	case trawlv1alpha1.CapturePhaseCapturing:
-		return to == trawlv1alpha1.CapturePhaseStoring
+		return 2
 	case trawlv1alpha1.CapturePhaseStoring:
-		return to == trawlv1alpha1.CapturePhaseCompleted
+		return 3
 	case trawlv1alpha1.CapturePhaseCompleted:
-		return to == trawlv1alpha1.CapturePhaseExpired
+		return 4
+	case trawlv1alpha1.CapturePhaseExpired:
+		return 5
 	}
-	return false
+	// The empty phase of an object whose status has never been written.
+	return 0
 }
 
 // TransitionStep names a phase for the audit record's stable key, so the same

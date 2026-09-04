@@ -273,10 +273,14 @@ type DeliverFunc func(ctx context.Context, rec Record) error
 
 // Replay forwards ledger records to the searchable stream, beginning at cursor.
 //
-// The cursor record is re-delivered rather than skipped. Duplicate delivery is
-// harmless because copies keep their stable_key and audit views collapse by it;
-// a skipped record would be permanently invisible in search. Given the ledger is
-// authoritative, the overlap is the safe direction to err in.
+// The cursor names the last record the stream accepted, so its own object is
+// behind the cursor and is not delivered again. It used to be, on the argument
+// that a duplicate is safer than a skip: true of a single overlap on resume,
+// but this is not one. Re-delivering the cursor record leaves the pass ending
+// where it started, the cursor is not advanced because it did not move, and
+// the same record goes to the stream again on every tick for as long as it is
+// the newest one -- unbounded copies of the tail of the ledger rather than one
+// on resume. List is inclusive of its cursor, so the exclusion happens here.
 //
 // Delivery failure stops replay where it stands and returns the count that did
 // succeed, so the caller advances its cursor no further than what was actually
@@ -286,6 +290,7 @@ func (s *Sink) Replay(ctx context.Context, cursor string, deliver DeliverFunc) (
 	if err != nil {
 		return 0, sanitize.Errorf("listing audit ledger: %v", err)
 	}
+	objects = beyondCursor(objects, cursor)
 
 	delivered := 0
 	for _, obj := range objects {
@@ -307,6 +312,21 @@ func (s *Sink) Replay(ctx context.Context, cursor string, deliver DeliverFunc) (
 	return delivered, nil
 }
 
+// beyondCursor drops the cursor's own object from a listing, leaving only the
+// records after it. Store.List is inclusive of its start key so that a resume
+// cannot skip a record, which means every caller that wants "what is left"
+// rather than "where we are" has to do this, and both of them doing it
+// differently is how the stream came to repeat itself.
+//
+// The cursor object sorts first when it is still present; retention may have
+// removed it, in which case there is nothing to exclude.
+func beyondCursor(objects []storage.ObjectInfo, cursor string) []storage.ObjectInfo {
+	if cursor != "" && len(objects) > 0 && objects[0].Key == cursor {
+		return objects[1:]
+	}
+	return objects
+}
+
 // Backlog reports how many ledger objects sit beyond cursor and how old the
 // oldest of them is, feeding trawl_audit_backlog_objects and
 // trawl_audit_oldest_unforwarded_seconds.
@@ -321,11 +341,7 @@ func (s *Sink) Backlog(ctx context.Context, cursor string) (int, time.Time, erro
 	if err != nil {
 		return 0, time.Time{}, sanitize.Errorf("listing audit ledger: %v", err)
 	}
-	// The cursor object sorts first when it is still present; retention may
-	// have removed it, in which case there is nothing to exclude.
-	if cursor != "" && len(objects) > 0 && objects[0].Key == cursor {
-		objects = objects[1:]
-	}
+	objects = beyondCursor(objects, cursor)
 	if len(objects) == 0 {
 		return 0, time.Time{}, nil
 	}

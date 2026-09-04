@@ -308,9 +308,10 @@ func TestValidateRequiresStableKey(t *testing.T) {
 	}
 }
 
-func TestReplayForwardsFromCursorWithOverlap(t *testing.T) {
-	// Replay must not skip records after an outage, and must not duplicate them
-	// endlessly either. Overlap plus stable_key collapse is the contract.
+func TestReplayForwardsOnlyBeyondItsCursor(t *testing.T) {
+	// Replay must not skip records after an outage, and must not repeat them
+	// either. The cursor names what the stream already accepted, so replay
+	// starts after it.
 	store := storage.NewFake()
 	sink := newTestSink(t, store)
 
@@ -340,7 +341,10 @@ func TestReplayForwardsFromCursorWithOverlap(t *testing.T) {
 		t.Errorf("replayed %d records, want %d", n, len(keys))
 	}
 
-	// Resuming from the second key must re-deliver it (overlap), not skip it.
+	// Resuming from the second key delivers the third and nothing else. The
+	// second was already forwarded -- that is what the cursor records -- and
+	// re-delivering it leaves the pass ending where it began, so the cursor
+	// never moves and the same record is sent again every tick.
 	forwarded = nil
 	if _, err := sink.Replay(t.Context(), keys[1], func(_ context.Context, r Record) error {
 		forwarded = append(forwarded, r)
@@ -348,11 +352,24 @@ func TestReplayForwardsFromCursorWithOverlap(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Replay from cursor: %v", err)
 	}
-	if len(forwarded) == 0 {
-		t.Fatal("replay from a cursor delivered nothing")
+	if len(forwarded) != 1 {
+		t.Fatalf("replay from a cursor forwarded %d records, want 1", len(forwarded))
 	}
-	if forwarded[0].StableKey != "admission/key-tap-b" {
-		t.Errorf("overlap did not re-deliver the cursor record, got %q", forwarded[0].StableKey)
+	if forwarded[0].StableKey != "admission/key-tap-c" {
+		t.Errorf("replay from a cursor delivered %q, want the record after it", forwarded[0].StableKey)
+	}
+
+	// The cursor at the end of the ledger has nothing left to forward, which
+	// is what stops a drained stream from repeating its tail.
+	forwarded = nil
+	if _, err := sink.Replay(t.Context(), keys[len(keys)-1], func(_ context.Context, r Record) error {
+		forwarded = append(forwarded, r)
+		return nil
+	}); err != nil {
+		t.Fatalf("Replay from the last key: %v", err)
+	}
+	if len(forwarded) != 0 {
+		t.Errorf("a drained replay forwarded %d records, want none", len(forwarded))
 	}
 }
 
