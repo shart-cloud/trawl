@@ -354,8 +354,15 @@ diverge.
   artifact-gateway pods emit zero log lines, startup included, while the
   controller-manager logs normally, and MinIO's access log is off. The grep for
   `X-Amz-Signature` therefore found nothing because there was nothing to search,
-  not because a URL was withheld. The gateway's silence is an operability gap in
-  its own right and is not yet explained.
+  not because a URL was withheld. The silence is total and deliberate as far as
+  the code goes: `internal/gateway` contains no logger at all, and
+  `cmd/artifact-gateway` writes to stderr only from `fatal` and the metrics
+  server, so the process says nothing on startup, nothing per request, and
+  nothing about an authorization decision. Routing every decision to the audit
+  ledger instead is ADR-0003's design and keeps URLs and tokens out of stdout,
+  but a server that cannot report that it is listening, or why it refused
+  something, is hard to operate; the vacuous grep is a side effect of that
+  rather than a finding about presigned URLs. Worth a decision in Slice C.
 - Not in tasks.md: `.gitignore` gained the two artifacts §6 has the operator
   create - `*.pcapng` and `test/e2e/certs/` - because neither was ignored and
   captured traffic and credentials are never committed. It also gained
