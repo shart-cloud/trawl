@@ -20,6 +20,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"io"
 	"slices"
 	"strings"
 	"sync"
@@ -125,6 +127,19 @@ func (f *Fake) Put(_ context.Context, key string, body []byte, opts PutOptions) 
 	}
 	f.objects[key] = fakeObject{body: append([]byte(nil), body...), info: info, retainUntil: opts.RetainUntil}
 	return info, nil
+}
+
+// PutStream implements Store by buffering the body; the Fake exists for
+// tests, where bodies are small.
+func (f *Fake) PutStream(ctx context.Context, key string, body io.Reader, size int64, opts PutOptions) (ObjectInfo, error) {
+	buf, err := io.ReadAll(io.LimitReader(body, size+1))
+	if err != nil {
+		return ObjectInfo{}, err
+	}
+	if int64(len(buf)) != size {
+		return ObjectInfo{}, errors.New("body length does not match size")
+	}
+	return f.Put(ctx, key, buf, opts)
 }
 
 // Head implements Store.

@@ -54,16 +54,17 @@ func RunConformance(t *testing.T, newStore NewStore) {
 	t.Helper()
 
 	for name, run := range map[string]func(*testing.T, storage.Store, string){
-		"PutThenGetReturnsWhatWasWritten":           putThenGet,
-		"HeadReportsMetadataAndSize":                headReportsMetadata,
-		"GetAndHeadOfAnAbsentKeyAreNotFound":        absentIsNotFound,
-		"ConditionalPutRefusesAnExistingKey":        conditionalPut,
-		"DeleteIsIdempotent":                        deleteIsIdempotent,
-		"ListIsLexicographicAndHonoursThePrefix":    listOrderAndPrefix,
-		"ListFromACursorIncludesTheCursorsOwnKey":   listIsInclusive,
-		"ListFromAnAbsentCursorStartsAtTheNextKey":  listFromAbsentCursor,
-		"ListWithNoCursorReturnsEverythingUnderIt":  listWithoutCursor,
-		"ListOfAnEmptyPrefixReturnsNothingNotAnErr": listEmpty,
+		"PutThenGetReturnsWhatWasWritten":              putThenGet,
+		"HeadReportsMetadataAndSize":                   headReportsMetadata,
+		"GetAndHeadOfAnAbsentKeyAreNotFound":           absentIsNotFound,
+		"ConditionalPutRefusesAnExistingKey":           conditionalPut,
+		"PutStreamWritesTheBodyAndHonoursTheCondition": putStream,
+		"DeleteIsIdempotent":                           deleteIsIdempotent,
+		"ListIsLexicographicAndHonoursThePrefix":       listOrderAndPrefix,
+		"ListFromACursorIncludesTheCursorsOwnKey":      listIsInclusive,
+		"ListFromAnAbsentCursorStartsAtTheNextKey":     listFromAbsentCursor,
+		"ListWithNoCursorReturnsEverythingUnderIt":     listWithoutCursor,
+		"ListOfAnEmptyPrefixReturnsNothingNotAnErr":    listEmpty,
 	} {
 		t.Run(name, func(t *testing.T) {
 			store, prefix := newStore(t)
@@ -155,6 +156,41 @@ func conditionalPut(t *testing.T, store storage.Store, prefix string) {
 	}
 	if string(body) != `{"n":1}` {
 		t.Errorf("the refused write still landed: %s", body)
+	}
+}
+
+func putStream(t *testing.T, store storage.Store, prefix string) {
+	// A streamed body must land byte-for-byte with its metadata, and the
+	// conditional write must refuse a second stream the same way Put does:
+	// the capture runner relies on that to never overwrite evidence.
+	ctx := context.Background()
+	key := prefix + "stream.bin"
+	body := bytes.Repeat([]byte("trawl"), 7*1024)
+
+	info, err := store.PutStream(ctx, key, bytes.NewReader(body), int64(len(body)),
+		storage.PutOptions{IfNotExists: true, ContentType: "application/octet-stream", Metadata: map[string]string{"sha256": "abc"}})
+	if err != nil {
+		t.Fatalf("put stream: %v", err)
+	}
+	if info.Size != int64(len(body)) {
+		t.Errorf("reported size %d, want %d", info.Size, len(body))
+	}
+	if _, err := store.PutStream(ctx, key, bytes.NewReader([]byte("x")), 1, storage.PutOptions{IfNotExists: true}); !errors.Is(err, storage.ErrAlreadyExists) {
+		t.Fatalf("second conditional stream = %v, want ErrAlreadyExists", err)
+	}
+	got, err := store.Get(ctx, key)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !bytes.Equal(got, body) {
+		t.Errorf("streamed body differs: %d bytes back, want %d", len(got), len(body))
+	}
+	head, err := store.Head(ctx, key)
+	if err != nil {
+		t.Fatalf("head: %v", err)
+	}
+	if head.Metadata["sha256"] != "abc" {
+		t.Errorf("metadata %v lacks sha256", head.Metadata)
 	}
 }
 

@@ -30,6 +30,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"io"
 	"time"
 )
 
@@ -76,6 +77,11 @@ type PutOptions struct {
 
 	ContentType string
 	Metadata    map[string]string
+
+	// Timeout overrides the store's default per-call bound. A capture artifact
+	// can be a gibibyte; the 30 s that suits ledger records would fail it.
+	// Zero keeps the default.
+	Timeout time.Duration
 }
 
 // Store is the object-store surface Trawl depends on.
@@ -86,6 +92,11 @@ type Store interface {
 	// Put writes an object, honouring PutOptions. It returns ErrAlreadyExists
 	// when IfNotExists is set and the key is taken.
 	Put(ctx context.Context, key string, body []byte, opts PutOptions) (ObjectInfo, error)
+
+	// PutStream is Put for a body too large to hold in memory. size must be
+	// the exact length of body; implementations use it to write the object in
+	// a single request so IfNotExists stays one atomic conditional PUT.
+	PutStream(ctx context.Context, key string, body io.Reader, size int64, opts PutOptions) (ObjectInfo, error)
 
 	// Head returns metadata for a key, or ErrNotFound.
 	Head(ctx context.Context, key string) (ObjectInfo, error)
