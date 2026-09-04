@@ -1,0 +1,69 @@
+# Egress allowlist for the artifact gateway.
+#
+# It talks to exactly four things: DNS, the Kubernetes API for TokenReview and
+# SubjectAccessReview, the audit sink on the controller manager, and object
+# storage. Nothing else, and no ingress except the API port and metrics
+# scraping.
+#
+# Every port below is a port on the receiving pod, not the port its Service
+# publishes. Naming the Service port is what left the audit sink closed in
+# Slice B0 while appearing to be allowed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: artifact-gateway
+  namespace: trawl-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: trawl
+      app.kubernetes.io/component: artifact-gateway
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # The download API and the metrics port. Left open to any source: the
+    # analyst reaching this is outside the cluster, through whatever
+    # authenticated route the installation provides, so their address is not
+    # something this policy can name. Authentication is the control here, not
+    # the network.
+    - ports:
+        - port: 8443
+          protocol: TCP
+        - port: 9110
+          protocol: TCP
+  egress:
+    # DNS.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # The audit sink on the controller manager. 9444 is the manager's container
+    # port; the trawl-audit Service publishes 8443 and forwards to it.
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: trawl
+              app.kubernetes.io/component: controller-manager
+      ports:
+        - port: 9444
+          protocol: TCP
+    # Kubernetes API. Expressed as a port rather than a peer because the
+    # apiserver endpoint is not a labelled pod on Talos.
+    - ports:
+        - port: 6443
+          protocol: TCP
+        # In-cluster clients dial kubernetes.default.svc on 443.
+        - port: 443
+          protocol: TCP
+    # Object storage, for the liveness check on the artifact. Presigning itself
+    # is a local computation and needs no connection. Narrow this to the storage
+    # service's address range at install time.
+    - ports:
+        - port: 9000
+          protocol: TCP

@@ -95,6 +95,15 @@ spec:
         image: ghcr.io/shart-cloud/trawl/controller-manager@sha256:49cd0de901c8e341215b33ea6ea3c6244a96d5ecd30bbb9938d71d6d28c5befa
         name: manager
         ports:
+        # Metrics. Enabled by config/default/manager_metrics_patch.yaml and
+        # published by metrics_service.yaml, but undeclared here until now:
+        # a containerPort is documentation rather than a gate, so nothing broke
+        # -- it just meant the pod spec did not say where this process listens,
+        # and a NetworkPolicy rule naming the port had nothing to be checked
+        # against.
+        - containerPort: 8443
+          name: metrics
+          protocol: TCP
         - containerPort: 8081
           name: health
           protocol: TCP

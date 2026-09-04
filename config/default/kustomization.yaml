@@ -30,6 +30,10 @@ resources:
 # (ADR-0003). It was written but never listed here, so it was never applied and
 # the name its clients dial did not resolve.
 - ../audit
+# The artifact gateway: deployment, service and its own identity. Listed here
+# rather than left for the operator, because the audit Service spent a slice
+# written-but-never-applied for exactly this reason.
+- ../gateway
 # [CERTMANAGER] To enable cert-manager, uncomment all sections with 'CERTMANAGER'. 'WEBHOOK' components are required.
 #- ../certmanager
 # [PROMETHEUS] To enable prometheus monitor, uncomment all sections with 'PROMETHEUS'.

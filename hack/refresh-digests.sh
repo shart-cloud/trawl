@@ -3,7 +3,7 @@
 # one commit.
 #
 # Manifests pin digests rather than tags, so deploying a new commit means
-# rewriting eight references across two files. Done by hand that is a step
+# rewriting nine references across three files. Done by hand that is a step
 # somebody forgets, and forgetting it is silent: the apply succeeds and the
 # cluster keeps running the previous build. Doing it here also makes the
 # refresh reproducible from the tree, which an editor session is not.
@@ -31,6 +31,7 @@ declare -A TARGET=(
   [capture-reporter]="config/dev/trawl-config.yaml:captureReporter"
   [controller-manager]="config/manager/manager.yaml:image"
   [event-worker]="config/manager/event-worker.yaml:image"
+  [artifact-gateway]="config/gateway/deployment.yaml:image"
 )
 
 # Resolve everything first. A partial rewrite leaves the tree describing a
