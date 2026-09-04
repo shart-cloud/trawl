@@ -98,7 +98,8 @@ type Fields struct {
 	PacketCount *int64                          `json:"packetCount,omitempty"`
 	SizeBytes   *int64                          `json:"sizeBytes,omitempty"`
 
-	// result
+	// result (PacketCount is filled here too: it is only known once the
+	// finished file has been walked, which happens after the ended record)
 	Outcome  trawlv1alpha1.RunnerOutcome `json:"outcome,omitempty"`
 	Reason   trawlv1alpha1.FailureReason `json:"reason,omitempty"`
 	SHA256   string                      `json:"sha256,omitempty"`

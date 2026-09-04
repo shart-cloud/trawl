@@ -35,6 +35,9 @@ jobs:
       suricata_sha256: ${{ steps.locks.outputs.suricata_sha256 }}
       base_image: ${{ steps.locks.outputs.base_image }}
       rust_builder_image: ${{ steps.locks.outputs.rust_builder_image }}
+      wireshark_version: ${{ steps.locks.outputs.wireshark_version }}
+      wireshark_common_sha256: ${{ steps.locks.outputs.wireshark_common_sha256 }}
+      libwsutil14_sha256: ${{ steps.locks.outputs.libwsutil14_sha256 }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -87,6 +90,22 @@ jobs:
           rust_digest="$(awk '/^builder_image:/{f=1} f&&/^  digest:/{print $2; exit}' images/suricata/SOURCES.lock)"
           echo "rust_builder_image=${rust_ref%:*}@${rust_digest}" >> "$GITHUB_OUTPUT"
 
+          # The capture runner's dumpcap comes from pinned Debian packages.
+          lock=images/capture-runner/SOURCES.lock
+          ws_version="$(awk '/^wireshark:/{f=1} f&&/^  version:/{print $2; exit}' "$lock")"
+          ws_common="$(awk '/^    wireshark-common:/{f=1} f&&/^      sha256:/{print $2; exit}' "$lock")"
+          ws_util="$(awk '/^    libwsutil14:/{f=1} f&&/^      sha256:/{print $2; exit}' "$lock")"
+          for pair in "wireshark_version:$ws_version" "wireshark-common:$ws_common" "libwsutil14:$ws_util"; do
+            name="${pair%%:*}"; value="${pair#*:}"
+            if [ -z "$value" ]; then
+              echo "::error::${name} is empty in ${lock}; the build fails closed rather than fetching an unverified package"
+              exit 1
+            fi
+          done
+          echo "wireshark_version=${ws_version}" >> "$GITHUB_OUTPUT"
+          echo "wireshark_common_sha256=${ws_common}" >> "$GITHUB_OUTPUT"
+          echo "libwsutil14_sha256=${ws_util}" >> "$GITHUB_OUTPUT"
+
   # The Go service binaries. They come from the shared Dockerfile and differ
   # only by which cmd/ package is built, so they fan out.
   binaries:
@@ -99,7 +118,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        binary: [controller-manager, sensor-agent, event-worker, capture-runner]
+        binary: [controller-manager, sensor-agent, event-worker, capture-reporter]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -174,6 +193,54 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/content-init:${{ needs.meta.outputs.version }}
             ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/content-init:${{ needs.meta.outputs.commit }}
 
+  # The capture runner needs dumpcap beside the Go binary, so like content-init
+  # it takes the binary from the shared builder stage and finishes in its own
+  # Containerfile.
+  capture-runner-image:
+    name: capture-runner
+    runs-on: ubuntu-latest
+    needs: meta
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract the capture runner binary
+        run: |
+          set -euo pipefail
+          docker build --build-arg BINARY=capture-runner \
+            --build-arg VERSION="${{ needs.meta.outputs.version }}" \
+            --build-arg COMMIT="${{ needs.meta.outputs.commit }}" \
+            --target builder -t trawl-capture-builder .
+          container="$(docker create trawl-capture-builder)"
+          docker cp "${container}:/workspace/trawl-binary" images/capture-runner/trawl-capture-runner
+          docker rm "${container}"
+
+      - uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: images/capture-runner
+          file: images/capture-runner/Containerfile
+          push: true
+          build-args: |
+            BASE_IMAGE=${{ needs.meta.outputs.base_image }}
+            WIRESHARK_VERSION=${{ needs.meta.outputs.wireshark_version }}
+            WIRESHARK_COMMON_SHA256=${{ needs.meta.outputs.wireshark_common_sha256 }}
+            LIBWSUTIL14_SHA256=${{ needs.meta.outputs.libwsutil14_sha256 }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/capture-runner:${{ needs.meta.outputs.version }}
+            ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/capture-runner:${{ needs.meta.outputs.commit }}
+
   # Zeek and Suricata are compiled from verified upstream source, so these are
   # the slow jobs. They are separated from the binaries so a Go change does not
   # wait forty minutes on an analyzer that did not change.
@@ -239,8 +306,8 @@ jobs:
   digests:
     name: Record image digests
     runs-on: ubuntu-latest
-    needs: [meta, binaries, content-init-image, analyzers]
-    if: always() && needs.binaries.result == 'success'
+    needs: [meta, binaries, content-init-image, capture-runner-image, analyzers]
+    if: always() && needs.binaries.result == 'success' && needs.capture-runner-image.result == 'success'
     permissions:
       contents: read
       packages: read
@@ -257,7 +324,7 @@ jobs:
           version="${{ needs.meta.outputs.version }}"
           : > digests.txt
           for image in controller-manager sensor-agent event-worker capture-runner \
-                       content-init zeek suricata; do
+                       capture-reporter content-init zeek suricata; do
             ref="${REGISTRY}/${NAMESPACE}/${image}:${version}"
             if digest="$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"')"; then
               echo "${image}=${REGISTRY}/${NAMESPACE}/${image}@${digest}" | tee -a digests.txt

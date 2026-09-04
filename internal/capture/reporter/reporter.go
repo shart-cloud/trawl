@@ -127,7 +127,8 @@ func failed(p *Patch, generation int64, at metav1.Time) {
 }
 
 // result assembles the RunnerResult from the result record, borrowing the
-// counters from the ended record, which is where the runner puts them.
+// stop reason and size from the ended record, which is where the runner puts
+// them. The packet count is on the result record when the walk succeeded.
 func result(res, ended *capture.Record) *trawlv1alpha1.RunnerResult {
 	out := &trawlv1alpha1.RunnerResult{
 		Outcome: res.Fields.Outcome,
@@ -142,6 +143,9 @@ func result(res, ended *capture.Record) *trawlv1alpha1.RunnerResult {
 		out.StopReason = ended.Fields.StopReason
 		out.PacketCount = copyInt64(ended.Fields.PacketCount)
 		out.SizeBytes = copyInt64(ended.Fields.SizeBytes)
+	}
+	if res.Fields.PacketCount != nil {
+		out.PacketCount = copyInt64(res.Fields.PacketCount)
 	}
 	return out
 }

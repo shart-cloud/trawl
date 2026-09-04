@@ -121,9 +121,16 @@ func (r *Runner) Run(ctx context.Context) Result {
 	r.applyDefaults()
 	res := r.run(ctx)
 	code := res.ExitCode
-	if err := r.Records.Write(RecordResult, Fields{
+	fields := Fields{
 		Outcome: res.Outcome, Reason: res.Reason, SHA256: res.SHA256, ExitCode: &code, Message: res.Message,
-	}); err != nil {
+	}
+	if res.Outcome == trawlv1alpha1.RunnerOutcomeSucceeded {
+		// The packet count comes from the pcapng walk, which happens after the
+		// ended record is written, so it rides on the result.
+		packets := res.PacketCount
+		fields.PacketCount = &packets
+	}
+	if err := r.Records.Write(RecordResult, fields); err != nil {
 		r.Logf("result record not written: %v", sanitize.Error(err))
 	}
 	return res
@@ -452,6 +459,12 @@ type ring struct {
 
 func newRing(size int) *ring { return &ring{size: size} }
 
+func (r *ring) bytes() []byte {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]byte(nil), r.buf...)
+}
+
 func (r *ring) Write(p []byte) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -478,4 +491,27 @@ func (r *ring) tail() string {
 		b = b[len(b)-stderrTailBytes:]
 	}
 	return sanitize.String(string(b))
+}
+
+// DumpcapVersion runs `dumpcap --version` and returns the version token from
+// its first line ("Dumpcap (Wireshark) 4.0.17 ..." → "4.0.17"), bounded and
+// sanitized. It is recorded in the manifest for provenance and nothing
+// depends on it.
+func DumpcapVersion(ctx context.Context, path string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, DefaultDryRunTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, path, "--version") //nolint:gosec // Fixed executable from configuration.
+	out := newRing(4096)
+	cmd.Stdout = out
+	cmd.Stderr = io.Discard
+	if err := cmd.Run(); err != nil {
+		return "", sanitize.Errorf("dumpcap --version: %v", err)
+	}
+	line, _, _ := bytes.Cut(out.bytes(), []byte("\n"))
+	for f := range bytes.FieldsSeq(line) {
+		if len(f) > 0 && f[0] >= '0' && f[0] <= '9' {
+			return sanitize.String(string(f)), nil
+		}
+	}
+	return "", errors.New("dumpcap --version printed no version")
 }

@@ -61,10 +61,11 @@ func fixtures() map[string]capture.Record {
 		"filter":  rec(capture.RecordFilter, t0, capture.Fields{Interface: "eno1"}),
 		"started": rec(capture.RecordStarted, t1, capture.Fields{StartedAt: ptr(t1)}),
 		"ended": rec(capture.RecordEnded, t2, capture.Fields{
-			EndedAt: ptr(t2), StopReason: trawlv1alpha1.CaptureStopDuration, PacketCount: ptr[int64](42), SizeBytes: ptr[int64](8192),
+			EndedAt: ptr(t2), StopReason: trawlv1alpha1.CaptureStopDuration, SizeBytes: ptr[int64](8192),
 		}),
 		"ok": rec(capture.RecordResult, t3, capture.Fields{
 			Outcome: trawlv1alpha1.RunnerOutcomeSucceeded, SHA256: strings.Repeat("ab", 32), ExitCode: ptr[int32](0),
+			PacketCount: ptr[int64](42),
 		}),
 		"badFilter": rec(capture.RecordResult, t1, capture.Fields{
 			Outcome: trawlv1alpha1.RunnerOutcomeFailed, Reason: trawlv1alpha1.FailureInvalidFilter,

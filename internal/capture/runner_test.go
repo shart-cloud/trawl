@@ -73,6 +73,10 @@ func TestHelperProcess(t *testing.T) {
 			}
 		}
 	}
+	if len(args) == 1 && args[0] == "--version" {
+		_, _ = fmt.Fprintln(os.Stdout, "Dumpcap (Wireshark) 4.0.17 (Git v4.0.17 packaged as 4.0.17-0+deb12u3)\n\nCopyright 1998-2024")
+		os.Exit(0)
+	}
 	if dryRun {
 		if mode == "badfilter" {
 			_, _ = fmt.Fprintln(os.Stderr, "dumpcap: syntax error in filter expression "+plantedSecret)
@@ -223,6 +227,11 @@ func TestRunnerCapturesAndUploads(t *testing.T) {
 	want := []RecordKind{RecordFilter, RecordStarted, RecordEnded, RecordResult}
 	if got := recordKinds(t, r); strings.Join(kindStrings(got), ",") != strings.Join(kindStrings(want), ",") {
 		t.Errorf("records %v, want %v", got, want)
+	}
+	recs, _ := ReadRecords(r.Records.Dir, r.CaptureJobUID)
+	last := recs[len(recs)-1]
+	if last.Kind != RecordResult || last.Fields.PacketCount == nil || *last.Fields.PacketCount != 3 {
+		t.Errorf("result record does not carry the packet count: %+v", last.Fields)
 	}
 	if _, err := os.Stat(filepath.Join(r.WorkDir, WorkFileName)); !os.IsNotExist(err) {
 		t.Errorf("work file still present after upload: %v", err)
@@ -383,4 +392,21 @@ func kindStrings(ks []RecordKind) []string {
 		out[i] = string(k)
 	}
 	return out
+}
+
+func TestDumpcapVersionParsesTheBanner(t *testing.T) {
+	cmd := fakeDumpcap(t, "ok")
+	// The helper takes the leading -test.run args through DumpcapCommand;
+	// DumpcapVersion takes a single path, so wrap it in a script.
+	script := filepath.Join(t.TempDir(), "dumpcap")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nexec "+strings.Join(cmd, " ")+" \"$@\"\n"), 0o700); err != nil { //nolint:gosec // Test script.
+		t.Fatal(err)
+	}
+	v, err := DumpcapVersion(context.Background(), script)
+	if err != nil || v != "4.0.17" {
+		t.Fatalf("version=%q err=%v", v, err)
+	}
+	if _, err := DumpcapVersion(context.Background(), filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Error("missing executable reported a version")
+	}
 }
