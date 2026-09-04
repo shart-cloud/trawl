@@ -35,7 +35,7 @@ spec:
       type: integer
     - jsonPath: .status.retentionDeadline
       name: Expires
-      type: date
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date

@@ -363,6 +363,13 @@ diverge.
   but a server that cannot report that it is listening, or why it refused
   something, is hard to operate; the vacuous grep is a side effect of that
   rather than a finding about presigned URLs. Worth a decision in Slice C.
+- The acceptance also showed `kubectl get capturejobs` printing `EXPIRES` as
+  `<invalid>`. A `type=date` print column renders the time elapsed since its
+  value, which is what makes `Age` readable, but `status.retentionDeadline` is
+  in the future for every capture that has not already been deleted, so the
+  column was `<invalid>` for the whole life of the object. It is now
+  `type=string` and prints the timestamp. `NetworkTap`'s `Last Packet` is
+  genuinely a past time and stays a date.
 - Not in tasks.md: `.gitignore` gained the two artifacts §6 has the operator
   create - `*.pcapng` and `test/e2e/certs/` - because neither was ignored and
   captured traffic and credentials are never committed. It also gained

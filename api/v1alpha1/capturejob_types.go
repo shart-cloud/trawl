@@ -501,7 +501,12 @@ type CaptureJobStatus struct {
 // +kubebuilder:printcolumn:name="Node",type=string,JSONPath=`.spec.targetNode`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Size",type=integer,JSONPath=`.status.sizeBytes`
-// +kubebuilder:printcolumn:name="Expires",type=date,JSONPath=`.status.retentionDeadline`
+// Expires is a string, not a date. kubectl renders a date column as the time
+// elapsed since the value, which is what makes Age readable; a retention
+// deadline is in the future for every capture that has not already been
+// deleted, so the same treatment renders "<invalid>" for the entire life of
+// the object. Printing the timestamp is less pretty and always correct.
+// +kubebuilder:printcolumn:name="Expires",type=string,JSONPath=`.status.retentionDeadline`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // CaptureJob requests one bounded packet capture and records its evidence.
