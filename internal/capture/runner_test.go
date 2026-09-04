@@ -78,9 +78,21 @@ func TestHelperProcess(t *testing.T) {
 		os.Exit(0)
 	}
 	if dryRun {
-		if mode == "badfilter" {
-			_, _ = fmt.Fprintln(os.Stderr, "dumpcap: syntax error in filter expression "+plantedSecret)
-			os.Exit(1)
+		// dumpcap -d exits 0 whatever it thinks of the filter or the
+		// interface, and says what went wrong on stderr while writing no
+		// program to stdout. Measured against the pinned 4.0.17; a fake that
+		// exits non-zero here tests a dumpcap that does not exist.
+		switch mode {
+		case "badfilter":
+			_, _ = fmt.Fprintf(os.Stderr,
+				"Capturing on 'lo'\ndumpcap: Invalid capture filter \"%s\" for interface 'lo'.\n\n"+
+					"That string isn't a valid capture filter (can't parse filter expression: syntax error).\n"+
+					"See the User's Guide for a description of the capture filter syntax.\n", plantedSecret)
+			os.Exit(0)
+		case "dryrunnodevice":
+			_, _ = fmt.Fprintln(os.Stderr,
+				"Capturing on 'lo'\ndumpcap: There is no device named \"lo\". "+plantedSecret+"\n(No such device exists)")
+			os.Exit(0)
 		}
 		_, _ = fmt.Fprintln(os.Stdout, "(000) ret #262144")
 		os.Exit(0)
@@ -269,6 +281,38 @@ func TestRunnerRejectsBadFilterBeforeCapturing(t *testing.T) {
 	}
 	if res.Message == "" {
 		t.Error("message empty")
+	}
+	assertNoSecret(t, r, res)
+}
+
+// The dry run's verdict is the presence of a compiled program on stdout, not
+// the exit status, which dumpcap sets to 0 either way. Reading the status was
+// how an uncompilable filter reached the capture and failed there instead,
+// with FilterValid=True already asserted against it.
+func TestRunnerRejectsBadFilterDespiteZeroExit(t *testing.T) {
+	r, _ := runnerFor(t, "badfilter")
+	res := r.Run(context.Background())
+	if res.ExitCode != ExitInvalidFilter || res.Reason != trawlv1alpha1.FailureInvalidFilter {
+		t.Fatalf("result %+v, want InvalidFilter", res)
+	}
+	// The line naming the filter is the one worth carrying; a plain tail of
+	// dumpcap's output keeps only the general advice that follows it.
+	if !strings.Contains(res.Message, "Invalid capture filter") {
+		t.Errorf("message %q does not carry dumpcap's diagnosis", res.Message)
+	}
+}
+
+// A dry run that fails without dumpcap blaming the filter is the interface.
+// Blaming the filter by default sent the requester to rewrite a filter that
+// was never the problem.
+func TestRunnerBlamesInterfaceWhenDumpcapDoesNotBlameFilter(t *testing.T) {
+	r, _ := runnerFor(t, "dryrunnodevice")
+	res := r.Run(context.Background())
+	if res.ExitCode != ExitInterfaceUnavailable || res.Reason != trawlv1alpha1.FailureInterfaceUnavailable {
+		t.Fatalf("result %+v, want InterfaceUnavailable", res)
+	}
+	if got := recordKinds(t, r); len(got) != 1 || got[0] != RecordResult {
+		t.Errorf("records %v, want only result", got)
 	}
 	assertNoSecret(t, r, res)
 }

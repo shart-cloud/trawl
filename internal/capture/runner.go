@@ -57,6 +57,15 @@ const (
 	stderrRingBytes = 64 << 10
 	// stderrTailBytes is the most of that output a message may carry.
 	stderrTailBytes = 200
+	// bpfProgramRingBytes bounds the dry run's stdout. Nothing reads the
+	// program itself; only whether dumpcap emitted one at all.
+	bpfProgramRingBytes = 4 << 10
+
+	// invalidFilterMarker is how dumpcap names a filter it rejected. The .deb
+	// is pinned by checksum in images/capture-runner/SOURCES.lock, so the
+	// wording is fixed for the image this runs inside; a dry run that fails
+	// without it is classified as the interface either way.
+	invalidFilterMarker = "Invalid capture filter"
 
 	filePollInterval = 100 * time.Millisecond
 )
@@ -184,28 +193,43 @@ func (r *Runner) run(ctx context.Context) Result {
 	return r.capture(ctx, bounds)
 }
 
-// dryRun asks dumpcap to compile the filter. dumpcap -d opens the interface
-// to learn its link type, so a failure here is the filter when one was
-// given and the interface otherwise.
+// dryRun asks dumpcap to compile the filter against the live interface and
+// print the generated BPF program.
+//
+// The exit status cannot be read here: dumpcap -d exits 0 whether it accepted
+// the filter, rejected it, or could not find the interface at all (measured
+// against the pinned 4.0.17, which is the only build this runs against). What
+// separates acceptance from rejection is stdout. dumpcap prints a program for
+// every filter it accepts -- including the accept-all program for the empty
+// filter -- and prints nothing for one it rejects, so the presence of a
+// program is the signal, and it does not depend on any message wording.
 func (r *Runner) dryRun(ctx context.Context) (Result, bool) {
 	ctx, cancel := context.WithTimeout(ctx, r.DryRunTimeout)
 	defer cancel()
 	args := append(append([]string{}, r.DumpcapCommand[1:]...), DryRunArgs(r.Interface, r.Spec.Filter)...)
 	cmd := exec.CommandContext(ctx, r.DumpcapCommand[0], args...) //nolint:gosec // Fixed executable, arguments built here.
+	program := newRing(bpfProgramRingBytes)
 	ring := newRing(stderrRingBytes)
-	cmd.Stdout = io.Discard
+	cmd.Stdout = program
 	cmd.Stderr = ring
-	if err := cmd.Run(); err != nil {
-		r.Logf("filter dry run failed: exit=%s stderr=%s", exitStatus(err), ring.hash())
-		reason := trawlv1alpha1.FailureInvalidFilter
-		msg := "the filter did not compile against the interface"
-		if r.Spec.Filter == "" {
-			reason = trawlv1alpha1.FailureInterfaceUnavailable
-			msg = "dumpcap could not open the interface"
-		}
-		return failure(reason, "", msg+": "+ring.tail()), false
+	err := cmd.Run()
+	if err == nil && !program.empty() {
+		return Result{}, true
 	}
-	return Result{}, true
+
+	// Only dumpcap can say the filter was at fault, and it says so in as many
+	// words. Everything else that ends a dry run -- a device that cannot be
+	// opened, the timeout, a signal -- is the interface. Reading it the other
+	// way round reports an unusable interface as a bad filter and sends the
+	// requester to rewrite a filter that was always fine.
+	reason := trawlv1alpha1.FailureInterfaceUnavailable
+	msg := "dumpcap could not open the interface"
+	if bytes.Contains(ring.bytes(), []byte(invalidFilterMarker)) {
+		reason = trawlv1alpha1.FailureInvalidFilter
+		msg = "the filter did not compile against the interface"
+	}
+	r.Logf("filter dry run failed: reason=%s exit=%s stderr=%s", reason, exitStatus(err), ring.hash())
+	return failure(reason, "", msg+": "+ring.excerptAt(invalidFilterMarker)), false
 }
 
 func (r *Runner) capture(ctx context.Context, bounds Bounds) Result {
@@ -480,6 +504,30 @@ func (r *ring) hash() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return sanitize.DiagnosticHash(string(r.buf))
+}
+
+// empty reports whether nothing was ever written.
+func (r *ring) empty() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.buf) == 0
+}
+
+// excerptAt is tail, except that it starts at marker when the output contains
+// it. dumpcap puts the line that names the problem first and three lines of
+// general filter advice after it, so a plain tail keeps the advice and drops
+// the diagnosis.
+func (r *ring) excerptAt(marker string) string {
+	b := r.bytes()
+	i := bytes.Index(b, []byte(marker))
+	if i < 0 {
+		return r.tail()
+	}
+	b = bytes.TrimSpace(b[i:])
+	if len(b) > stderrTailBytes {
+		b = b[:stderrTailBytes]
+	}
+	return sanitize.String(string(b))
 }
 
 // tail is a short, sanitized end of the output for a message.
