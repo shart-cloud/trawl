@@ -109,7 +109,7 @@ Everything after "--" belongs to the token command, so it goes last: flag
 parsing stops there, and a flag written after it is not a flag.
 
 The artifact is verified against the checksum the gateway reports and written
-only if it matches. An existing --output file is never overwritten.
+only if it matches. An existing --output file is refused, not overwritten.
 `)
 }
 
@@ -352,6 +352,13 @@ func writeArtifact(ctx context.Context, client *gateway.Client, token string, op
 	//nolint:gosec // part is derived from --output, an operator-supplied flag on this process's own command line
 	f, err := os.OpenFile(part, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			// Named rather than dressed up as a transient failure. Nothing
+			// about this changes on a retry: either another download is
+			// running, or one was killed and left this behind.
+			return 0, fmt.Errorf("%s already exists; another download is running, "+
+				"or one was interrupted - remove it if not", part)
+		}
 		return 0, sanitize.Errorf("creating %s: %v", part, err)
 	}
 	// Removed on every path that does not reach the rename, including a panic:
@@ -377,23 +384,49 @@ func writeArtifact(ctx context.Context, client *gateway.Client, token string, op
 	// os.Link rather than os.Rename: the check that --output does not exist
 	// happened before the download, and a gibibyte holds that window open for
 	// minutes. Link fails if the name has been taken since, where Rename would
-	// silently replace whatever is there. Rename remains the fallback for a
-	// filesystem that cannot hard-link, where the window is the best available.
-	if err := os.Link(part, opts.output); err != nil {
-		if errors.Is(err, os.ErrExist) {
-			return written, fmt.Errorf("%s was created while the download ran; %s holds the artifact", opts.output, part)
-		}
+	// silently replace whatever is there.
+	err = os.Link(part, opts.output)
+	switch {
+	case err == nil:
+	case errors.Is(err, os.ErrExist):
+		// Kept, not cleaned up. It is the verified artifact, and it cost a
+		// token, a presigned URL, and a download record in the ledger; making
+		// the operator pay for those again to resolve a name collision would
+		// be worse than leaving a file behind.
+		committed = true
+		return written, fmt.Errorf("%s was created while the download ran; the artifact is in %s", opts.output, part)
+	case linkUnsupported(err):
+		// A filesystem with no hard links - removable media, most likely.
+		// Rename reopens the window this branch exists to close, and it is
+		// still better than refusing to place a downloaded artifact at all.
 		if err := os.Rename(part, opts.output); err != nil {
 			return written, sanitize.Errorf("renaming %s: %v", part, err)
 		}
 		committed = true
 		return written, nil
+	default:
+		return written, sanitize.Errorf("linking %s to %s: %v", part, opts.output, err)
 	}
-	if err := os.Remove(part); err != nil {
-		return written, sanitize.Errorf("removing %s: %v", part, err)
-	}
+
+	// The artifact is in place under both names from here, so nothing below
+	// may report a failure: a caller told the download failed would retry it,
+	// and the retry would refuse because --output now exists. The stray .part
+	// is untidy and nothing more.
+	//
+	// No test covers this line. Removing a file the process just created in a
+	// directory it just wrote to does not fail on demand, and a fixture that
+	// forced it - a read-only directory - would fail the link above instead.
 	committed = true
+	_ = os.Remove(part)
 	return written, nil
+}
+
+// linkUnsupported reports whether err means this filesystem has no hard links,
+// as opposed to the link having failed for a reason worth reporting.
+func linkUnsupported(err error) bool {
+	return errors.Is(err, syscall.ENOSYS) ||
+		errors.Is(err, syscall.EPERM) ||
+		errors.Is(err, syscall.EOPNOTSUPP)
 }
 
 // describe renders an error for an operator.

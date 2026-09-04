@@ -97,19 +97,24 @@ func newFakeGateway(t *testing.T) *fakeGateway {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc(gateway.DownloadPath, func(w http.ResponseWriter, r *http.Request) {
+		// Every field of the fixture is read under the mutex, including the
+		// ones a test sets before the first request: the fixture is shared
+		// across two goroutines, and which half of it happens to be safe today
+		// is not a rule anyone can follow.
 		g.mu.Lock()
 		g.seenAuthorization = r.Header.Get("Authorization")
+		status, body, override := g.status, g.body, g.checksum
 		g.mu.Unlock()
 
 		w.Header().Set("X-Request-ID", "req-42")
-		if g.status != 0 {
+		if status != 0 {
 			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(g.status)
-			_ = json.NewEncoder(w).Encode(g.body)
+			w.WriteHeader(status)
+			_ = json.NewEncoder(w).Encode(body)
 			return
 		}
 		sum := sha256.Sum256([]byte(artifactBody))
-		checksum := g.checksum
+		checksum := override
 		if checksum == "" {
 			checksum = hex.EncodeToString(sum[:])
 		}
@@ -167,7 +172,8 @@ func downloadArgs(g *fakeGateway, ca, output string) []string {
 
 func TestDownloadWritesTheVerifiedArtifact(t *testing.T) {
 	g := newFakeGateway(t)
-	output := filepath.Join(t.TempDir(), testJobName+".pcapng")
+	dir := t.TempDir()
+	output := filepath.Join(dir, testJobName+".pcapng")
 
 	got := runCLI(t, analystToken+"\n", append(downloadArgs(g, caFile(t, g), output), "--token-stdin")...)
 	if got.code != 0 {
@@ -180,6 +186,11 @@ func TestDownloadWritesTheVerifiedArtifact(t *testing.T) {
 	}
 	if string(written) != artifactBody {
 		t.Errorf("downloaded %q, want %q", written, artifactBody)
+	}
+	// The temporary name is cleaned up, so a later download to the same path
+	// is not blocked by this one's leftovers.
+	if left := namesIn(t, dir); !slices.Equal(left, []string{testJobName + ".pcapng"}) {
+		t.Errorf("the directory holds %v, want only the artifact", left)
 	}
 
 	g.mu.Lock()
@@ -513,6 +524,39 @@ func TestAFileAppearingDuringTheDownloadIsNotClobbered(t *testing.T) {
 	kept, err := os.ReadFile(output)
 	if err != nil || string(kept) != "someone else's capture" {
 		t.Errorf("output = %q (%v), want the competing file untouched", kept, err)
+	}
+
+	// The artifact cost a token, a presigned URL, and a download record in the
+	// ledger. A name collision is not a reason to make the operator spend all
+	// three again, so the .part stays - and the error has to say where it is.
+	part, err := os.ReadFile(output + ".part")
+	if err != nil || string(part) != artifactBody {
+		t.Errorf("the downloaded artifact = %q (%v), want it kept beside the collision", part, err)
+	}
+	if !strings.Contains(got.stderr, output+".part") {
+		t.Errorf("stderr does not say where the artifact is: %s", got.stderr)
+	}
+}
+
+// A .part left by a killed download blocks the path it names, and says so in
+// terms an operator can act on: nothing about it changes on a retry.
+func TestAStalePartFileIsReportedByName(t *testing.T) {
+	g := newFakeGateway(t)
+	output := filepath.Join(t.TempDir(), testJobName+".pcapng")
+	if err := os.WriteFile(output+".part", []byte("half a capture"), 0o600); err != nil {
+		t.Fatalf("seeding the stale file: %v", err)
+	}
+
+	got := runCLI(t, analystToken, append(downloadArgs(g, caFile(t, g), output), "--token-stdin")...)
+	if got.code == 0 {
+		t.Fatalf("exit = 0, want non-zero")
+	}
+	if !strings.Contains(got.stderr, "remove it if not") {
+		t.Errorf("stderr does not name the remedy: %s", got.stderr)
+	}
+	kept, err := os.ReadFile(output + ".part")
+	if err != nil || string(kept) != "half a capture" {
+		t.Errorf("the stale file = %q (%v), want it left alone", kept, err)
 	}
 }
 
