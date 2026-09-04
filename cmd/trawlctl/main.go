@@ -31,6 +31,7 @@ limitations under the License.
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -102,7 +103,10 @@ func usage(w io.Writer) {
 
 Usage:
   trawlctl capture download <name> --namespace <ns> --gateway <url> --ca <file>
-           (--token-stdin | --token-exec <command> [-- <args>...]) --output <file>
+           --output <file> (--token-stdin | --token-exec <command> [-- <args>...])
+
+Everything after "--" belongs to the token command, so it goes last: flag
+parsing stops there, and a flag written after it is not a flag.
 
 The artifact is verified against the checksum the gateway reports and written
 only if it matches. An existing --output file is never overwritten.
@@ -148,10 +152,14 @@ func download(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		return exitFailure
 	}
 
+	// Every way this fails is a fact about --gateway or --ca: a non-https URL,
+	// one that does not parse, a CA path that is not there, a file with no
+	// certificate in it. Reporting them as a failed download would have a
+	// supervising loop retry a typo forever.
 	client, err := gateway.NewClient(gateway.ClientOptions{BaseURL: opts.gateway, CAFile: opts.caFile})
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "trawlctl: %v\n", err)
-		return exitFailure
+		return exitUsage
 	}
 
 	written, err := writeArtifact(ctx, client, token, opts)
@@ -198,6 +206,11 @@ func parseDownload(args []string, stderr io.Writer) (downloadOptions, error) {
 	for _, required := range []struct {
 		flag, value string
 	}{
+		// The name is positional, but empty is empty: `download "$JOB"` with
+		// JOB unset does not start with a dash, so nothing above rejects it,
+		// and url.JoinPath would drop the segment and send the token to a
+		// different route entirely.
+		{"<name>", opts.name},
 		{"--namespace", opts.namespace},
 		{"--gateway", opts.gateway},
 		{"--ca", opts.caFile},
@@ -260,16 +273,67 @@ func execToken(ctx context.Context, argv []string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Stdin = nil
 
-	out, err := cmd.Output()
+	// Bounded rather than exec.Cmd.Output's unbounded buffering. --token-exec
+	// pointed at the wrong program - `cat` on a capture file, say - would
+	// otherwise exhaust memory instead of reporting that what it read is not a
+	// token.
+	out := &boundedBuffer{limit: maxTokenBytes + 1, stopOnOverflow: true}
+	stderr := &boundedBuffer{limit: maxDiagnosticBytes}
+	cmd.Stdout = out
+	cmd.Stderr = stderr
+
+	err := cmd.Run()
+
+	// Checked before the exit status, because overflowing is how the command
+	// died: the pipe is closed on it as soon as it writes past the bound, and
+	// "broken pipe" is not the thing the operator needs to be told.
+	if out.overflowed {
+		return nil, fmt.Errorf("the token command printed more than %d bytes; "+
+			"that is not a service account token", maxTokenBytes)
+	}
 	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
-			return nil, sanitize.Errorf("the token command failed: %v: %s",
-				err, exitErr.Stderr)
+		if diagnostic := strings.TrimSpace(stderr.buf.String()); diagnostic != "" {
+			return nil, sanitize.Errorf("the token command failed: %v: %s", err, diagnostic)
 		}
 		return nil, sanitize.Errorf("the token command failed: %v", err)
 	}
-	return out, nil
+	return out.buf.Bytes(), nil
+}
+
+// maxDiagnosticBytes bounds what a failing token command's standard error can
+// contribute to an error message. It is only ever quoted back to the operator,
+// through sanitize, which bounds it again.
+const maxDiagnosticBytes = 4 << 10
+
+// boundedBuffer collects up to limit bytes and discards the rest.
+//
+// Discards rather than errors: a short write would kill the token command with
+// a broken pipe, and "the helper died" is a worse diagnostic than "what the
+// helper printed is too long to be a token".
+// stopOnOverflow makes a write past the bound fail, which closes the pipe on
+// the command. That is what stops a helper producing an endless stream - `yes`,
+// or a program that is not a credential helper at all - from being read
+// forever.
+type boundedBuffer struct {
+	buf            bytes.Buffer
+	limit          int
+	stopOnOverflow bool
+	overflowed     bool
+}
+
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	room := b.limit - b.buf.Len()
+	if room >= len(p) {
+		return b.buf.Write(p)
+	}
+	b.overflowed = true
+	if room > 0 {
+		b.buf.Write(p[:room])
+	}
+	if b.stopOnOverflow {
+		return len(p), io.ErrShortWrite
+	}
+	return len(p), nil
 }
 
 // writeArtifact downloads into a temporary name beside the output and renames
@@ -310,8 +374,23 @@ func writeArtifact(ctx context.Context, client *gateway.Client, token string, op
 	if err := f.Close(); err != nil {
 		return written, sanitize.Errorf("closing %s: %v", part, err)
 	}
-	if err := os.Rename(part, opts.output); err != nil {
-		return written, sanitize.Errorf("renaming %s: %v", part, err)
+	// os.Link rather than os.Rename: the check that --output does not exist
+	// happened before the download, and a gibibyte holds that window open for
+	// minutes. Link fails if the name has been taken since, where Rename would
+	// silently replace whatever is there. Rename remains the fallback for a
+	// filesystem that cannot hard-link, where the window is the best available.
+	if err := os.Link(part, opts.output); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return written, fmt.Errorf("%s was created while the download ran; %s holds the artifact", opts.output, part)
+		}
+		if err := os.Rename(part, opts.output); err != nil {
+			return written, sanitize.Errorf("renaming %s: %v", part, err)
+		}
+		committed = true
+		return written, nil
+	}
+	if err := os.Remove(part); err != nil {
+		return written, sanitize.Errorf("removing %s: %v", part, err)
 	}
 	committed = true
 	return written, nil

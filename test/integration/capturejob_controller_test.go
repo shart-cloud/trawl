@@ -157,7 +157,9 @@ func captureConfig(namespace string) *config.Config {
 
 // captureReconcilerWith builds the reconciler over a caller-chosen store, so a
 // test can supply MinIO where the fake will not do.
-func captureReconcilerWith(t *testing.T, namespace string, store storage.Store, audit audit.Committer) *controller.CaptureJobReconciler {
+func captureReconcilerWith(
+	t *testing.T, namespace string, store storage.Store, ledger audit.Committer,
+) *controller.CaptureJobReconciler {
 	t.Helper()
 	cfg := captureConfig(namespace)
 	return &controller.CaptureJobReconciler{
@@ -166,7 +168,7 @@ func captureReconcilerWith(t *testing.T, namespace string, store storage.Store, 
 		Config:   cfg,
 		Renderer: &controller.CaptureRenderer{Config: cfg},
 		Store:    store,
-		Audit:    audit,
+		Audit:    ledger,
 		Metrics:  telemetry.NewMetrics(),
 	}
 }

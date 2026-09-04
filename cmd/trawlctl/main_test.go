@@ -69,6 +69,10 @@ type fakeGateway struct {
 	}
 	// checksum overrides the reported SHA-256; empty means the real one.
 	checksum string
+
+	// duringTransfer, when set, runs with half the artifact delivered and the
+	// rest still to come.
+	duringTransfer func()
 }
 
 func newFakeGateway(t *testing.T) *fakeGateway {
@@ -77,7 +81,17 @@ func newFakeGateway(t *testing.T) *fakeGateway {
 
 	objects := http.NewServeMux()
 	objects.HandleFunc("GET /objects/capture.pcapng", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(artifactBody))
+		g.mu.Lock()
+		hook := g.duringTransfer
+		g.mu.Unlock()
+		if hook == nil {
+			_, _ = w.Write([]byte(artifactBody))
+			return
+		}
+		_, _ = w.Write([]byte(artifactBody[:10]))
+		w.(http.Flusher).Flush()
+		hook()
+		_, _ = w.Write([]byte(artifactBody[10:]))
 	})
 	g.objects = httptest.NewServer(objects)
 
@@ -191,18 +205,19 @@ func TestTheFinalNameNeverHoldsUnverifiedBytes(t *testing.T) {
 
 	g := newFakeGateway(t)
 	var duringTransfer []string
-	g.objects.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(artifactBody[:10]))
-		w.(http.Flusher).Flush()
+	g.duringTransfer = func() {
+		g.mu.Lock()
+		defer g.mu.Unlock()
 		duringTransfer = namesIn(t, dir)
-		_, _ = w.Write([]byte(artifactBody[10:]))
-	})
+	}
 
 	got := runCLI(t, analystToken, append(downloadArgs(g, caFile(t, g), output), "--token-stdin")...)
 	if got.code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr: %s", got.code, got.stderr)
 	}
-	want := []string{"manual-tls.pcapng.part"}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	want := []string{testJobName + ".pcapng.part"}
 	if !slices.Equal(duringTransfer, want) {
 		t.Errorf("during the transfer the directory held %v, want %v", duringTransfer, want)
 	}
@@ -341,6 +356,11 @@ func TestAFailingTokenCommandIsAnError(t *testing.T) {
 	if got.code == 0 {
 		t.Fatalf("exit = 0, want non-zero")
 	}
+	// Readable, not a byte slice printed as decimal: this line is the only
+	// explanation the operator gets for why no download was attempted.
+	if !strings.Contains(got.stderr, "the token is expired") {
+		t.Errorf("stderr does not quote the token command: %s", got.stderr)
+	}
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -390,6 +410,7 @@ func TestUsageErrorsExitTwo(t *testing.T) {
 		"no arguments":      {},
 		"unknown command":   {captureCommand, "upload", testJobName},
 		"no name":           {captureCommand, downloadCommand, "--token-stdin"},
+		"empty name":        withName(full, ""),
 		"no token source":   downloadArgs(g, ca, output),
 		"two token sources": append(slices.Clone(full), "--token-exec", "/bin/true"),
 		"no namespace":      without(full, "--namespace"),
@@ -425,6 +446,106 @@ func TestHelpSucceedsOnStdout(t *testing.T) {
 				t.Errorf("stderr = %q, want nothing", got.stderr)
 			}
 		})
+	}
+}
+
+// withName replaces the positional CaptureJob name.
+func withName(args []string, name string) []string {
+	replaced := slices.Clone(args)
+	replaced[2] = name
+	return replaced
+}
+
+// A --gateway or --ca the client cannot be built from is a fact about the
+// command line, so it exits like one: a supervising loop that retried a typo'd
+// URL would retry it forever.
+func TestAnUnusableGatewayOrCAIsAUsageError(t *testing.T) {
+	g := newFakeGateway(t)
+	ca := caFile(t, g)
+	output := filepath.Join(t.TempDir(), testJobName+".pcapng")
+	full := append(downloadArgs(g, ca, output), "--token-stdin")
+
+	cases := map[string][]string{
+		"plaintext gateway": replace(full, "--gateway", "http://127.0.0.1:8443"),
+		"unparseable URL":   replace(full, "--gateway", "https://:::/"),
+		"missing CA file":   replace(full, "--ca", filepath.Join(t.TempDir(), "absent.crt")),
+		"CA without a certificate": replace(full, "--ca", func() string {
+			path := filepath.Join(t.TempDir(), "empty.crt")
+			if err := os.WriteFile(path, []byte("not a certificate\n"), 0o600); err != nil {
+				t.Fatalf("writing the CA: %v", err)
+			}
+			return path
+		}()),
+	}
+	for name, args := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := runCLI(t, analystToken, args...); got.code != 2 {
+				t.Errorf("exit = %d, want 2; stderr: %s", got.code, got.stderr)
+			}
+		})
+	}
+}
+
+// replace returns args with one flag's value changed.
+func replace(args []string, flag, value string) []string {
+	changed := slices.Clone(args)
+	changed[slices.Index(changed, flag)+1] = value
+	return changed
+}
+
+// The window between "--output does not exist" and the rename is minutes wide
+// for a gibibyte capture. Whatever appears in it stays.
+func TestAFileAppearingDuringTheDownloadIsNotClobbered(t *testing.T) {
+	dir := t.TempDir()
+	output := filepath.Join(dir, testJobName+".pcapng")
+
+	g := newFakeGateway(t)
+	g.duringTransfer = func() {
+		if err := os.WriteFile(output, []byte("someone else's capture"), 0o600); err != nil {
+			t.Errorf("writing the competing file: %v", err)
+		}
+	}
+
+	got := runCLI(t, analystToken, append(downloadArgs(g, caFile(t, g), output), "--token-stdin")...)
+	if got.code == 0 {
+		t.Errorf("exit = 0, want non-zero")
+	}
+	kept, err := os.ReadFile(output)
+	if err != nil || string(kept) != "someone else's capture" {
+		t.Errorf("output = %q (%v), want the competing file untouched", kept, err)
+	}
+}
+
+// --token-exec pointed at the wrong program must report that what it read is
+// not a token, not read it forever.
+//
+// The command here never stops, so an unbounded read never returns: if the
+// bound goes, this test does not fail with a wrong answer, it hangs until the
+// package times out. That is the honest shape of the failure - buffering
+// without a bound has no size at which it is wrong.
+func TestAnOversizedTokenIsRefusedWithoutBuffering(t *testing.T) {
+	g := newFakeGateway(t)
+	output := filepath.Join(t.TempDir(), testJobName+".pcapng")
+
+	script := filepath.Join(t.TempDir(), "flood")
+	body := "#!/bin/sh\nexec yes token-shaped-nonsense\n"
+	//nolint:gosec // a token command the CLI runs has to be executable
+	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+		t.Fatalf("writing the token command: %v", err)
+	}
+
+	got := runCLI(t, "", append(downloadArgs(g, caFile(t, g), output), "--token-exec", script)...)
+	if got.code == 0 {
+		t.Fatalf("exit = 0, want non-zero")
+	}
+	if !strings.Contains(got.stderr, "not a service account token") {
+		t.Errorf("stderr = %q, want it to say the token is too long", got.stderr)
+	}
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.seenAuthorization != "" {
+		t.Errorf("the gateway was called with %q despite an unusable token", g.seenAuthorization)
 	}
 }
 

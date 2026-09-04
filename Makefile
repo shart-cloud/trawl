@@ -98,7 +98,11 @@ test-integration: manifests generate fmt vet setup-envtest ## Run integration te
 
 .PHONY: test-race
 test-race: manifests generate fmt vet ## Run unit tests under the race detector.
-	go test -race ./internal/... ./api/...
+	# cmd/ is included: cmd/trawlctl's fixture serves an artifact from one
+	# goroutine while the test inspects the filesystem from another, and a
+	# package the race detector never sees is a package whose races surface as
+	# unexplained CI failures.
+	go test -race ./internal/... ./api/... ./cmd/...
 
 .PHONY: docker-build-content-init
 docker-build-content-init: ## Build the analyzer content-init image.
