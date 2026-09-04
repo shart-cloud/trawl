@@ -24,10 +24,10 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"sync"
 	"time"
 
 	"trawl.cloud/trawl/internal/sanitize"
+	"trawl.cloud/trawl/internal/tlsutil"
 )
 
 // shutdownGrace bounds the wait for in-flight commits when the listener is
@@ -86,7 +86,7 @@ func NewSinkServer(opts SinkServerOptions) (*SinkServer, error) {
 		return nil, errors.New("audit sink server requires at least one allowed client identity")
 	}
 
-	reloader, err := newCertReloader(opts.CertFile, opts.KeyFile)
+	reloader, err := tlsutil.NewCertReloader("audit sink", opts.CertFile, opts.KeyFile)
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +121,7 @@ func NewSinkServer(opts SinkServerOptions) (*SinkServer, error) {
 				// means an unauthenticated caller never reaches the decoder.
 				ClientAuth:     tls.RequireAndVerifyClientCert,
 				ClientCAs:      pool,
-				GetCertificate: reloader.get,
+				GetCertificate: reloader.GetCertificate,
 			},
 			ReadHeaderTimeout: clientTimeout,
 		},
@@ -161,62 +161,4 @@ func (s *SinkServer) Start(ctx context.Context) error {
 		}
 		return nil
 	}
-}
-
-// certReloader serves the current serving certificate from disk.
-//
-// cert-manager rewrites the mounted Secret when it renews, and a listener
-// holding the certificate it loaded at startup would keep presenting an
-// expired one until the pod happened to restart. Since every client fails
-// closed when the sink is unreachable, that is an outage of the write path
-// rather than a degraded feature, so the files are re-read when they change.
-type certReloader struct {
-	certFile string
-	keyFile  string
-
-	mu       sync.Mutex
-	cert     *tls.Certificate
-	loadedAt [2]time.Time
-}
-
-func newCertReloader(certFile, keyFile string) (*certReloader, error) {
-	r := &certReloader{certFile: certFile, keyFile: keyFile}
-	// Load once here so a missing or malformed certificate fails at startup
-	// rather than on the first commit somebody's mutation is waiting on.
-	if _, err := r.get(nil); err != nil {
-		return nil, err
-	}
-	return r, nil
-}
-
-func (r *certReloader) get(*tls.ClientHelloInfo) (*tls.Certificate, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	stamps := r.modTimes()
-	if r.cert != nil && stamps == r.loadedAt {
-		return r.cert, nil
-	}
-	cert, err := tls.LoadX509KeyPair(r.certFile, r.keyFile)
-	if err != nil {
-		if r.cert != nil {
-			// A renewal writes two files and is not atomic across them, so a
-			// handshake can land mid-rotation. The previous certificate is
-			// still valid for a while; using it beats refusing the commit.
-			return r.cert, nil
-		}
-		return nil, sanitize.Errorf("loading the audit sink certificate: %v", err)
-	}
-	r.cert, r.loadedAt = &cert, stamps
-	return r.cert, nil
-}
-
-func (r *certReloader) modTimes() [2]time.Time {
-	var out [2]time.Time
-	for i, name := range []string{r.certFile, r.keyFile} {
-		if fi, err := os.Stat(name); err == nil {
-			out[i] = fi.ModTime()
-		}
-	}
-	return out
 }
