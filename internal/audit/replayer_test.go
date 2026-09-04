@@ -178,17 +178,15 @@ func TestReplayerPersistsItsCursorAndResumesFromIt(t *testing.T) {
 	}
 
 	got := lines(t, &second)
-	// The cursor record is re-delivered: Replay is inclusive of its cursor, and
-	// a duplicate collapses by stable key while a skip is invisible forever.
-	want := []string{keys[len(keys)-1], res.LedgerKey}
-	if len(got) != len(want) {
-		t.Fatalf("second pass forwarded %d records, want %d (the cursor record and the new one)",
-			len(got), len(want))
+	// Only the record committed since the first pass. The cursor record was
+	// forwarded then, and sending it again would leave the cursor where it is
+	// and repeat it on every tick from here on.
+	if len(got) != 1 {
+		t.Fatalf("second pass forwarded %d records, want 1 (only the new one)", len(got))
 	}
-	for i, rec := range got {
-		if rec.LedgerKey != want[i] {
-			t.Errorf("second pass record %d is %q, want %q", i, rec.LedgerKey, want[i])
-		}
+	if got[0].LedgerKey != res.LedgerKey {
+		t.Errorf("second pass forwarded %q, want the record committed since the first pass, %q",
+			got[0].LedgerKey, res.LedgerKey)
 	}
 }
 
