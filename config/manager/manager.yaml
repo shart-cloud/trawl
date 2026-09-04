@@ -92,7 +92,7 @@ spec:
         # in release manifests, which the constitution forbids, and would let
         # the deployed image change without a manifest change. Refresh it with
         # the digest CI records for the commit being deployed.
-        image: ghcr.io/shart-cloud/trawl/controller-manager@sha256:49cd0de901c8e341215b33ea6ea3c6244a96d5ecd30bbb9938d71d6d28c5befa
+        image: ghcr.io/shart-cloud/trawl/controller-manager@sha256:ca44eec410cf6fb7c5d2de7f35dab36c502ad89fc964c3dd5048c6fb4c1c281c
         name: manager
         ports:
         # Metrics. Enabled by config/default/manager_metrics_patch.yaml and

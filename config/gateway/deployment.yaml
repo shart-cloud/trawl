@@ -67,7 +67,7 @@ spec:
         - name: artifact-gateway
           # Placeholder digest, repointed by hack/refresh-digests.sh. A tag here
           # would let the deployed image change without a manifest change.
-          image: ghcr.io/shart-cloud/trawl/artifact-gateway@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          image: ghcr.io/shart-cloud/trawl/artifact-gateway@sha256:37677c862be2ee814692fcf9cf0bdef317e764cc6c0578a8640266aa159dfd80
           args:
             - --config=/etc/trawl/config.yaml
           ports:
