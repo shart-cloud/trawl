@@ -89,7 +89,7 @@ data:
         - trawl:retention-admins
       # Secret in systemNamespace holding the artifact-bucket credentials the
       # runner mounts. Created out of band; the operator never reads it.
-      credentialsSecret: trawl-artifact-credentials
+      credentialsSecret: trawl-artifact-storage
       startupBudget: 5m
       uploadBudget: 15m
       runnerResources:
@@ -109,14 +109,9 @@ data:
       refreshInterval: 24h
 
     images:
-      suricata: ghcr.io/shart-cloud/trawl/suricata@sha256:4dd9d6f00b5515070b41df91210f51850ce66475435bf811e42449a442f36e2a
-      zeek: ghcr.io/shart-cloud/trawl/zeek@sha256:93019521ce844ed09ec065fa09d6929c24b342289411931f460e2886e763e787
-      sensorAgent: ghcr.io/shart-cloud/trawl/sensor-agent@sha256:b69f18ae199d9f43b50b3e22e77deab3b7d4de35aa7f6da64a6ce052d41efffc
-      contentInit: ghcr.io/shart-cloud/trawl/content-init@sha256:7e40cdcd2dc18dec05e1797b00fcd0167738f94ee17aa7fd1c15bbfeb5a90110
-      # Not implemented until US3. The stub image exists so this required field
-      # names something that resolves and refuses, rather than something that
-      # resolves and does another component's job.
-      captureRunner: ghcr.io/shart-cloud/trawl/capture-runner@sha256:85a539c091f0fc6b0ebb52586eb4bf0c39ca8d128bf0677f5fc4f2efdc715d21
-      # Points at the capture-runner stub until the first CI build of
-      # cmd/capture-reporter lands; hack/refresh-digests.sh replaces it.
-      captureReporter: ghcr.io/shart-cloud/trawl/capture-runner@sha256:85a539c091f0fc6b0ebb52586eb4bf0c39ca8d128bf0677f5fc4f2efdc715d21
+      suricata: ghcr.io/shart-cloud/trawl/suricata@sha256:b902451ff20769318dfb1e0a089914e95246748fb474f67e0206a4de11c4a4d5
+      zeek: ghcr.io/shart-cloud/trawl/zeek@sha256:b06e4d1db31834d15f3b8c1fc85774df7995b2c8422145ae104c9b9e02a8eb77
+      sensorAgent: ghcr.io/shart-cloud/trawl/sensor-agent@sha256:8603137d90bc391980366468a609a6ebee03e0a0a5af74d1dbaccb080414d3f7
+      contentInit: ghcr.io/shart-cloud/trawl/content-init@sha256:97a1c6a19c8af178964faff2400b74ff5ee83655497c18928b33b5b4b9467957
+      captureRunner: ghcr.io/shart-cloud/trawl/capture-runner@sha256:79e6f0ed2dc2405e653c51605926a5422595abdb6ce3ab014738cd545878844e
+      captureReporter: ghcr.io/shart-cloud/trawl/capture-reporter@sha256:b539aa3c8480d8a71a4072bb0520b9b91005917b489be299367005659e975536
