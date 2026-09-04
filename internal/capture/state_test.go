@@ -502,3 +502,51 @@ func TestTransitionStepIsStablePerPhase(t *testing.T) {
 		seen[step] = true
 	}
 }
+
+func TestDownloadDecisionSeparatesExpiryFromUnreadiness(t *testing.T) {
+	deadline := t0.Add(time.Hour)
+	ready := func() *trawlv1alpha1.CaptureJob {
+		j := newJob(trawlv1alpha1.CapturePhaseCompleted)
+		j.Status.SHA256 = strings.Repeat("ab", 32)
+		j.Status.Artifact = &trawlv1alpha1.ArtifactReference{Key: "k", VerifiedAt: metav1.Time{Time: t0}}
+		j.Status.RetentionDeadline = &metav1.Time{Time: deadline}
+		status.Set(&j.Status.Conditions, status.New(status.TypeArtifactVerified, metav1.ConditionTrue, status.ReasonArtifactVerified, "", 1))
+		return j
+	}
+
+	cases := []struct {
+		name   string
+		mutate func(*trawlv1alpha1.CaptureJob)
+		now    time.Time
+		want   DownloadDecision
+	}{
+		{"ready", func(*trawlv1alpha1.CaptureJob) {}, t0, DownloadAllowed},
+		{"at the deadline", func(*trawlv1alpha1.CaptureJob) {}, deadline, DownloadExpired},
+		{"past the deadline", func(*trawlv1alpha1.CaptureJob) {}, deadline.Add(time.Hour), DownloadExpired},
+		{"phase Expired", func(j *trawlv1alpha1.CaptureJob) {
+			j.Status.Phase = trawlv1alpha1.CapturePhaseExpired
+		}, t0, DownloadExpired},
+		{"still capturing", func(j *trawlv1alpha1.CaptureJob) {
+			j.Status.Phase = trawlv1alpha1.CapturePhaseCapturing
+		}, t0, DownloadNotReady},
+		{"failed", func(j *trawlv1alpha1.CaptureJob) {
+			j.Status.Phase = trawlv1alpha1.CapturePhaseFailed
+		}, t0, DownloadNotReady},
+		{"no verified artifact", func(j *trawlv1alpha1.CaptureJob) { j.Status.Conditions = nil }, t0, DownloadNotReady},
+		{"retention change not yet reconciled", func(j *trawlv1alpha1.CaptureJob) { j.Generation = 2 }, t0, DownloadNotReady},
+	}
+
+	for _, tc := range cases {
+		j := ready()
+		tc.mutate(j)
+		got := DecideDownload(j, tc.now)
+		if got != tc.want {
+			t.Errorf("%s: DecideDownload = %q, want %q", tc.name, got, tc.want)
+		}
+		// Downloadable must stay the single-bool view of the same decision, so
+		// the two can never disagree about whether to serve an artifact.
+		if want := tc.want == DownloadAllowed; Downloadable(j, tc.now) != want {
+			t.Errorf("%s: Downloadable = %v, disagrees with DecideDownload = %q", tc.name, !want, got)
+		}
+	}
+}
