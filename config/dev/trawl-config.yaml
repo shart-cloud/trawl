@@ -80,6 +80,29 @@ data:
       limitsCPU: 500m
       limitsMemory: 512Mi
 
+    capture:
+      # Only this service account (in systemNamespace) may create Policy-typed
+      # CaptureJobs. It must match config/manager/event-worker.yaml.
+      eventWorkerServiceAccount: event-worker
+      # Subjects allowed to change a CaptureJob's retention after creation.
+      retentionAdminGroups:
+        - trawl:retention-admins
+      # Secret in systemNamespace holding the artifact-bucket credentials the
+      # runner mounts. Created out of band; the operator never reads it.
+      credentialsSecret: trawl-artifact-credentials
+      startupBudget: 5m
+      uploadBudget: 15m
+      runnerResources:
+        requestsCPU: 100m
+        requestsMemory: 128Mi
+        limitsCPU: "1"
+        limitsMemory: 1Gi
+      reporterResources:
+        requestsCPU: 10m
+        requestsMemory: 32Mi
+        limitsCPU: 100m
+        limitsMemory: 128Mi
+
     content:
       suricataFeedURL: https://rules.emergingthreats.net/open/suricata-8.0/emerging.rules.tar.gz
       zeekScriptRepo: https://github.com/zeek/packages
@@ -94,3 +117,6 @@ data:
       # names something that resolves and refuses, rather than something that
       # resolves and does another component's job.
       captureRunner: ghcr.io/shart-cloud/trawl/capture-runner@sha256:85a539c091f0fc6b0ebb52586eb4bf0c39ca8d128bf0677f5fc4f2efdc715d21
+      # Points at the capture-runner stub until the first CI build of
+      # cmd/capture-reporter lands; hack/refresh-digests.sh replaces it.
+      captureReporter: ghcr.io/shart-cloud/trawl/capture-runner@sha256:85a539c091f0fc6b0ebb52586eb4bf0c39ca8d128bf0677f5fc4f2efdc715d21

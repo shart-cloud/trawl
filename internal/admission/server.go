@@ -41,10 +41,9 @@ import (
 	"trawl.cloud/trawl/internal/telemetry"
 )
 
-// AuditCommitter is the subset of the audit client the webhook path needs.
-type AuditCommitter interface {
-	Commit(ctx context.Context, rec audit.Record) (audit.CommitResult, error)
-}
+// AuditCommitter is what the webhook path commits records through. It is the
+// shared audit.Committer, named here so existing callers keep compiling.
+type AuditCommitter = audit.Committer
 
 // Gate enforces namespace scope and the durable-audit requirement for every
 // Trawl resource mutation.
@@ -126,8 +125,13 @@ func ActionFor(kind string, op admissionv1.Operation) (string, error) {
 			return audit.ActionCapturePolicyDelete, nil
 		}
 	case "CaptureJob":
-		if op == admissionv1.Create {
+		// Create is Manual by default; the CaptureJob webhook substitutes the
+		// policy action when the request type says so, via CommitMutationAs.
+		switch op {
+		case admissionv1.Create:
 			return audit.ActionCaptureJobManualCreate, nil
+		case admissionv1.Update:
+			return audit.ActionRetentionChange, nil
 		}
 	}
 	return "", fmt.Errorf("no audit action for %s %s", kind, op)
@@ -139,13 +143,18 @@ func ActionFor(kind string, op admissionv1.Operation) (string, error) {
 // mutation that reaches etcd always has a durable record behind it. The reverse
 // order would permit an unaudited change whenever the ledger failed in between.
 func (g *Gate) CommitMutation(ctx context.Context, req admission.Request, decision, reason string) error {
-	if g.Audit == nil {
-		return ErrAuditUnavailable
-	}
-
 	action, err := ActionFor(req.Kind.Kind, req.Operation)
 	if err != nil {
 		return err
+	}
+	return g.CommitMutationAs(ctx, req, action, decision, reason)
+}
+
+// CommitMutationAs is CommitMutation with the action chosen by the caller,
+// for kinds where the operation alone does not determine it.
+func (g *Gate) CommitMutationAs(ctx context.Context, req admission.Request, action, decision, reason string) error {
+	if g.Audit == nil {
+		return ErrAuditUnavailable
 	}
 
 	rec := audit.Record{

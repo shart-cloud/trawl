@@ -1,0 +1,40 @@
+# Verified sources for the Trawl capture-runner image.
+#
+# dumpcap is taken from Debian's wireshark-common package rather than built
+# from source: it is the capture engine Wireshark itself ships, Debian
+# tracks its security releases, and the package is what the base image's
+# own apt trusts. Only the dumpcap binary and the one Wireshark library it
+# links (libwsutil) are copied into the image; the dissector library,
+# the other capture utilities, and the package's maintainer scripts are
+# left behind.
+#
+# Every .deb is pinned by version and sha256 and checked before it is
+# unpacked. The checksum is what makes the pin meaningful: pool files can
+# only be replaced by a new version, but a compromised mirror could serve
+# anything under the old name.
+#
+# Update procedure: pick the version from the bookworm Packages index
+# (deb.debian.org/debian/dists/bookworm/main/binary-amd64/Packages.xz,
+# verified through Release + Release.gpg or apt on a trusted machine),
+# record its SHA256 field for each package below, and note the check in the
+# same commit. Debian point releases remove superseded versions from the
+# pool, so a stale pin fails at download rather than silently building
+# something else; refresh it from the same index when that happens.
+
+wireshark:
+  version: 4.0.17-0+deb12u3
+  # Recorded 2026-09-03 from the bookworm Packages index; the same entries
+  # appear in bookworm-security with identical checksums.
+  packages:
+    wireshark-common:
+      url: https://deb.debian.org/debian/pool/main/w/wireshark/wireshark-common_4.0.17-0+deb12u3_amd64.deb
+      sha256: 67b2ff3d79e58301c8b1fcb9d7a654caf0f739753e824f8551fed718f25625a8
+    libwsutil14:
+      url: https://deb.debian.org/debian/pool/main/w/wireshark/libwsutil14_4.0.17-0+deb12u3_amd64.deb
+      sha256: e99913fae84c941516e1ef962b62fdb9d013c6cab0a95787db0fb1cc361fda5f
+
+# Same base as the analyzer images, so one Debian point release is tracked
+# for all of them.
+base_image:
+  reference: docker.io/library/debian:12-slim
+  digest: sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171

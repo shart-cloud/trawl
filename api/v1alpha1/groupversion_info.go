@@ -50,6 +50,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(GroupVersion,
 		&NetworkTap{},
 		&NetworkTapList{},
+		&CaptureJob{},
+		&CaptureJobList{},
 	)
 	metav1.AddToGroupVersion(scheme, GroupVersion)
 	return nil

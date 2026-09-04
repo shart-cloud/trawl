@@ -232,7 +232,9 @@ func TestAnalyzerImagesBakeInNoDetectionContent(t *testing.T) {
 	// ADR-0005: content arrives at startup so an ET Open update does not need
 	// an image rebuild, and the image digest keeps meaning "this software"
 	// rather than "this software and that day's rules".
-	for _, path := range []string{"images/suricata/Containerfile", "images/zeek/Containerfile"} {
+	for _, path := range []string{
+		"images/suricata/Containerfile", "images/zeek/Containerfile", "images/capture-runner/Containerfile",
+	} {
 		data, err := os.ReadFile(filepath.Join(repoRoot(t), path))
 		if err != nil {
 			t.Fatalf("reading %s: %v", path, err)
@@ -248,7 +250,9 @@ func TestAnalyzerImagesBakeInNoDetectionContent(t *testing.T) {
 func TestSourcesAreCheckedBeforeUnpacking(t *testing.T) {
 	// The checksum is where an upstream compromise would otherwise enter the
 	// supply chain unnoticed.
-	for _, path := range []string{"images/suricata/Containerfile", "images/zeek/Containerfile"} {
+	for _, path := range []string{
+		"images/suricata/Containerfile", "images/zeek/Containerfile", "images/capture-runner/Containerfile",
+	} {
 		data, err := os.ReadFile(filepath.Join(repoRoot(t), path))
 		if err != nil {
 			t.Fatalf("reading %s: %v", path, err)

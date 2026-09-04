@@ -69,11 +69,25 @@ func valid() *Config {
 			RefreshInterval: Duration(24 * time.Hour),
 		},
 		Images: ImageConfig{
-			Suricata:      "ghcr.io/example/suricata@sha256:" + strings.Repeat("a", 64),
-			Zeek:          "ghcr.io/example/zeek@sha256:" + strings.Repeat("b", 64),
-			SensorAgent:   "ghcr.io/example/sensor-agent@sha256:" + strings.Repeat("c", 64),
-			CaptureRunner: "ghcr.io/example/capture-runner@sha256:" + strings.Repeat("d", 64),
-			ContentInit:   "ghcr.io/example/content-init@sha256:" + strings.Repeat("e", 64),
+			Suricata:        "ghcr.io/example/suricata@sha256:" + strings.Repeat("a", 64),
+			Zeek:            "ghcr.io/example/zeek@sha256:" + strings.Repeat("b", 64),
+			SensorAgent:     "ghcr.io/example/sensor-agent@sha256:" + strings.Repeat("c", 64),
+			CaptureRunner:   "ghcr.io/example/capture-runner@sha256:" + strings.Repeat("d", 64),
+			CaptureReporter: "ghcr.io/example/capture-reporter@sha256:" + strings.Repeat("f", 64),
+			ContentInit:     "ghcr.io/example/content-init@sha256:" + strings.Repeat("e", 64),
+		},
+		Capture: CaptureConfig{
+			EventWorkerServiceAccount: "trawl-event-worker",
+			RetentionAdminGroups:      []string{"trawl:retention-admins"},
+			CredentialsSecret:         "trawl-artifact-credentials",
+			StartupBudget:             Duration(5 * time.Minute),
+			UploadBudget:              Duration(15 * time.Minute),
+			RunnerResources: ResourceRequirements{
+				RequestsCPU: "100m", RequestsMemory: "128Mi", LimitsCPU: "1", LimitsMemory: "1Gi",
+			},
+			ReporterResources: ResourceRequirements{
+				RequestsCPU: "10m", RequestsMemory: "32Mi", LimitsCPU: "100m", LimitsMemory: "128Mi",
+			},
 		},
 	}
 }
@@ -347,6 +361,7 @@ images:
   zeek: ghcr.io/e/zeek@sha256:` + strings.Repeat("b", 64) + `
   sensorAgent: ghcr.io/e/sensor@sha256:` + strings.Repeat("c", 64) + `
   captureRunner: ghcr.io/e/runner@sha256:` + strings.Repeat("d", 64) + `
+  captureReporter: ghcr.io/e/reporter@sha256:` + strings.Repeat("f", 64) + `
   contentInit: ghcr.io/e/content@sha256:` + strings.Repeat("e", 64) + `
 `)
 	c, err := Load(doc)
@@ -424,5 +439,88 @@ func TestAnExplicitNullLeavesADurationForTheDefaults(t *testing.T) {
 	}
 	if got := loaded.AuditRetention.Duration(); got != DefaultAuditRetention {
 		t.Errorf("auditRetention = %v after null, want the default %v", got, DefaultAuditRetention)
+	}
+}
+
+func TestCaptureDefaultsFillBudgetsIdentityAndResources(t *testing.T) {
+	// The capture block is new in US3 and every installation predates it, so
+	// each field needs a default that is safe rather than merely present.
+	var c Config
+	c.ApplyDefaults()
+
+	if c.Capture.StartupBudget.Duration() != DefaultCaptureStartupBudget {
+		t.Errorf("startupBudget default = %v, want %v", c.Capture.StartupBudget, DefaultCaptureStartupBudget)
+	}
+	if c.Capture.UploadBudget.Duration() != DefaultCaptureUploadBudget {
+		t.Errorf("uploadBudget default = %v, want %v", c.Capture.UploadBudget, DefaultCaptureUploadBudget)
+	}
+	if c.Capture.EventWorkerServiceAccount != DefaultEventWorkerServiceAccount {
+		t.Errorf("eventWorkerServiceAccount default = %q", c.Capture.EventWorkerServiceAccount)
+	}
+	if c.Capture.CredentialsSecret != DefaultCaptureCredentialsSecret {
+		t.Errorf("credentialsSecret default = %q", c.Capture.CredentialsSecret)
+	}
+	for name, r := range map[string]ResourceRequirements{
+		"runnerResources":   c.Capture.RunnerResources,
+		"reporterResources": c.Capture.ReporterResources,
+	} {
+		if errs := validateResources(name, r); len(errs) != 0 {
+			t.Errorf("%s default does not validate: %v", name, errs)
+		}
+	}
+}
+
+func TestCaptureBudgetsMustBePositive(t *testing.T) {
+	for _, field := range []string{"startupBudget", "uploadBudget"} {
+		c := valid()
+		switch field {
+		case "startupBudget":
+			c.Capture.StartupBudget = Duration(-time.Second)
+		case "uploadBudget":
+			c.Capture.UploadBudget = 0
+		}
+		err := c.Validate()
+		if err == nil || !strings.Contains(err.Error(), "capture."+field) {
+			t.Errorf("%s: expected a capture.%s error, got %v", field, field, err)
+		}
+	}
+}
+
+func TestCaptureIdentitiesAndSecretAreRequired(t *testing.T) {
+	c := valid()
+	c.Capture.EventWorkerServiceAccount = " "
+	c.Capture.CredentialsSecret = ""
+	err := c.Validate()
+	for _, want := range []string{
+		"capture.eventWorkerServiceAccount is required",
+		"capture.credentialsSecret is required",
+	} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("missing %q in %v", want, err)
+		}
+	}
+}
+
+func TestCaptureRunnerAndReporterResourcesMustParse(t *testing.T) {
+	c := valid()
+	c.Capture.RunnerResources.LimitsMemory = "lots"
+	c.Capture.ReporterResources.RequestsCPU = ""
+	err := c.Validate()
+	for _, want := range []string{
+		"capture.runnerResources.limitsMemory is not a valid Kubernetes quantity",
+		"capture.reporterResources.requestsCPU is required",
+	} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("missing %q in %v", want, err)
+		}
+	}
+}
+
+func TestCaptureReporterImageMustBeDigestPinned(t *testing.T) {
+	c := valid()
+	c.Images.CaptureReporter = "ghcr.io/example/capture-reporter:latest"
+	err := c.Validate()
+	if err == nil || !strings.Contains(err.Error(), "images.captureReporter must be digest-pinned") {
+		t.Errorf("tag reference accepted: %v", err)
 	}
 }

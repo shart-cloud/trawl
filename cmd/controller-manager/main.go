@@ -272,16 +272,40 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The artifact store is read and deleted from here; the runner is the
+	// only writer. The controller carries the same phase-after-audit rule the
+	// webhooks do, so it commits through the same sink.
+	artifactStore, err := storage.NewS3Store(installCfg.Artifacts)
+	if err != nil {
+		setupLog.Error(sanitize.Error(err), "Failed to connect to the artifact store")
+		os.Exit(1)
+	}
+	if err := (&controller.CaptureJobReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Config:   installCfg,
+		Renderer: &controller.CaptureRenderer{Config: installCfg},
+		Store:    artifactStore,
+		Audit:    auditSink,
+		Metrics:  trawlMetrics,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to set up the CaptureJob controller")
+		os.Exit(1)
+	}
+
 	// The gate holds the audit sink because FR-036 makes a durable audit commit
 	// a precondition of admission, not a side effect of it.
-	if err := (&admission.NetworkTapWebhook{
-		Gate: &admission.Gate{
-			SystemNamespace: installCfg.SystemNamespace,
-			Audit:           auditSink,
-			Metrics:         trawlMetrics,
-		},
-	}).SetupWithManager(mgr); err != nil {
+	gate := &admission.Gate{
+		SystemNamespace: installCfg.SystemNamespace,
+		Audit:           auditSink,
+		Metrics:         trawlMetrics,
+	}
+	if err := (&admission.NetworkTapWebhook{Gate: gate}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to set up the NetworkTap webhook")
+		os.Exit(1)
+	}
+	if err := (&admission.CaptureJobWebhook{Gate: gate, Config: installCfg}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to set up the CaptureJob webhook")
 		os.Exit(1)
 	}
 

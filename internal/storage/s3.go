@@ -110,12 +110,30 @@ func readCredential(dir, name string) (string, error) {
 // convention. RetainUntil maps to object-lock retention, enforced by the backend
 // rather than by Trawl choosing not to delete.
 func (s *S3Store) Put(ctx context.Context, key string, body []byte, opts PutOptions) (ObjectInfo, error) {
-	ctx, cancel := context.WithTimeout(ctx, s.timeout)
+	return s.PutStream(ctx, key, bytes.NewReader(body), int64(len(body)), opts)
+}
+
+// PutStream implements Store.
+//
+// Multipart upload is disabled so the object is written by one request: a
+// conditional PUT is only atomic when there is one PUT to condition. The part
+// size is set to the object size so the client accepts bodies over its
+// default single-part limit.
+func (s *S3Store) PutStream(ctx context.Context, key string, body io.Reader, size int64, opts PutOptions) (ObjectInfo, error) {
+	timeout := s.timeout
+	if opts.Timeout > 0 {
+		timeout = opts.Timeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	putOpts := minio.PutObjectOptions{
-		ContentType:  opts.ContentType,
-		UserMetadata: opts.Metadata,
+		ContentType:      opts.ContentType,
+		UserMetadata:     opts.Metadata,
+		DisableMultipart: true,
+	}
+	if size > 0 {
+		putOpts.PartSize = uint64(size)
 	}
 	if !opts.RetainUntil.IsZero() {
 		// Compliance mode: not even the bucket owner can shorten it. The audit
@@ -128,7 +146,7 @@ func (s *S3Store) Put(ctx context.Context, key string, body []byte, opts PutOpti
 		putOpts.SetMatchETagExcept("*")
 	}
 
-	info, err := s.client.PutObject(ctx, s.bucket, key, bytes.NewReader(body), int64(len(body)), putOpts)
+	info, err := s.client.PutObject(ctx, s.bucket, key, body, size, putOpts)
 	if err != nil {
 		if isPreconditionFailed(err) {
 			return ObjectInfo{}, ErrAlreadyExists

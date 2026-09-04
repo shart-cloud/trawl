@@ -1,0 +1,21 @@
+# ADMITTED, THEN FAILS: the filter is well-formed text but not a BPF expression.
+#
+# Admission checks the filter's size and character set only; whether it
+# compiles is something only the capture interface's link type can answer, so
+# the runner compiles it first, before any packet socket is opened, and the
+# job fails with reason InvalidFilter and FilterValid=False. No artifact is
+# produced and nothing is downloadable.
+apiVersion: trawl.cloud/v1alpha1
+kind: CaptureJob
+metadata:
+  name: bad-filter
+  namespace: trawl-system
+spec:
+  requestType: Manual
+  tapRef:
+    name: node-eno1
+  targetNode: talos-sensor-01
+  filter: "host 10.0.0.50 and tcp prot 443"
+  duration: 60s
+  maxSize: 16Mi
+  retention: 1d

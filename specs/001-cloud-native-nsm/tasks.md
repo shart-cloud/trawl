@@ -180,28 +180,28 @@ expired paths.
 
 ### Tests for User Story 3
 
-- [ ] T068 [P] [US3] Add failing CaptureJob API tests for configured-namespace enforcement, defaults, bounds, manual/policy caller unions, execution immutability, authorized retention-only updates, durable-audit failure, and non-resurrection in `api/v1alpha1/capturejob_types_test.go`
-- [ ] T069 [P] [US3] Add failing lifecycle tests for every legal/illegal transition, observed facts, zero-packet completion, failure reasons, downloadability, and expiry in `internal/capture/state_test.go`
-- [ ] T070 [P] [US3] Add failing dumpcap-runner tests for BPF dry-run before socket open, duration/size first-bound stop, snaplen, cancellation, sanitized failures, and <=1MiB overshoot in `internal/capture/runner_test.go`
-- [ ] T071 [P] [US3] Add failing real-MinIO tests for stable object keys, conditional upload, manifest/checksum verification, missing/mismatch handling, presign ceiling, and idempotent delete in `test/integration/artifact_storage_test.go`
-- [ ] T072 [P] [US3] Add failing envtest cases for target resolution, stable Job/reporter creation, reporter field ownership and progress patches, existing Job/object adoption, storage failure, audit failure, controller restart, and one terminal result in `internal/controller/capturejob_controller_test.go`
+- [x] T068 [P] [US3] Add failing CaptureJob API tests for configured-namespace enforcement, defaults, bounds, manual/policy caller unions, execution immutability, authorized retention-only updates, durable-audit failure, and non-resurrection in `api/v1alpha1/capturejob_types_test.go`
+- [x] T069 [P] [US3] Add failing lifecycle tests for every legal/illegal transition, observed facts, zero-packet completion, failure reasons, downloadability, and expiry in `internal/capture/state_test.go`
+- [x] T070 [P] [US3] Add failing dumpcap-runner tests for BPF dry-run before socket open, duration/size first-bound stop, snaplen, cancellation, sanitized failures, and <=1MiB overshoot in `internal/capture/runner_test.go`
+- [x] T071 [P] [US3] Add failing real-MinIO tests for stable object keys, conditional upload, manifest/checksum verification, missing/mismatch handling, presign ceiling, and idempotent delete in `test/integration/artifact_storage_test.go`
+- [x] T072 [P] [US3] Add failing envtest cases for target resolution, stable Job/reporter creation, reporter field ownership and progress patches, existing Job/object adoption, storage failure, audit failure, controller restart, and one terminal result in `internal/controller/capturejob_controller_test.go`
 - [ ] T073 [P] [US3] Add failing OpenAPI/handler/CLI tests for TokenReview audience, `capturejobs/download` SubjectAccessReview, enumeration resistance, lifecycle responses, no-store headers, short redirects, and durable audit acknowledgement before redirect in `internal/gateway/handler_test.go` and `internal/gateway/client_test.go`
 - [ ] T074 [P] [US3] Add failing fake-clock tests for exact deadline denial, authorized shortening/extension, upload protection, hourly deletion retry, 24-hour bound, and metadata preservation in `internal/controller/retention_test.go`
 - [ ] T075 [US3] Add a failing end-to-end manual capture matrix for reporter-driven progress, successful CLI download, invalid-filter, inactive-source, unavailable-target, zero-packet, full-storage, audit outage, restart, unauthorized-download, and expiry cases in `test/e2e/manual_capture_test.go`
 
 ### Implementation for User Story 3
 
-- [ ] T076 [US3] Define CaptureJob execution, policy snapshot, artifact, failure, phase, condition, print-column, status-subresource, and validation types in `api/v1alpha1/capturejob_types.go`
-- [ ] T077 [US3] Implement CaptureJob defaulting and validation for configured-namespace enforcement, caller identity, manual/policy fields, execution immutability, bounded pre-expiry retention changes, controlled delete policy, and durable audit acknowledgement in `internal/admission/capturejob_webhook.go`
-- [ ] T078 [P] [US3] Implement duration/size/snaplen parsing, supported placeholder-free manual BPF validation requests, and safe runner arguments in `internal/capture/bounds.go` and `internal/capture/filter.go`
-- [ ] T079 [P] [US3] Implement the artifact manifest, stable namespace/UID object key, SHA-256 calculation, packet-count parsing, and verification comparison in `internal/capture/manifest.go`
-- [ ] T080 [US3] Implement the capture runner sequence plus atomic versioned runner/reporter protocol for target/interface checks, BPF dry-run, post-socket `CaptureStarted`, bounded dumpcap execution, pre-upload `CaptureEnded`, compact terminal result, conditional upload, and sanitized exits in `internal/capture/runner.go` and `internal/capture/reporter.go`
-- [ ] T081 [US3] Wire capture and unprivileged reporter modes, bounded shared-file validation, field-owned status patches, signal handling, metrics, and exit codes in `cmd/capture-runner/main.go`; mount no Kubernetes API credentials in capture mode
-- [ ] T082 [US3] Build the digest-pinned capture-runner image with reviewed dumpcap/libpcap, non-root defaults, writable bounded work volume, and source checksums in `images/capture-runner/Containerfile` and `images/capture-runner/SOURCES.lock`
-- [ ] T083 [P] [US3] Extend the foundational private MinIO/S3 client with artifact manifest metadata, presign, idempotent delete, expiry verification, timeouts, TLS, and safe errors in `internal/storage/s3.go`
-- [ ] T084 [US3] Implement deterministic node-pinned Kubernetes Job rendering with direct interface access, ephemeral-storage bounds, explicit capture-only capabilities, shared progress `emptyDir`, unprivileged reporter sidecar, capture-container token suppression, reporter projected token, resource-name-scoped status Role, and owner reference in `internal/controller/capturejob_workload.go`
-- [ ] T085 [US3] Implement CaptureJob reconciliation, active tap/target resolution, Job observation/adoption, reporter-owned progress consumption, S3 HEAD verification, durable audit before lifecycle commits, conditions, retries, and terminal convergence in `internal/controller/capturejob_controller.go`
-- [ ] T086 [US3] Implement the guarded lifecycle transition and artifact-downloadability logic used by the reconciler and gateway in `internal/capture/state.go`
+- [x] T076 [US3] Define CaptureJob execution, policy snapshot, artifact, failure, phase, condition, print-column, status-subresource, and validation types in `api/v1alpha1/capturejob_types.go`
+- [x] T077 [US3] Implement CaptureJob defaulting and validation for configured-namespace enforcement, caller identity, manual/policy fields, execution immutability, bounded pre-expiry retention changes, controlled delete policy, and durable audit acknowledgement in `internal/admission/capturejob_webhook.go`
+- [x] T078 [P] [US3] Implement duration/size/snaplen parsing, supported placeholder-free manual BPF validation requests, and safe runner arguments in `internal/capture/bounds.go` and `internal/capture/filter.go`
+- [x] T079 [P] [US3] Implement the artifact manifest, stable namespace/UID object key, SHA-256 calculation, packet-count parsing, and verification comparison in `internal/capture/manifest.go`
+- [x] T080 [US3] Implement the capture runner sequence plus atomic versioned runner/reporter protocol for target/interface checks, BPF dry-run, post-socket `CaptureStarted`, bounded dumpcap execution, pre-upload `CaptureEnded`, compact terminal result, conditional upload, and sanitized exits in `internal/capture/runner.go` and `internal/capture/reporter.go`
+- [x] T081 [US3] Wire capture and unprivileged reporter modes, bounded shared-file validation, field-owned status patches, signal handling, metrics, and exit codes in `cmd/capture-runner/main.go`; mount no Kubernetes API credentials in capture mode
+- [x] T082 [US3] Build the digest-pinned capture-runner image with reviewed dumpcap/libpcap, non-root defaults, writable bounded work volume, and source checksums in `images/capture-runner/Containerfile` and `images/capture-runner/SOURCES.lock`
+- [x] T083 [P] [US3] Extend the foundational private MinIO/S3 client with artifact manifest metadata, presign, idempotent delete, expiry verification, timeouts, TLS, and safe errors in `internal/storage/s3.go`
+- [x] T084 [US3] Implement deterministic node-pinned Kubernetes Job rendering with direct interface access, ephemeral-storage bounds, explicit capture-only capabilities, shared progress `emptyDir`, unprivileged reporter sidecar, capture-container token suppression, reporter projected token, resource-name-scoped status Role, and owner reference in `internal/controller/capturejob_workload.go`
+- [x] T085 [US3] Implement CaptureJob reconciliation, active tap/target resolution, Job observation/adoption, reporter-owned progress consumption, S3 HEAD verification, durable audit before lifecycle commits, conditions, retries, and terminal convergence in `internal/controller/capturejob_controller.go`
+- [x] T086 [US3] Implement the guarded lifecycle transition and artifact-downloadability logic used by the reconciler and gateway in `internal/capture/state.go`
 - [ ] T087 [US3] Implement deadline calculation, immediate download denial, upload-aware hourly deletion, object absence verification, retry conditions, and `Expired` transition in `internal/controller/retention.go`
 - [ ] T088 [P] [US3] Implement audience-bound Kubernetes TokenReview and resource-name/subresource SubjectAccessReview clients with deny-by-default caching in `internal/authz/kubernetes.go`
 - [ ] T089 [US3] Implement the artifact gateway download handler and CLI client library with live CaptureJob/object verification, five-minute/deadline presign calculation, enumeration-safe errors, no-store responses, rate limits, and durable audit acknowledgement before redirect in `internal/gateway/handler.go` and `internal/gateway/client.go`
@@ -211,6 +211,65 @@ expired paths.
 - [ ] T093 [US3] Extend Trawl Overview with recent capture activity and add execution lifecycle, artifact health, retention, storage usage, and non-secret copyable `trawlctl` commands to `config/grafana/dashboards/trawl-overview.json` and `config/grafana/dashboards/capture-management.json`
 - [ ] T094 [US3] Complete real dumpcap/reporter/MinIO/audit-ledger/gateway/CLI integration fixtures, including checksum comparison and secret-leak assertions, in `test/integration/manual_capture_test.go`
 - [ ] T095 [US3] Make the full manual capture/CLI matrix pass and record sanitized lifecycle and timing evidence in `test/e2e/manual_capture_test.go` and `test/e2e/results/manual-capture.md`
+
+### US3 implementation notes (deviations from the task text)
+
+Recorded as they are made, so the task list and the tree do not silently
+diverge.
+
+- T068: the API tests are envtest cases in `test/integration/capturejob_api_test.go`
+  (repo convention; they share `suite_test.go`), not `api/v1alpha1/capturejob_types_test.go`.
+  Caller identity, retention authorization and durable-audit failure are unit
+  tests in `internal/admission/capturejob_webhook_test.go`, since they depend
+  on the admission request rather than the schema.
+- T076: `status.runnerResult` (`RunnerResult{outcome, reason, stopReason,
+  packetCount, sizeBytes, sha256, exitCode, message}`) is added beyond
+  `contracts/crd-api.md` as the reporter-owned carrier for the runner's terminal
+  outcome; `crd-api.md` is updated alongside. The requester is recorded in the
+  `trawl.cloud/requester` annotation, stamped by the mutating webhook from the
+  API server's user info and immutable afterwards.
+- T077: retention-admin identity is installation configuration
+  (`capture.retentionAdminGroups` / `capture.retentionAdminUsers`), and the
+  event worker identity for `requestType: Policy` is
+  `capture.eventWorkerServiceAccount` in the system namespace. Deletion is
+  namespace-gated only at admission; the controller's finalizer records it as
+  `artifact.expire` records with the outcome. Filter validation at admission is
+  size and character set only; BPF compilation happens in the runner (T080).
+- T072: the controller tests are envtest cases in
+  `test/integration/capturejob_controller_test.go`, for the same reason as T068.
+- T079: the packet count comes from walking the pcapng blocks of the finished
+  file (EPB and SPB), in the same pass as the SHA-256, not from parsing
+  dumpcap's stderr.
+- T080/T081: the reporter is its own binary and image, `cmd/capture-reporter`
+  with the logic in `internal/capture/reporter/`, not a mode of
+  `cmd/capture-runner`. The runner image may not link client-go (depguard), and
+  a mode switch in one binary would have made that rule unenforceable. The
+  runner therefore mounts no API credential at all; the reporter sidecar holds
+  the only token, scoped by a resource-name Role to this one CaptureJob's status.
+- T082: the runner runs as uid 0 with exactly NET_RAW and NET_ADMIN, the same
+  posture as the analyzers, rather than "non-root defaults"; dumpcap's socket
+  open needs the capabilities and the image has no setcap step to lose. dumpcap
+  comes from the Debian `wireshark-common` package, version and .deb sha256
+  pinned in `images/capture-runner/SOURCES.lock`, not built from source.
+- research.md §9: `dumpcap -d` activates the capture handle to learn the link
+  type before compiling the filter. The invariant kept is the one that matters:
+  no output file, no packets, and no `CaptureStarted` before the filter
+  compiles.
+- T085: `RunnerCreateFailed` is reserved for a runner Job the apiserver
+  rejects (Invalid or Forbidden); transport errors on create are retried as a
+  dependency failure with the phase unchanged. Deleting a CaptureJob deletes
+  its Job in the background and waits for the runner's pod to be gone before
+  removing the artifact, so a runner cannot upload into a key that was just
+  deleted.
+- Not in the task list but required: `audit.Committer` moved from the admission
+  package so the controller commits through the same contract as the webhooks;
+  the closed telemetry label enums for the capture metrics; the `images.yml`
+  split into a `capture-runner-image` job (Containerfile over a pinned Debian
+  base) and a `capture-reporter` binary image; `capture.credentialsSecret`,
+  `capture.startupBudget`, `capture.uploadBudget` and the runner/reporter
+  resource settings in the installation config.
+- Follow-up hardening, out of scope for US3: controller-issued presigned PUT
+  URLs so the privileged runner holds no long-lived bucket credential.
 
 **Checkpoint**: US3 provides bounded, restart-safe manual evidence collection and
 authorized retrieval without requiring automatic policy evaluation.

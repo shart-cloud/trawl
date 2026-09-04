@@ -1,0 +1,67 @@
+# capture-runner: the privileged data-plane binary that runs dumpcap for one
+# CaptureJob (US3, T080/T082).
+#
+# dumpcap comes from Debian's wireshark-common package, pinned by version and
+# checksum in SOURCES.lock. Only dumpcap and the one Wireshark library it
+# links are copied out of the package; the dissectors, the other capture
+# utilities and the maintainer scripts (which would set file capabilities
+# this pod grants explicitly instead) stay out of the image.
+#
+# The Trawl runner binary is built by the root Dockerfile with
+# BINARY=capture-runner and copied in, so it shares one toolchain and one
+# set of build flags with every other Trawl binary.
+
+# Pinned in SOURCES.lock; the workflow passes the digest form.
+ARG BASE_IMAGE=docker.io/library/debian:12-slim
+
+FROM ${BASE_IMAGE} AS unpack
+
+# Version and checksums come from SOURCES.lock through the workflow. A build
+# without checksums fails at the sha256sum step rather than unpacking
+# whatever was downloaded.
+ARG WIRESHARK_VERSION=4.0.17-0+deb12u3
+ARG WIRESHARK_COMMON_SHA256
+ARG LIBWSUTIL14_SHA256
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /debs
+RUN set -eu \
+ && base="https://deb.debian.org/debian/pool/main/w/wireshark" \
+ && curl -fsSL -o wireshark-common.deb "${base}/wireshark-common_${WIRESHARK_VERSION}_amd64.deb" \
+ && curl -fsSL -o libwsutil14.deb "${base}/libwsutil14_${WIRESHARK_VERSION}_amd64.deb" \
+ && echo "${WIRESHARK_COMMON_SHA256}  wireshark-common.deb" | sha256sum -c - \
+ && echo "${LIBWSUTIL14_SHA256}  libwsutil14.deb" | sha256sum -c - \
+ && mkdir -p /unpacked \
+ && dpkg-deb -x wireshark-common.deb /unpacked \
+ && dpkg-deb -x libwsutil14.deb /unpacked \
+ && mkdir -p /rootfs/usr/bin /rootfs/usr/lib/x86_64-linux-gnu \
+ && cp /unpacked/usr/bin/dumpcap /rootfs/usr/bin/dumpcap \
+ && cp -P /unpacked/usr/lib/x86_64-linux-gnu/libwsutil.so.14* /rootfs/usr/lib/x86_64-linux-gnu/ \
+ && chmod 0755 /rootfs/usr/bin/dumpcap
+
+FROM ${BASE_IMAGE}
+
+# dumpcap's remaining link dependencies, from the base image's own apt
+# (Debian-signed). This is the whole runtime dependency set: readelf on the
+# binary lists nothing else.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libpcap0.8 libcap2 libnl-3-200 libnl-genl-3-200 \
+      libglib2.0-0 libpcre2-8-0 zlib1g \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=unpack /rootfs/ /
+COPY trawl-capture-runner /usr/local/bin/trawl-capture-runner
+
+# Proves the binary links and that the version parsed into the manifest is
+# the one that was pinned, at build time rather than on the first capture.
+RUN /usr/bin/dumpcap --version | head -1 \
+ && ldd /usr/bin/dumpcap | grep -q 'not found' && exit 1 || true
+
+# Runs as root because opening the interface needs CAP_NET_RAW, which the
+# pod grants explicitly and drops everything else (ADR-0004). The
+# filesystem is read-only in the pod; the capture file goes to a mounted
+# emptyDir.
+ENTRYPOINT ["/usr/local/bin/trawl-capture-runner"]
