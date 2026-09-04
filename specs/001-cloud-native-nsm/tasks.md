@@ -272,6 +272,15 @@ diverge.
   Exit codes: 0 success, 1 a failed or refused download, 2 a usage error.
 - T090: the client binary has no image and no `images.yml` entry. It runs on the
   analyst's workstation; `make trawlctl` builds it, and quickstart §6 says so.
+- Not a tasks.md item: `test/integration/manual_capture_test.go` is the plan's
+  Slice B3 integration half. The plan calls it T074, but tasks.md's T074 is the
+  retention test in Slice C - the numbers do not line up, so nothing was ticked
+  for it. It drives the real reconciler against MinIO to Completed, then
+  downloads through an in-process gateway with `gateway.Client`: a presigned URL
+  from a real object store, the bytes it serves, and the ledger record. The
+  TokenReview and SubjectAccessReview are faked, because envtest issues no
+  audience-scoped service account tokens and its RBAC has no bindings to
+  consult; `internal/authz` covers the real reviewer.
 - T091: `artifact-gateway-tls` is added to `config/certmanager/certificate.yaml`
   now that the Service DNS name exists; B0 deliberately deferred it. It carries
   localhost/127.0.0.1 in its SANs because the documented access path is a

@@ -122,9 +122,12 @@ type captureHarness struct {
 	audit *fakeCommitter
 }
 
-func captureReconcilerFor(t *testing.T, namespace string) *captureHarness {
-	t.Helper()
-	cfg := &config.Config{
+// captureConfig is the installation the capture tests reconcile against.
+//
+// Shared with the gateway's end-to-end test, which drives the same reconciler
+// against a real object store rather than the fake.
+func captureConfig(namespace string) *config.Config {
+	return &config.Config{
 		ClusterID:       "homelab",
 		SystemNamespace: namespace,
 		Artifacts: config.BucketConfig{
@@ -150,26 +153,38 @@ func captureReconcilerFor(t *testing.T, namespace string) *captureHarness {
 			ContentInit:     "ghcr.io/t/i@sha256:" + strings.Repeat("e", 64),
 		},
 	}
+}
+
+// captureReconcilerWith builds the reconciler over a caller-chosen store, so a
+// test can supply MinIO where the fake will not do.
+func captureReconcilerWith(t *testing.T, namespace string, store storage.Store, audit audit.Committer) *controller.CaptureJobReconciler {
+	t.Helper()
+	cfg := captureConfig(namespace)
+	return &controller.CaptureJobReconciler{
+		Client:   Client(),
+		Scheme:   Scheme(),
+		Config:   cfg,
+		Renderer: &controller.CaptureRenderer{Config: cfg},
+		Store:    store,
+		Audit:    audit,
+		Metrics:  telemetry.NewMetrics(),
+	}
+}
+
+func captureReconcilerFor(t *testing.T, namespace string) *captureHarness {
+	t.Helper()
 	store := storage.NewFake()
 	committer := &fakeCommitter{}
 	return &captureHarness{
-		r: &controller.CaptureJobReconciler{
-			Client:   Client(),
-			Scheme:   Scheme(),
-			Config:   cfg,
-			Renderer: &controller.CaptureRenderer{Config: cfg},
-			Store:    store,
-			Audit:    committer,
-			Metrics:  telemetry.NewMetrics(),
-		},
+		r:     captureReconcilerWith(t, namespace, store, committer),
 		store: store,
 		audit: committer,
 	}
 }
 
-func reconcileCapture(t *testing.T, h *captureHarness, job *trawlv1alpha1.CaptureJob) ctrl.Result {
+func reconcileCapture(t *testing.T, r *controller.CaptureJobReconciler, job *trawlv1alpha1.CaptureJob) ctrl.Result {
 	t.Helper()
-	res, err := h.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(job)})
+	res, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(job)})
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -226,7 +241,7 @@ func startedCapture(t *testing.T, ns, name string) (*captureHarness, *trawlv1alp
 	activeTap(t, ns, time.Now())
 	job := createCapture(t, ns, name)
 	h := captureReconcilerFor(t, ns)
-	reconcileCapture(t, h, job)
+	reconcileCapture(t, h.r, job)
 	job = reloadCapture(t, job)
 	runner := runnerJobOf(t, job)
 	return h, job, runner
@@ -285,11 +300,15 @@ func applyReporterPatch(t *testing.T, job *trawlv1alpha1.CaptureJob, p reporter.
 	}
 }
 
+// captureArtifactBody stands in for a pcapng. The controller never parses it -
+// it verifies size and checksum - and neither does the gateway.
+const captureArtifactBody = "not really a pcapng but the controller does not read it"
+
 // storeArtifact writes a verifiable object and manifest for the capture.
 // sizeSkew makes the manifest disagree with the object.
-func storeArtifact(t *testing.T, store *storage.Fake, job *trawlv1alpha1.CaptureJob, sizeSkew int64) {
+func storeArtifact(t *testing.T, store storage.Store, job *trawlv1alpha1.CaptureJob, sizeSkew int64) {
 	t.Helper()
-	body := []byte("not really a pcapng but the controller does not read it")
+	body := []byte(captureArtifactBody)
 	sum := sha256.Sum256(body)
 	hexSum := hex.EncodeToString(sum[:])
 	uid := string(job.UID)
@@ -340,7 +359,7 @@ func TestCaptureWaitsWhileTheTargetIsNotReady(t *testing.T) {
 	job := createCapture(t, ns, "waiting")
 	h := captureReconcilerFor(t, ns)
 
-	res := reconcileCapture(t, h, job)
+	res := reconcileCapture(t, h.r, job)
 	if res.RequeueAfter <= 0 {
 		t.Errorf("RequeueAfter = %v, want > 0 while waiting for the target", res.RequeueAfter)
 	}
@@ -414,7 +433,7 @@ func TestCaptureReconcileIsIdempotent(t *testing.T) {
 	ns := NewNamespace(t)
 	h, job, runner := startedCapture(t, ns, "idempotent")
 
-	reconcileCapture(t, h, job)
+	reconcileCapture(t, h.r, job)
 
 	if after := reloadCapture(t, job); after.ResourceVersion != job.ResourceVersion {
 		t.Errorf("CaptureJob resourceVersion changed %s -> %s on an unchanged second pass",
@@ -449,7 +468,7 @@ func TestCaptureAdoptsARunnerJobItAlreadyCreated(t *testing.T) {
 		t.Fatalf("pre-creating runner: %v", err)
 	}
 
-	reconcileCapture(t, h, job)
+	reconcileCapture(t, h.r, job)
 
 	after := reloadCapture(t, job)
 	if after.Status.RunnerJobRef == nil || after.Status.RunnerJobRef.Name != orphan.Name {
@@ -468,7 +487,7 @@ func TestCaptureFailsWhenTheTargetStaysUnavailable(t *testing.T) {
 	h := captureReconcilerFor(t, ns)
 	h.r.Now = func() time.Time { return job.CreationTimestamp.Add(5 * time.Minute) }
 
-	reconcileCapture(t, h, job)
+	reconcileCapture(t, h.r, job)
 
 	after := reloadCapture(t, job)
 	if after.Status.Phase != trawlv1alpha1.CapturePhaseFailed {
@@ -494,7 +513,7 @@ func TestCaptureFailsWhenTheTapIsNotActive(t *testing.T) {
 	h := captureReconcilerFor(t, ns)
 	h.r.Now = func() time.Time { return job.CreationTimestamp.Add(5 * time.Minute) }
 
-	reconcileCapture(t, h, job)
+	reconcileCapture(t, h.r, job)
 
 	after := reloadCapture(t, job)
 	if after.Status.Failure == nil || after.Status.Failure.Reason != trawlv1alpha1.FailureTapInactive {
@@ -519,7 +538,7 @@ func TestReporterFieldsSurviveTheControllersWrites(t *testing.T) {
 		},
 	})
 
-	reconcileCapture(t, h, reloadCapture(t, job))
+	reconcileCapture(t, h.r, reloadCapture(t, job))
 
 	after := reloadCapture(t, job)
 	if after.Status.Phase != trawlv1alpha1.CapturePhaseCapturing {
@@ -550,7 +569,7 @@ func TestCaptureCompletesOnAVerifiedArtifact(t *testing.T) {
 	storeArtifact(t, h.store, job, 0)
 	finishRunner(t, runner, batchv1.JobComplete, "")
 
-	res := reconcileCapture(t, h, job)
+	res := reconcileCapture(t, h.r, job)
 
 	after := reloadCapture(t, job)
 	if after.Status.Phase != trawlv1alpha1.CapturePhaseCompleted {
@@ -592,7 +611,7 @@ func TestCaptureFailsWhenTheRunnerFailsWithoutAnArtifact(t *testing.T) {
 	h, job, runner := startedCapture(t, ns, "runner-failed")
 	finishRunner(t, runner, batchv1.JobFailed, "BackoffLimitExceeded")
 
-	reconcileCapture(t, h, job)
+	reconcileCapture(t, h.r, job)
 
 	after := reloadCapture(t, job)
 	if after.Status.Phase != trawlv1alpha1.CapturePhaseFailed {
@@ -619,7 +638,7 @@ func TestCaptureFailsAndCleansUpOnAMismatchedArtifact(t *testing.T) {
 	storeArtifact(t, h.store, job, 4096)
 	finishRunner(t, runner, batchv1.JobComplete, "")
 
-	reconcileCapture(t, h, job)
+	reconcileCapture(t, h.r, job)
 
 	after := reloadCapture(t, job)
 	if after.Status.Failure == nil || after.Status.Failure.Reason != trawlv1alpha1.FailureArtifactMismatch {
@@ -643,7 +662,7 @@ func TestCaptureHoldsItsPhaseWhileStorageIsUnavailable(t *testing.T) {
 	finishRunner(t, runner, batchv1.JobComplete, "")
 	h.r.Store = headFailingStore{Store: h.store}
 
-	res := reconcileCapture(t, h, job)
+	res := reconcileCapture(t, h.r, job)
 
 	after := reloadCapture(t, job)
 	if after.Status.Phase != trawlv1alpha1.CapturePhasePending {
@@ -658,7 +677,7 @@ func TestCaptureHoldsItsPhaseWhileStorageIsUnavailable(t *testing.T) {
 	}
 
 	h.r.Store = h.store
-	reconcileCapture(t, h, reloadCapture(t, job))
+	reconcileCapture(t, h.r, reloadCapture(t, job))
 	if after := reloadCapture(t, job); after.Status.Phase != trawlv1alpha1.CapturePhaseCompleted {
 		t.Errorf("phase = %q after storage recovered, want Completed", after.Status.Phase)
 	}
@@ -685,7 +704,7 @@ func TestATransitionWaitsForItsAuditRecord(t *testing.T) {
 	}
 
 	h.audit.setFailure(nil)
-	reconcileCapture(t, h, reloadCapture(t, job))
+	reconcileCapture(t, h.r, reloadCapture(t, job))
 	after := reloadCapture(t, job)
 	if after.Status.Phase != trawlv1alpha1.CapturePhasePending {
 		t.Errorf("phase = %q after the ledger recovered, want Pending", after.Status.Phase)
@@ -705,7 +724,7 @@ func TestARestartedControllerPicksUpWhereItLeftOff(t *testing.T) {
 
 	h2 := captureReconcilerFor(t, ns)
 	h2.r.Store = h1.store
-	reconcileCapture(t, h2, job)
+	reconcileCapture(t, h2.r, job)
 
 	if after := reloadCapture(t, job); after.Status.Phase != trawlv1alpha1.CapturePhaseCompleted {
 		t.Errorf("phase = %q from a fresh reconciler, want Completed", after.Status.Phase)
@@ -717,7 +736,7 @@ func TestDeletingACaptureRemovesItsRunnerAndArtifact(t *testing.T) {
 	h, job, runner := startedCapture(t, ns, "deleted")
 	storeArtifact(t, h.store, job, 0)
 	finishRunner(t, runner, batchv1.JobComplete, "")
-	reconcileCapture(t, h, job)
+	reconcileCapture(t, h.r, job)
 	job = reloadCapture(t, job)
 	if job.Status.Phase != trawlv1alpha1.CapturePhaseCompleted {
 		t.Fatalf("phase = %q, want Completed before deletion", job.Status.Phase)
@@ -728,7 +747,7 @@ func TestDeletingACaptureRemovesItsRunnerAndArtifact(t *testing.T) {
 	}
 
 	// First pass: the runner Job goes and the pass waits for it.
-	res := reconcileCapture(t, h, job)
+	res := reconcileCapture(t, h.r, job)
 	if res.RequeueAfter <= 0 {
 		t.Errorf("RequeueAfter = %v while the Job is being deleted, want > 0", res.RequeueAfter)
 	}
@@ -741,7 +760,7 @@ func TestDeletingACaptureRemovesItsRunnerAndArtifact(t *testing.T) {
 	}
 
 	// Second pass: artifact deleted, both expiry records written, object released.
-	reconcileCapture(t, h, job)
+	reconcileCapture(t, h.r, job)
 	if h.store.ObjectCount() != 0 {
 		t.Errorf("%d objects remain after deletion, want 0", h.store.ObjectCount())
 	}
@@ -762,7 +781,7 @@ func TestReconcileRejectsACaptureOutsideTheSystemNamespace(t *testing.T) {
 	job := createCapture(t, other, "elsewhere")
 	h := captureReconcilerFor(t, ns)
 
-	reconcileCapture(t, h, job)
+	reconcileCapture(t, h.r, job)
 
 	after := reloadCapture(t, job)
 	if after.Status.Phase != trawlv1alpha1.CapturePhaseFailed {
@@ -788,7 +807,7 @@ func TestACaptureStoredWithABadSpecFailsInsteadOfRunning(t *testing.T) {
 	h := captureReconcilerFor(t, ns)
 	// The first pass adds the finalizer with a spec the apiserver accepts;
 	// the second sees a spec it would not have.
-	reconcileCapture(t, h, job)
+	reconcileCapture(t, h.r, job)
 	h.r.Client = &faultyClient{
 		Client: Client(),
 		afterGet: func(obj client.Object) {
@@ -798,7 +817,7 @@ func TestACaptureStoredWithABadSpecFailsInsteadOfRunning(t *testing.T) {
 		},
 	}
 
-	reconcileCapture(t, h, job)
+	reconcileCapture(t, h.r, job)
 
 	after := reloadCapture(t, job)
 	if after.Status.Failure == nil || after.Status.Failure.Reason != trawlv1alpha1.FailureInvalidBounds {
