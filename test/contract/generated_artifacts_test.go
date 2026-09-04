@@ -326,3 +326,67 @@ func TestObservationSchemaCompiles(t *testing.T) {
 		t.Fatalf("embedded observation schema does not compile: %v", err)
 	}
 }
+
+func TestNamedServiceTargetPortsAreDeclaredByAWorkload(t *testing.T) {
+	// A Service whose targetPort names a container port nothing declares gets
+	// no endpoints, and nothing anywhere says so: the Service exists, the
+	// Deployment is healthy, and clients simply cannot connect.
+	//
+	// config/audit/service.yaml forwarded to a port named "audit" that the
+	// manager did not declare. Since ADR-0003 gives ledger credentials to the
+	// manager alone, every other component commits audit records through that
+	// Service -- so the whole of FR-036 rested on a name that resolved to
+	// nothing.
+	declared := map[string]string{}
+	named := map[string][]string{}
+
+	forEachManifest(t, func(path string, content []byte) {
+		for _, part := range splitYAML(string(content)) {
+			var doc struct {
+				Kind string `json:"kind"`
+				Spec struct {
+					Template struct {
+						Spec struct {
+							Containers []struct {
+								Ports []struct {
+									Name string `json:"name"`
+								} `json:"ports"`
+							} `json:"containers"`
+						} `json:"spec"`
+					} `json:"template"`
+					Ports []struct {
+						TargetPort any `json:"targetPort"`
+					} `json:"ports"`
+				} `json:"spec"`
+			}
+			if err := yaml.Unmarshal([]byte(part), &doc); err != nil {
+				continue
+			}
+			switch doc.Kind {
+			case "Deployment", "DaemonSet", "StatefulSet":
+				for _, c := range doc.Spec.Template.Spec.Containers {
+					for _, p := range c.Ports {
+						if p.Name != "" {
+							declared[p.Name] = path
+						}
+					}
+				}
+			case "Service":
+				for _, p := range doc.Spec.Ports {
+					// A numeric targetPort needs no declaration; only a name
+					// can dangle.
+					if name, ok := p.TargetPort.(string); ok && name != "" {
+						named[name] = append(named[name], path)
+					}
+				}
+			}
+		}
+	})
+
+	for name, services := range named {
+		if _, ok := declared[name]; !ok {
+			t.Errorf("%s target a container port named %q, which no workload in config/ declares; "+
+				"the Service will have no endpoints", strings.Join(services, ", "), name)
+		}
+	}
+}
