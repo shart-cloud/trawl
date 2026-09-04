@@ -102,6 +102,25 @@ const (
 	ArtifactResultSuccess     = "success"
 	ArtifactResultFailure     = "failure"
 	ArtifactResultUnavailable = "unavailable"
+
+	// Gateway download outcomes. Finer than the audit decisions because the
+	// operational questions differ: "allowed versus denied" is an
+	// authorization question, while "denied versus expired versus
+	// unavailable" is the difference between a permissions problem, a
+	// retention policy working as intended, and an outage.
+	//
+	// The set is closed and small on purpose. The obvious label to reach for
+	// here is the HTTP status, and a status code turns one series into as many
+	// as the handler can produce.
+	DownloadAllowed         = "allowed"
+	DownloadDenied          = "denied"
+	DownloadUnauthenticated = "unauthenticated"
+	DownloadNotFound        = "not-found"
+	DownloadNotReady        = "not-ready"
+	DownloadExpired         = "expired"
+	DownloadBadRequest      = "bad-request"
+	DownloadRateLimited     = "rate-limited"
+	DownloadUnavailable     = "unavailable"
 )
 
 var (
@@ -119,7 +138,16 @@ var (
 	bounds           = []string{BoundDuration, BoundSize, BoundCancelled, BoundError}
 	artifactOps      = []string{ArtifactOpUpload, ArtifactOpVerify, ArtifactOpPresign, ArtifactOpDelete}
 	artifactResults  = []string{ArtifactResultSuccess, ArtifactResultFailure, ArtifactResultUnavailable}
+
+	downloadDecisions = []string{
+		DownloadAllowed, DownloadDenied, DownloadUnauthenticated, DownloadNotFound,
+		DownloadNotReady, DownloadExpired, DownloadBadRequest, DownloadRateLimited,
+		DownloadUnavailable,
+	}
 )
+
+// DownloadDecisions returns the contract gateway download decisions.
+func DownloadDecisions() []string { return slices.Clone(downloadDecisions) }
 
 // IsValidAuditDecision reports whether v is a contract audit decision.
 func IsValidAuditDecision(v string) bool { return slices.Contains(auditDecisions, v) }
@@ -162,6 +190,9 @@ func IsValidArtifactOp(v string) bool { return slices.Contains(artifactOps, v) }
 
 // IsValidArtifactResult reports whether v is a contract artifact operation result.
 func IsValidArtifactResult(v string) bool { return slices.Contains(artifactResults, v) }
+
+// IsValidDownloadDecision reports whether v is a contract gateway download decision.
+func IsValidDownloadDecision(v string) bool { return slices.Contains(downloadDecisions, v) }
 
 // BoundFor maps a CaptureJob stop reason onto the bound label. Anything the
 // API does not name is counted as an error stop rather than a new series.

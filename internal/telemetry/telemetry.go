@@ -330,7 +330,12 @@ func (m *Metrics) initSeries() {
 			m.ArtifactOperationsTotal.WithLabelValues(op, r)
 		}
 	}
-	m.ArtifactDownloadTotal.WithLabelValues(AuditDecisionAllowed)
+	// Every decision is primed, so a dashboard panel shows a flat zero line for
+	// "denied" rather than no series at all. An absent series and a series that
+	// is genuinely zero look identical on a graph and mean opposite things.
+	for _, d := range downloadDecisions {
+		m.ArtifactDownloadTotal.WithLabelValues(d)
+	}
 }
 
 // Health serves the liveness and readiness endpoints.
