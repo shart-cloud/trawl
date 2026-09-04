@@ -25,6 +25,7 @@ import (
 	"errors"
 	"io"
 	"math/rand/v2"
+	"net/http"
 	"testing"
 	"time"
 
@@ -48,6 +49,7 @@ func TestArtifactStorageSemantics(t *testing.T) {
 		"ManifestReadsBack":               checkManifestReadsBack,
 		"DeleteIsIdempotentAndHeadSeesIt": checkDelete,
 		"TimeoutIsHonoured":               checkTimeout,
+		"PresignedURLFetchesTheObject":    checkPresign,
 	} {
 		t.Run(name, func(t *testing.T) { check(t, store) })
 	}
@@ -244,4 +246,71 @@ func randomBytes(t *testing.T, n int) []byte {
 		binary.LittleEndian.PutUint64(b[i:], r.Uint64())
 	}
 	return b
+}
+
+// The gateway never serves packet bytes itself: it signs a URL and redirects.
+// That makes "a presigned URL actually fetches the object" a property of the
+// backend, not of our code, and the one the unit tests cannot show — they prove
+// the signature is well-formed, not that MinIO accepts it.
+func checkPresign(t *testing.T, store storage.Store) {
+	ctx := t.Context()
+	presigner, ok := store.(storage.Presigner)
+	if !ok {
+		t.Fatalf("%T does not implement Presigner", store)
+	}
+
+	body := []byte("presign round trip")
+	key := capture.ObjectKey("trawl-system", "presign-1")
+	if _, err := store.Put(ctx, key, body, storage.PutOptions{ContentType: capture.ContentTypePcapng}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	signed, err := presigner.PresignGet(ctx, key, time.Minute)
+	if err != nil {
+		t.Fatalf("PresignGet: %v", err)
+	}
+
+	// No Authorization header: the whole point is that the signature in the
+	// query string is sufficient, which is what lets the CLI follow the
+	// redirect without ever holding a bucket credential.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, signed.String(), nil)
+	if err != nil {
+		t.Fatalf("building request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("fetching the presigned URL: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("presigned GET status %d, want 200", resp.StatusCode)
+	}
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("reading the body: %v", err)
+	}
+	if !bytes.Equal(got, body) {
+		t.Errorf("presigned GET returned %d bytes, want the %d uploaded", len(got), len(body))
+	}
+
+	// An expired signature must be refused by the backend rather than merely
+	// unused by us. Without this, a TTL that silently did nothing would look
+	// identical to one that worked.
+	expiring, err := presigner.PresignGet(ctx, key, time.Second)
+	if err != nil {
+		t.Fatalf("PresignGet (short): %v", err)
+	}
+	time.Sleep(2 * time.Second)
+	expReq, err := http.NewRequestWithContext(ctx, http.MethodGet, expiring.String(), nil)
+	if err != nil {
+		t.Fatalf("building the expired request: %v", err)
+	}
+	expResp, err := http.DefaultClient.Do(expReq)
+	if err != nil {
+		t.Fatalf("fetching the expired URL: %v", err)
+	}
+	defer func() { _ = expResp.Body.Close() }()
+	if expResp.StatusCode == http.StatusOK {
+		t.Error("an expired presigned URL still served the object")
+	}
 }
