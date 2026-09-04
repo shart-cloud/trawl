@@ -108,7 +108,7 @@ func policyJob() *trawlv1alpha1.CaptureJob {
 func requestCtx(op admissionv1.Operation, username string, groups ...string) context.Context {
 	req := admission.Request{AdmissionRequest: admissionv1.AdmissionRequest{
 		UID:       types.UID("req-" + string(op)),
-		Kind:      metav1.GroupVersionKind{Group: "trawl.cloud", Version: "v1alpha1", Kind: "CaptureJob"},
+		Kind:      metav1.GroupVersionKind{Group: "trawl.cloud", Version: "v1alpha1", Kind: KindCaptureJob},
 		Resource:  metav1.GroupVersionResource{Group: "trawl.cloud", Version: "v1alpha1", Resource: "capturejobs"},
 		Name:      "manual-tls",
 		Namespace: "trawl-system",

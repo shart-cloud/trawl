@@ -30,6 +30,7 @@ package admission
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -99,9 +100,43 @@ func ResourceFrom(req admission.Request) audit.Resource {
 		Kind:      req.Kind.Kind,
 		Namespace: req.Namespace,
 		Name:      req.Name,
-		UID:       string(req.UID),
+		UID:       objectUID(req),
 	}
 }
+
+// objectUID reads metadata.uid from the object the request carries.
+//
+// It is emphatically not req.UID, which identifies the admission call and is
+// a different value from the object's own UID. Recording that one made the
+// ledger's resource.uid a duplicate of its requestID, so an admission record
+// could not be joined by UID to the transition records for the same object --
+// the one join the ledger exists to support. A create whose UID the apiserver
+// has not assigned yet leaves the field empty, which at least does not claim
+// to identify something; requestID still ties the record to the API server's
+// own audit log.
+func objectUID(req admission.Request) string {
+	for _, raw := range [][]byte{req.Object.Raw, req.OldObject.Raw} {
+		if len(raw) == 0 {
+			continue
+		}
+		var obj struct {
+			Metadata struct {
+				UID string `json:"uid"`
+			} `json:"metadata"`
+		}
+		if err := json.Unmarshal(raw, &obj); err != nil {
+			continue
+		}
+		if obj.Metadata.UID != "" {
+			return obj.Metadata.UID
+		}
+	}
+	return ""
+}
+
+// KindCaptureJob is the CaptureJob kind as it appears in an admission
+// request, named once so the dispatch below and the tests agree on it.
+const KindCaptureJob = "CaptureJob"
 
 // ActionFor maps a kind and operation to the audit action enum.
 func ActionFor(kind string, op admissionv1.Operation) (string, error) {
@@ -124,7 +159,7 @@ func ActionFor(kind string, op admissionv1.Operation) (string, error) {
 		case admissionv1.Delete:
 			return audit.ActionCapturePolicyDelete, nil
 		}
-	case "CaptureJob":
+	case KindCaptureJob:
 		// Create is Manual by default; the CaptureJob webhook substitutes the
 		// policy action when the request type says so, via CommitMutationAs.
 		switch op {
