@@ -55,7 +55,7 @@ func TestDevConfigCredentialPathsAreMounted(t *testing.T) {
 		t.Fatalf("the dev configuration does not load: %v", err)
 	}
 
-	mounts, volumes := managerCredentialSurface(t)
+	mounts, volumes := credentialSurface(t, filepath.Join("..", "..", "config", "manager", "manager.yaml"))
 
 	for _, want := range []struct {
 		field string
@@ -106,12 +106,12 @@ func TestDevConfigCredentialPathsAreMounted(t *testing.T) {
 // managerCredentialSurface returns the manager container's read-only mount
 // paths mapped to their volume names, and the volume names that are Secrets
 // mapped to the secret they name.
-func managerCredentialSurface(t *testing.T) (map[string]string, map[string]string) {
+func credentialSurface(t *testing.T, manifestPath string) (map[string]string, map[string]string) {
 	t.Helper()
 
-	raw, err := os.ReadFile(filepath.Join("..", "..", "config", "manager", "manager.yaml"))
+	raw, err := os.ReadFile(manifestPath)
 	if err != nil {
-		t.Skipf("manager manifest absent: %v", err)
+		t.Skipf("manifest %s absent: %v", manifestPath, err)
 	}
 
 	type manifest struct {
@@ -148,7 +148,7 @@ func managerCredentialSurface(t *testing.T) (map[string]string, map[string]strin
 		}
 		var m manifest
 		if err := yaml.Unmarshal([]byte(doc), &m); err != nil {
-			t.Fatalf("the manager manifest is not valid YAML: %v", err)
+			t.Fatalf("%s is not valid YAML: %v", manifestPath, err)
 		}
 		if m.Kind != "Deployment" {
 			continue
@@ -171,7 +171,67 @@ func managerCredentialSurface(t *testing.T) (map[string]string, map[string]strin
 		}
 	}
 	if !found {
-		t.Fatal("the manager manifest contains no Deployment")
+		t.Fatalf("%s contains no Deployment", manifestPath)
 	}
 	return mounts, volumes
+}
+
+// The same pairing check for the artifact gateway, and for the same reason: the
+// configuration and the deployment can each be valid while being wrong about
+// each other, and the symptom is a pod that reads its config, finds a
+// certificate path that does not exist in its container, and refuses to start.
+//
+// The gateway has more to get wrong than the manager. It mounts three separate
+// secrets - the artifact credential, its serving certificate, and its audit
+// client certificate - and two of them are files rather than directories.
+func TestDevConfigGatewayPathsAreMounted(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "config", "dev", "trawl-config.yaml"))
+	if err != nil {
+		t.Skipf("dev configuration absent: %v", err)
+	}
+	var cm struct {
+		Data map[string]string `json:"data"`
+	}
+	if err := yaml.Unmarshal(raw, &cm); err != nil {
+		t.Fatalf("the dev ConfigMap is not valid YAML: %v", err)
+	}
+	cfg, err := Load([]byte(cm.Data["config.yaml"]))
+	if err != nil {
+		t.Fatalf("the dev configuration does not load: %v", err)
+	}
+
+	mounts, volumes := credentialSurface(t, filepath.Join("..", "..", "config", "gateway", "deployment.yaml"))
+
+	// The bucket credential is a directory; storage.NewS3Store reads
+	// accessKeyID and secretAccessKey from inside it.
+	if volume, ok := mounts[cfg.Artifacts.CredentialsPath]; !ok {
+		t.Errorf("artifacts.credentialsPath is %s, but the gateway mounts nothing there; "+
+			"it could not presign anything", cfg.Artifacts.CredentialsPath)
+	} else if secret, ok := volumes[volume]; !ok || secret == "" {
+		t.Errorf("artifacts.credentialsPath is mounted from volume %q, which is not backed by a Secret", volume)
+	}
+
+	// The certificates are named files, so what has to be mounted is the
+	// directory each sits in.
+	for _, want := range []struct {
+		field string
+		path  string
+	}{
+		{"gateway.certFile", cfg.Gateway.CertFile},
+		{"gateway.keyFile", cfg.Gateway.KeyFile},
+		{"gateway.auditClient.caFile", cfg.Gateway.AuditClient.CAFile},
+		{"gateway.auditClient.certFile", cfg.Gateway.AuditClient.CertFile},
+		{"gateway.auditClient.keyFile", cfg.Gateway.AuditClient.KeyFile},
+	} {
+		dir := filepath.Dir(want.path)
+		volume, ok := mounts[dir]
+		if !ok {
+			t.Errorf("%s is %s, but the gateway mounts nothing at %s; it would not start",
+				want.field, want.path, dir)
+			continue
+		}
+		if secret, ok := volumes[volume]; !ok || secret == "" {
+			t.Errorf("%s is mounted from volume %q, which is not backed by a Secret", want.field, volume)
+		}
+	}
 }

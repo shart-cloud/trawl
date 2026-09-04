@@ -208,8 +208,19 @@ From the first terminal, pipe a short-lived, explicitly authorized analyst servi
 account token to the supported CLI without putting the credential in process
 arguments:
 
+The `--audience` is not optional. The gateway only accepts tokens minted for
+it, so that a service account's default token — which every pod in the cluster
+carries — cannot be replayed here to fetch packet captures. Export the CA the
+gateway is issued from first:
+
 ```bash
-kubectl -n trawl-system create token trawl-acceptance-analyst --duration=10m | \
+kubectl -n trawl-system get secret trawl-ca -o jsonpath='{.data.ca\.crt}' \
+  | base64 -d > test/e2e/certs/gateway-ca.crt
+```
+
+```bash
+kubectl -n trawl-system create token trawl-acceptance-analyst \
+  --audience=trawl-artifact-gateway --duration=10m | \
   trawlctl capture download manual-tls \
   --namespace trawl-system \
   --gateway https://127.0.0.1:8443 \
@@ -223,7 +234,10 @@ Expected: the checksum equals `status.sha256`; the redirect and credential do no
 appear in logs. The Capture Management dashboard shows the same non-secret copyable
 `trawlctl` command and the Overview now includes recent capture activity. Repeat
 with a token from `trawl-acceptance-viewer`; expect `403` and no evidence that an
-artifact exists.
+artifact exists. The two service accounts are bound to the `trawl-capture-analyst`
+and `trawl-capture-viewer` ClusterRoles respectively; the difference between them
+is the `capturejobs/download` subresource, which is what separates "may see that a
+capture happened" from "may read the traffic".
 
 Invalid filter path:
 

@@ -26,7 +26,9 @@ package contract
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -389,4 +391,147 @@ func TestNamedServiceTargetPortsAreDeclaredByAWorkload(t *testing.T) {
 				"the Service will have no endpoints", strings.Join(services, ", "), name)
 		}
 	}
+}
+
+func TestNetworkPolicyIngressPortsAreDeclaredContainerPorts(t *testing.T) {
+	// A NetworkPolicy port is a port on the receiving pod, not the port its
+	// Service publishes. The audit sink's rule opened 8443 -- the Service's
+	// port -- while the manager serves the sink on 9444, so the rule actually
+	// opened the metrics port and left the sink closed to every component that
+	// has no other way to record what it did.
+	//
+	// Nothing catches that at apply time: both numbers are valid, the policy is
+	// accepted, and the only symptom is a connection that times out. The
+	// adjacent Service check above cannot see it either, because a
+	// NetworkPolicy names no Service.
+	//
+	// Be clear about the limit: this would NOT have caught that particular
+	// defect, because 8443 was also the manager's real metrics port, so the
+	// rule opened something. What it catches is the same mistake whenever the
+	// Service port is not independently a port of that pod - the common case,
+	// and the one the gateway's own 443-versus-8443 pair would have hit. It is
+	// a floor, not a proof.
+	declared := map[string]map[int]bool{} // component -> container ports
+	policies := map[string][]int{}        // component -> ingress ports
+
+	const componentLabel = "app.kubernetes.io/component"
+
+	// Rendered rather than read from config/, because kustomize patches add
+	// both ports and the arguments that open them: the manager's webhook port
+	// exists only after config/default is built, so a check against the source
+	// files would be judging a workload that is not the one deployed.
+	{
+		for _, part := range splitYAML(renderDefault(t)) {
+			var doc struct {
+				Kind string `json:"kind"`
+				Spec struct {
+					Template struct {
+						Metadata struct {
+							Labels map[string]string `json:"labels"`
+						} `json:"metadata"`
+						Spec struct {
+							Containers []struct {
+								Ports []struct {
+									ContainerPort int `json:"containerPort"`
+								} `json:"ports"`
+							} `json:"containers"`
+						} `json:"spec"`
+					} `json:"template"`
+					PodSelector struct {
+						MatchLabels map[string]string `json:"matchLabels"`
+					} `json:"podSelector"`
+					Ingress []struct {
+						Ports []struct {
+							Port     any    `json:"port"`
+							Protocol string `json:"protocol"`
+						} `json:"ports"`
+					} `json:"ingress"`
+				} `json:"spec"`
+			}
+			if err := yaml.Unmarshal([]byte(part), &doc); err != nil {
+				continue
+			}
+
+			switch doc.Kind {
+			case "Deployment", "DaemonSet", "StatefulSet":
+				component := doc.Spec.Template.Metadata.Labels[componentLabel]
+				if component == "" {
+					continue
+				}
+				if declared[component] == nil {
+					declared[component] = map[int]bool{}
+				}
+				for _, c := range doc.Spec.Template.Spec.Containers {
+					for _, p := range c.Ports {
+						declared[component][p.ContainerPort] = true
+					}
+				}
+			case "NetworkPolicy":
+				// Only policies that single out one workload can be checked
+				// this way. A namespace-wide default-deny selects everything
+				// and its ports belong to no one container.
+				component := doc.Spec.PodSelector.MatchLabels[componentLabel]
+				if component == "" {
+					continue
+				}
+				for _, rule := range doc.Spec.Ingress {
+					for _, p := range rule.Ports {
+						// A named port in a NetworkPolicy resolves against the
+						// pod too, but only numbers can be silently wrong in
+						// the way that matters here.
+						if n, ok := p.Port.(float64); ok {
+							policies[component] = append(policies[component], int(n))
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if len(policies) == 0 {
+		t.Fatal("no per-workload NetworkPolicy found; this check would pass vacuously")
+	}
+
+	for component, ports := range policies {
+		containerPorts, ok := declared[component]
+		if !ok {
+			t.Errorf("a NetworkPolicy selects component %q, which no rendered workload declares", component)
+			continue
+		}
+		for _, port := range ports {
+			if !containerPorts[port] {
+				t.Errorf("a NetworkPolicy allows ingress to port %d on component %q, which declares no such "+
+					"container port; a NetworkPolicy port is the pod's port, not its Service's",
+					port, component)
+			}
+		}
+	}
+}
+
+// renderDefault builds config/default the way a deploy does.
+//
+// Several properties worth asserting only exist after kustomization: patches
+// add container ports and the flags that open them, and namePrefix decides the
+// names objects actually reference each other by. Checking the source files
+// instead would be checking a workload nobody runs.
+func renderDefault(t *testing.T) string {
+	t.Helper()
+	root := repoRoot(t)
+	kustomize := filepath.Join(root, "bin", "kustomize")
+	if _, err := os.Stat(kustomize); err != nil {
+		t.Skipf("bin/kustomize absent, run `make kustomize`: %v", err)
+	}
+
+	//nolint:gosec // G204: both the binary and the path are derived from the
+	// repository root this test located itself; there is no caller input.
+	cmd := exec.CommandContext(t.Context(), kustomize, "build", filepath.Join(root, "config", "default"))
+	out, err := cmd.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			t.Fatalf("kustomize build config/default: %v: %s", err, exitErr.Stderr)
+		}
+		t.Fatalf("kustomize build config/default: %v", err)
+	}
+	return string(out)
 }
