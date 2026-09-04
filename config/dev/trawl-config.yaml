@@ -157,9 +157,9 @@ data:
       refreshInterval: 24h
 
     images:
-      suricata: ghcr.io/shart-cloud/trawl/suricata@sha256:a6f2bccbdb53857c9621608db634144323c3e2d3a441ffa0b9110e90bd4d1aa5
-      zeek: ghcr.io/shart-cloud/trawl/zeek@sha256:5d562fa418199558f1965c7a121b62dbddaa016b51a51dd2212c049d5b5ab213
-      sensorAgent: ghcr.io/shart-cloud/trawl/sensor-agent@sha256:d4240132391e8db6340dc26e7f02680e4c4b4f6760a8a89276a0b2467f03f08e
-      contentInit: ghcr.io/shart-cloud/trawl/content-init@sha256:6ea47502a36cb8c2c60c7da5b28a05b437ca88c968fbf27950b11659e9806877
-      captureRunner: ghcr.io/shart-cloud/trawl/capture-runner@sha256:3e8769eeaf20cd250cf29cb090206007fed93cf193ed99d635034e70d57d9ff9
-      captureReporter: ghcr.io/shart-cloud/trawl/capture-reporter@sha256:b9164a8e59bddd935f590ab902c45a8f366ba6a930cfae6e805bd771e246a700
+      suricata: ghcr.io/shart-cloud/trawl/suricata@sha256:e3347bb5277eebb6714a3269c15f2eecbb93bb087bc4c83f1100cbe7d7216dd1
+      zeek: ghcr.io/shart-cloud/trawl/zeek@sha256:9d8a89a046e1bb88ea579852f1dc05838ebaacf3edeb65fab37162d8f6c4a575
+      sensorAgent: ghcr.io/shart-cloud/trawl/sensor-agent@sha256:07ffa54d44ac597ef282c3c4daa8f706a03414c9a197ffb92c2e90ebd0a3fe2a
+      contentInit: ghcr.io/shart-cloud/trawl/content-init@sha256:c9556fdde44c276332e4baaeb0513e767b6c8fe0543e8e059cd37baa7f5175c6
+      captureRunner: ghcr.io/shart-cloud/trawl/capture-runner@sha256:74426154c4e13cac12ee09fd38a86b86606f8c991c6aefcb4f0e3168cfa5f97b
+      captureReporter: ghcr.io/shart-cloud/trawl/capture-reporter@sha256:1a0f1cfd31e3e9384b304863e667197436f271c2befa5d4ee75d86218dc54263
