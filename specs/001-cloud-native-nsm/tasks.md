@@ -400,6 +400,17 @@ diverge.
   verification, the exclusive deadline, and the completedAt-based recomputation
   - were removed one at a time and each was caught by a named test failing for
   the right reason.
+- Deploying is two applies, and their order matters. `config/dev/trawl-config.yaml`
+  is not part of `config/default`, so `kustomize build config/default | kubectl
+  apply` repoints only the three Deployments and the CRD; the ConfigMap holding
+  the sensor, runner and reporter digests needs its own apply. Applying it
+  *after* the Deployments, as this deploy first did, leaves the controller
+  having loaded the previous config at startup - the pod started at 22:12:21 and
+  the ConfigMap was written at 22:12:24 - so it renders the tap from stale image
+  references and would create capture runners from the previous build. The
+  symptom is visible in the tap DaemonSet's container images and nowhere else,
+  and both applies report success either way. Apply the ConfigMap first, or
+  restart the controller and event worker afterwards.
 - T093: `capture-management.json` is the first Prometheus dashboard in the
   repository; the other three are Loki-only. Two contract rules were written as
   statements about every query and are really statements about LogQL - Loki
