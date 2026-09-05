@@ -50,11 +50,14 @@ type Fake struct {
 	headCounts  map[string]int
 	conditional map[string]bool
 
-	putErr  error
-	headErr error
-	swallow bool
-	clock   func() time.Time
-	seq     int
+	putErr       error
+	headErr      error
+	deleteErr    error
+	swallow      bool
+	swallowDels  bool
+	deleteCounts map[string]int
+	clock        func() time.Time
+	seq          int
 }
 
 type fakeObject struct {
@@ -67,10 +70,11 @@ type fakeObject struct {
 func NewFake() *Fake {
 	start := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	f := &Fake{
-		objects:     make(map[string]fakeObject),
-		putCounts:   make(map[string]int),
-		headCounts:  make(map[string]int),
-		conditional: make(map[string]bool),
+		objects:      make(map[string]fakeObject),
+		putCounts:    make(map[string]int),
+		headCounts:   make(map[string]int),
+		deleteCounts: make(map[string]int),
+		conditional:  make(map[string]bool),
 	}
 	f.clock = func() time.Time {
 		f.seq++
@@ -98,6 +102,28 @@ func (f *Fake) FailHead(err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.headErr = err
+}
+
+// FailDelete makes every subsequent Delete return err, simulating a backend
+// that will not accept the removal. Retention must keep the artifact out of
+// reach and try again rather than report an expiry it did not perform.
+func (f *Fake) FailDelete(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deleteErr = err
+}
+
+// SwallowDeletes makes Delete report success while leaving the object in
+// place, simulating a backend that acknowledges a removal it did not perform.
+//
+// This is the only reason verifying absence with Head after a delete is worth
+// anything: against a store that always tells the truth, the check cannot
+// fail, so a test using one proves the check is present and nothing about
+// whether it works.
+func (f *Fake) SwallowDeletes(v bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.swallowDels = v
 }
 
 // SwallowPuts makes Put report success without persisting, simulating a backend
@@ -214,6 +240,13 @@ func (f *Fake) Delete(_ context.Context, key string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	f.deleteCounts[key]++
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	if f.swallowDels {
+		return nil
+	}
 	delete(f.objects, key)
 	for i, k := range f.order {
 		if k == key {
@@ -222,6 +255,13 @@ func (f *Fake) Delete(_ context.Context, key string) error {
 		}
 	}
 	return nil
+}
+
+// DeleteCount reports how many times key was asked to be removed.
+func (f *Fake) DeleteCount(key string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.deleteCounts[key]
 }
 
 // Object returns a stored body, or nil.

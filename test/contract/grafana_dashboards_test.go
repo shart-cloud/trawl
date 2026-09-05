@@ -25,6 +25,18 @@ import (
 	"testing"
 )
 
+// datasourceRef is the "which backend" half of a panel or target. A target may
+// leave it out, in which case the panel's applies.
+type datasourceRef struct {
+	Type string `json:"type"`
+}
+
+// panelTarget is one query on a panel.
+type panelTarget struct {
+	Expr       string        `json:"expr"`
+	Datasource datasourceRef `json:"datasource"`
+}
+
 type dashboard struct {
 	UID         string `json:"uid"`
 	Title       string `json:"title"`
@@ -37,9 +49,8 @@ type dashboard struct {
 		Options     struct {
 			Content string `json:"content"`
 		} `json:"options"`
-		Targets []struct {
-			Expr string `json:"expr"`
-		} `json:"targets"`
+		Datasource datasourceRef `json:"datasource"`
+		Targets    []panelTarget `json:"targets"`
 	} `json:"panels"`
 	Templating struct {
 		List []struct {
@@ -86,6 +97,31 @@ func allExprs(d dashboard) []string {
 	return out
 }
 
+// lokiExprs returns only the LogQL queries.
+//
+// The stream-selector and cluster rules below are statements about Loki: it
+// indexes a small fixed label set and holds every cluster's records in one
+// place. Prometheus does neither, and its metric selectors use the same brace
+// syntax, so applying those rules to a PromQL query rejects correct label
+// matchers and demands a cluster label the series do not carry. Until
+// capture-management arrived every dashboard was Loki-only and the distinction
+// did not exist.
+func lokiExprs(d dashboard) []string {
+	var out []string
+	for _, p := range d.Panels {
+		for _, tgt := range p.Targets {
+			kind := tgt.Datasource.Type
+			if kind == "" {
+				kind = p.Datasource.Type
+			}
+			if kind == "loki" {
+				out = append(out, tgt.Expr)
+			}
+		}
+	}
+	return out
+}
+
 // streamSelectorRE captures the label set at the head of a LogQL query.
 var streamSelectorRE = regexp.MustCompile(`\{([^}]*)\}`)
 
@@ -104,7 +140,7 @@ func TestDashboardsSelectStreamsOnlyByContractLabels(t *testing.T) {
 	}
 
 	for name, d := range loadDashboards(t) {
-		for _, expr := range allExprs(d) {
+		for _, expr := range lokiExprs(d) {
 			m := streamSelectorRE.FindStringSubmatch(expr)
 			if m == nil {
 				continue
@@ -158,9 +194,7 @@ func TestInvestigationDashboardSeparatesExactFromApproximate(t *testing.T) {
 	}
 }
 
-func exprsOf(targets []struct {
-	Expr string `json:"expr"`
-}) []string {
+func exprsOf(targets []panelTarget) []string {
 	out := make([]string, 0, len(targets))
 	for _, t := range targets {
 		out = append(out, t.Expr)
@@ -262,12 +296,13 @@ func TestDashboardsCarryNoSecretsOrDownloadLinks(t *testing.T) {
 }
 
 func TestRequiredDashboardsExist(t *testing.T) {
-	// FR-014's overview, plus the two investigation views US2 delivers. The
-	// capture-management dashboard arrives with US3.
+	// FR-014's overview, the two investigation views US2 delivers, and US3's
+	// capture management.
 	required := map[string]string{
 		"trawl-overview.json":      "trawl-overview",
 		"alert-investigation.json": "trawl-alert-investigation",
 		"protocol-analysis.json":   "trawl-protocol-analysis",
+		"capture-management.json":  "trawl-capture-management",
 	}
 
 	dashboards := loadDashboards(t)
@@ -339,7 +374,7 @@ func TestDashboardsPinTheClusterLabel(t *testing.T) {
 	// Without it a query spans every cluster writing to the same Loki, which
 	// mixes one homelab's evidence with another's.
 	for name, d := range loadDashboards(t) {
-		for _, expr := range allExprs(d) {
+		for _, expr := range lokiExprs(d) {
 			if !strings.Contains(expr, "{") {
 				continue
 			}

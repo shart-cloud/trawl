@@ -1,0 +1,478 @@
+{
+  "uid": "trawl-capture-management",
+  "title": "Trawl Capture Management",
+  "description": "Bounded packet captures from request to expiry: what was collected, how long it took, who downloaded it, and whether retention actually removed it.",
+  "tags": [
+    "trawl",
+    "capture",
+    "us3"
+  ],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "1m",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Metrics",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "options": []
+      },
+      {
+        "name": "logs",
+        "label": "Logs",
+        "type": "datasource",
+        "query": "loki",
+        "current": {},
+        "options": []
+      },
+      {
+        "name": "cluster",
+        "label": "Cluster",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "${logs}"
+        },
+        "query": {
+          "label": "cluster",
+          "stream": "{service_name=\"trawl-audit\"}",
+          "type": 1
+        },
+        "refresh": 1,
+        "current": {},
+        "options": []
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Captures by lifecycle transition",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (to) (rate(trawl_capture_transitions_total[$__rate_interval]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "{{to}}"
+        }
+      ],
+      "description": "Where captures are moving. A rise in transitions to Failed with a flat Completed line means requests are being accepted and not producing evidence.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "title": "Capture requests by result",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (request_type, result) (rate(trawl_capture_requests_total[$__rate_interval]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "{{request_type}} {{result}}"
+        }
+      ],
+      "description": "Requests reaching the controller, split by how they were answered. Manual and policy-driven captures are counted separately because they fail for different reasons.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "title": "Time to first packet",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, request_type) (rate(trawl_capture_start_latency_seconds_bucket[$__rate_interval])))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "p95 {{request_type}}"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.50, sum by (le, request_type) (rate(trawl_capture_start_latency_seconds_bucket[$__rate_interval])))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "p50 {{request_type}}"
+        }
+      ],
+      "description": "Request to CaptureStarted: scheduling the runner, pulling its image, and compiling the filter. This is the window in which the traffic under investigation is still being missed.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "title": "Time to stored artifact",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, result) (rate(trawl_capture_store_latency_seconds_bucket[$__rate_interval])))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "p95 {{result}}"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.50, sum by (le, result) (rate(trawl_capture_store_latency_seconds_bucket[$__rate_interval])))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "p50 {{result}}"
+        }
+      ],
+      "description": "Capture end to verified object. A failed upload that retries shows here as a long tail rather than an error, so read it alongside the artifact operations panel.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "title": "What stopped each capture",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 16
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (bound) (increase(trawl_capture_bound_stop_total[$__interval]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "{{bound}}"
+        }
+      ],
+      "description": "Captures stopping on size rather than duration are being truncated: the requested window was not fully observed, and the analyst is looking at a prefix of the traffic."
+    },
+    {
+      "id": 6,
+      "title": "Capture size",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 16
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, request_type) (rate(trawl_capture_size_bytes_bucket[$__rate_interval])))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "p95 {{request_type}}"
+        }
+      ],
+      "description": "Artifact sizes. Read with the bound panel: sizes pinned at the configured maximum are the same captures stopping on size.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 7,
+      "title": "Artifact operations",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 16
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (operation, result) (rate(trawl_artifact_operations_total[$__rate_interval]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "{{operation}} {{result}}"
+        }
+      ],
+      "description": "Upload, verify, redirect and delete against the artifact bucket. A failure series here is the bucket, not the capture path.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 8,
+      "title": "Download decisions",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 24
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (decision) (increase(trawl_artifact_download_total[$__interval]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "{{decision}}"
+        }
+      ],
+      "description": "Every download the gateway answered, by decision. All eight decisions are pre-primed, so a flat zero line means nobody was refused rather than nothing being recorded."
+    },
+    {
+      "id": 9,
+      "title": "Expiry lag",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 24
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(trawl_artifact_expiry_lag_seconds_bucket[$__rate_interval])))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "p95"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(trawl_artifact_expiry_lag_seconds_bucket[$__rate_interval])))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "p50"
+        }
+      ],
+      "description": "Verified deletion time minus the retention deadline. The bound is 24 hours: past that an artifact that should be gone demonstrably is not, which is a retention commitment being broken.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 10,
+      "title": "Retention enforcement failures",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 32
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (result) (rate(trawl_reconcile_total{controller=\"retention\"}[$__rate_interval]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "{{result}}"
+        }
+      ],
+      "description": "Retention reconciles by outcome. A sustained error series means a bucket refusing deletes, and the artifacts involved are still readable on disk while the capture says they should not be.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 11,
+      "title": "Artifacts past their deadline",
+      "type": "stat",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 32
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(trawl_artifact_operations_total{operation=\"delete\", result=\"failure\"}[24h]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "failed deletions (24h)",
+          "instant": true
+        }
+      ],
+      "description": "Deletions that failed in the last day. Anything other than zero here is an artifact whose retention deadline has passed and whose bytes are still in the bucket."
+    },
+    {
+      "id": 12,
+      "title": "Audit ledger: capture and artifact records",
+      "type": "logs",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 40
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "${logs}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service_name=\"trawl-audit\", cluster=\"$cluster\"} | json | action=~\"capturejob.transition|artifact.download|artifact.expire|retention.change\"",
+          "queryType": "range",
+          "datasource": {
+            "type": "loki",
+            "uid": "${logs}"
+          }
+        }
+      ],
+      "description": "The ledger entries behind the panels above. This is the authoritative record: the metrics are counts, and these are the decisions."
+    },
+    {
+      "id": 13,
+      "title": "Downloading a capture",
+      "type": "text",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 48
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [],
+      "description": "How an analyst retrieves an artifact. Nothing here is a credential: the token is minted at the moment of use, scoped to this gateway, and never appears in an argument.",
+      "options": {
+        "mode": "markdown",
+        "content": "### Downloading a capture\n\n`trawlctl` runs on the analyst's workstation. Build it with `make trawlctl`.\n\n```bash\nkubectl -n trawl-system port-forward service/trawl-artifact-gateway 8443:443\n```\n\n```bash\nkubectl -n trawl-system create token trawl-acceptance-analyst \\\n  --audience=trawl-artifact-gateway --duration=10m | \\\n  trawlctl capture download CAPTURE_NAME \\\n  --namespace trawl-system \\\n  --gateway https://127.0.0.1:8443 \\\n  --ca gateway-ca.crt \\\n  --token-stdin \\\n  --output CAPTURE_NAME.pcapng\n```\n\nThe `--audience` is not optional: the gateway refuses a service account's\ndefault token, so one cannot be replayed here to fetch packet captures.\nThe gateway redirects to the object store, which the workstation must be\nable to reach under the hostname the redirect is signed for.\n\nTreat the result as sensitive evidence and dispose of it through the\nworkstation's approved secure-file process."
+      }
+    }
+  ]
+}

@@ -186,7 +186,7 @@ expired paths.
 - [x] T071 [P] [US3] Add failing real-MinIO tests for stable object keys, conditional upload, manifest/checksum verification, missing/mismatch handling, presign ceiling, and idempotent delete in `test/integration/artifact_storage_test.go`
 - [x] T072 [P] [US3] Add failing envtest cases for target resolution, stable Job/reporter creation, reporter field ownership and progress patches, existing Job/object adoption, storage failure, audit failure, controller restart, and one terminal result in `internal/controller/capturejob_controller_test.go`
 - [X] T073 [P] [US3] Add failing OpenAPI/handler/CLI tests for TokenReview audience, `capturejobs/download` SubjectAccessReview, enumeration resistance, lifecycle responses, no-store headers, short redirects, and durable audit acknowledgement before redirect in `internal/gateway/handler_test.go` and `internal/gateway/client_test.go`
-- [ ] T074 [P] [US3] Add failing fake-clock tests for exact deadline denial, authorized shortening/extension, upload protection, hourly deletion retry, 24-hour bound, and metadata preservation in `internal/controller/retention_test.go`
+- [x] T074 [P] [US3] Add failing fake-clock tests for exact deadline denial, authorized shortening/extension, upload protection, hourly deletion retry, 24-hour bound, and metadata preservation in `internal/controller/retention_test.go`
 - [ ] T075 [US3] Add a failing end-to-end manual capture matrix for reporter-driven progress, successful CLI download, invalid-filter, inactive-source, unavailable-target, zero-packet, full-storage, audit outage, restart, unauthorized-download, and expiry cases in `test/e2e/manual_capture_test.go`
 
 ### Implementation for User Story 3
@@ -202,13 +202,13 @@ expired paths.
 - [x] T084 [US3] Implement deterministic node-pinned Kubernetes Job rendering with direct interface access, ephemeral-storage bounds, explicit capture-only capabilities, shared progress `emptyDir`, unprivileged reporter sidecar, capture-container token suppression, reporter projected token, resource-name-scoped status Role, and owner reference in `internal/controller/capturejob_workload.go`
 - [x] T085 [US3] Implement CaptureJob reconciliation, active tap/target resolution, Job observation/adoption, reporter-owned progress consumption, S3 HEAD verification, durable audit before lifecycle commits, conditions, retries, and terminal convergence in `internal/controller/capturejob_controller.go`
 - [x] T086 [US3] Implement the guarded lifecycle transition and artifact-downloadability logic used by the reconciler and gateway in `internal/capture/state.go`
-- [ ] T087 [US3] Implement deadline calculation, immediate download denial, upload-aware hourly deletion, object absence verification, retry conditions, and `Expired` transition in `internal/controller/retention.go`
+- [x] T087 [US3] Implement deadline calculation, immediate download denial, upload-aware hourly deletion, object absence verification, retry conditions, and `Expired` transition in `internal/controller/retention.go`
 - [X] T088 [P] [US3] Implement audience-bound Kubernetes TokenReview and resource-name/subresource SubjectAccessReview clients with deny-by-default caching in `internal/authz/kubernetes.go`
 - [X] T089 [US3] Implement the artifact gateway download handler and CLI client library with live CaptureJob/object verification, five-minute/deadline presign calculation, enumeration-safe errors, no-store responses, rate limits, and durable audit acknowledgement before redirect in `internal/gateway/handler.go` and `internal/gateway/client.go`
 - [X] T090 [US3] Wire TLS serving, auth/audit/storage clients, probes, metrics, request IDs, graceful shutdown, and log redaction in `cmd/artifact-gateway/main.go`, and implement bearer-producing kubeconfig-exec or token-stdin download without credential arguments in `cmd/trawlctl/main.go`
 - [X] T091 [US3] Deploy the gateway and capture reporter permissions with explicit ServiceAccounts, resource-name-scoped reporter status Roles, `capturejobs/download` roles, TokenReview/SubjectAccessReview access, artifact-only storage Secret mounts, audit-sink mTLS, TLS, and NetworkPolicies in `config/gateway/deployment.yaml` and `config/rbac/artifact-gateway-role.yaml`
 - [ ] T092 [US3] Generate and review the CaptureJob CRD/cluster-wide namespace-rejecting webhook/namespaced RBAC, manual analyst and retention-admin roles, successful/invalid samples, and capture image digest patch in `config/crd/bases/trawl.cloud_capturejobs.yaml`, `config/rbac/capturejob-roles.yaml`, and `config/samples/`
-- [ ] T093 [US3] Extend Trawl Overview with recent capture activity and add execution lifecycle, artifact health, retention, storage usage, and non-secret copyable `trawlctl` commands to `config/grafana/dashboards/trawl-overview.json` and `config/grafana/dashboards/capture-management.json`
+- [x] T093 [US3] Extend Trawl Overview with recent capture activity and add execution lifecycle, artifact health, retention, storage usage, and non-secret copyable `trawlctl` commands to `config/grafana/dashboards/trawl-overview.json` and `config/grafana/dashboards/capture-management.json`
 - [ ] T094 [US3] Complete real dumpcap/reporter/MinIO/audit-ledger/gateway/CLI integration fixtures, including checksum comparison and secret-leak assertions, in `test/integration/manual_capture_test.go`
 - [ ] T095 [US3] Make the full manual capture/CLI matrix pass and record sanitized lifecycle and timing evidence in `test/e2e/manual_capture_test.go` and `test/e2e/results/manual-capture.md`
 
@@ -363,6 +363,58 @@ diverge.
   but a server that cannot report that it is listening, or why it refused
   something, is hard to operate; the vacuous grep is a side effect of that
   rather than a finding about presigned URLs. Worth a decision in Slice C.
+- T074: the retention tests are envtest cases in `test/integration/retention_test.go`,
+  not `internal/controller/retention_test.go`, for the same reason as T068 and
+  T072 - they drive a real reconciler against a real API server. The clock is
+  the reconciler's own `Now` field rather than the `internal/status` package
+  clock, so a test moves time by reconciling `at` a chosen instant.
+- T087: a refused deletion is **not** returned as a reconcile error. An error
+  gets controller-runtime's exponential backoff, which retries a broken bucket
+  within milliseconds and then settles at a cadence nobody chose; the
+  requirement is a verified deletion within 24 hours of the deadline, so the
+  retry is a flat hour and the failure is carried by
+  `RetentionEnforced=False/RetentionFailed`, the reconcile-outcome metric, and a
+  `failed` expiry record. `RetentionOverdue` is exported so the alert rule and
+  the dashboard read the 24-hour bound from the same place the controller does.
+- T087: retention is a second controller over CaptureJob
+  (`Named("capturejob-retention")`), not part of `CaptureJobReconciler`. The two
+  run on different clocks - one on the runner's progress, one on a deadline days
+  away - and a bucket refusing a delete must not hold up captures still running.
+- T087: the deadline is always `status.completedAt` plus `spec.retention`, never
+  `now` plus it, which is what makes a shortening a shortening; recomputing from
+  the moment of the change would let repeated shortenings extend an artifact's
+  life indefinitely. It is exclusive at the instant itself, matching
+  `capture.DecideDownload`, so the gateway and retention cannot disagree about
+  whether an artifact is live.
+- T087: `Downloadable=False` is written and persisted **before** the delete, and
+  `TestTheArtifactIsDeniedBeforeItIsDeleted` asserts that from inside the
+  store's `Delete`. Afterwards the two orderings are indistinguishable, so the
+  assertion has to run mid-deletion (principle 31). The test fails loudly with
+  "the ordering was never exercised" if no delete is attempted, rather than
+  passing for free.
+- T087: `storage.Fake` gained `FailDelete`, `SwallowDeletes` and `DeleteCount`.
+  `SwallowDeletes` is what makes the post-delete `Head` worth having: against a
+  store that always tells the truth the absence check cannot fail, so a test
+  using one proves the check is present and nothing about whether it works
+  (principle 29). All four guards - the write-first ordering, the absence
+  verification, the exclusive deadline, and the completedAt-based recomputation
+  - were removed one at a time and each was caught by a named test failing for
+  the right reason.
+- T093: `capture-management.json` is the first Prometheus dashboard in the
+  repository; the other three are Loki-only. Two contract rules were written as
+  statements about every query and are really statements about LogQL - Loki
+  indexes a small fixed label set, and holds every cluster's records together,
+  so a stream selector must use only indexed labels and must pin `cluster`.
+  PromQL uses the same brace syntax with neither property, so both rules now
+  apply to Loki targets only, selected by the target's (or panel's) datasource
+  type. Mutating a Loki query to drop `cluster` and select on `request_id`
+  still fails both, so the exemption is for Prometheus rather than for
+  everything.
+- T093: no panel filters `trawl_artifact_operations_total` to the presign
+  operation, because `TestDashboardsCarryNoSecretsOrDownloadLinks` forbids the
+  string `presign` anywhere under `config/grafana`. The operation is still
+  visible: the panel groups by the label rather than naming the value, so
+  presign arrives as a series from the data instead of from the file.
 - The acceptance also showed `kubectl get capturejobs` printing `EXPIRES` as
   `<invalid>`. A `type=date` print column renders the time elapsed since its
   value, which is what makes `Age` readable, but `status.retentionDeadline` is

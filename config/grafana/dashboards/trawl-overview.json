@@ -236,6 +236,61 @@
         }
       ],
       "description": "A tap that has gone quiet looks identical to a quiet network here. Read this with NetworkTap status, which reports whether the sensor is actually healthy."
+    },
+    {
+      "id": 8,
+      "title": "Recent capture activity",
+      "type": "logs",
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 0,
+        "y": 24
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service_name=\"trawl-audit\", cluster=\"$cluster\"} | json | action=~\"capturejob.transition|artifact.download|artifact.expire\"",
+          "queryType": "range",
+          "datasource": {
+            "type": "loki",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "description": "Captures requested, downloaded and expired, from the audit ledger. The Capture Management dashboard breaks these down; this is here so evidence collection is visible from the overview rather than only to somebody who went looking for it."
+    },
+    {
+      "id": 9,
+      "title": "Download decisions",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 24
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (decision) (count_over_time({service_name=\"trawl-audit\", cluster=\"$cluster\", action=\"artifact.download\"}[$__interval]))",
+          "queryType": "range",
+          "datasource": {
+            "type": "loki",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "{{decision}}"
+        }
+      ],
+      "description": "Who was allowed to read packet bytes and who was refused. A refusal is not necessarily a problem; a refusal nobody expected is."
     }
   ]
 }
