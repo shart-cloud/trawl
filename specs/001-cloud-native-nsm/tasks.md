@@ -208,7 +208,7 @@ expired paths.
 - [X] T090 [US3] Wire TLS serving, auth/audit/storage clients, probes, metrics, request IDs, graceful shutdown, and log redaction in `cmd/artifact-gateway/main.go`, and implement bearer-producing kubeconfig-exec or token-stdin download without credential arguments in `cmd/trawlctl/main.go`
 - [X] T091 [US3] Deploy the gateway and capture reporter permissions with explicit ServiceAccounts, resource-name-scoped reporter status Roles, `capturejobs/download` roles, TokenReview/SubjectAccessReview access, artifact-only storage Secret mounts, audit-sink mTLS, TLS, and NetworkPolicies in `config/gateway/deployment.yaml` and `config/rbac/artifact-gateway-role.yaml`
 - [ ] T092 [US3] Generate and review the CaptureJob CRD/cluster-wide namespace-rejecting webhook/namespaced RBAC, manual analyst and retention-admin roles, successful/invalid samples, and capture image digest patch in `config/crd/bases/trawl.cloud_capturejobs.yaml`, `config/rbac/capturejob-roles.yaml`, and `config/samples/`
-- [ ] T093 [US3] Extend Trawl Overview with recent capture activity and add execution lifecycle, artifact health, retention, storage usage, and non-secret copyable `trawlctl` commands to `config/grafana/dashboards/trawl-overview.json` and `config/grafana/dashboards/capture-management.json`
+- [x] T093 [US3] Extend Trawl Overview with recent capture activity and add execution lifecycle, artifact health, retention, storage usage, and non-secret copyable `trawlctl` commands to `config/grafana/dashboards/trawl-overview.json` and `config/grafana/dashboards/capture-management.json`
 - [ ] T094 [US3] Complete real dumpcap/reporter/MinIO/audit-ledger/gateway/CLI integration fixtures, including checksum comparison and secret-leak assertions, in `test/integration/manual_capture_test.go`
 - [ ] T095 [US3] Make the full manual capture/CLI matrix pass and record sanitized lifecycle and timing evidence in `test/e2e/manual_capture_test.go` and `test/e2e/results/manual-capture.md`
 
@@ -400,6 +400,21 @@ diverge.
   verification, the exclusive deadline, and the completedAt-based recomputation
   - were removed one at a time and each was caught by a named test failing for
   the right reason.
+- T093: `capture-management.json` is the first Prometheus dashboard in the
+  repository; the other three are Loki-only. Two contract rules were written as
+  statements about every query and are really statements about LogQL - Loki
+  indexes a small fixed label set, and holds every cluster's records together,
+  so a stream selector must use only indexed labels and must pin `cluster`.
+  PromQL uses the same brace syntax with neither property, so both rules now
+  apply to Loki targets only, selected by the target's (or panel's) datasource
+  type. Mutating a Loki query to drop `cluster` and select on `request_id`
+  still fails both, so the exemption is for Prometheus rather than for
+  everything.
+- T093: no panel filters `trawl_artifact_operations_total` to the presign
+  operation, because `TestDashboardsCarryNoSecretsOrDownloadLinks` forbids the
+  string `presign` anywhere under `config/grafana`. The operation is still
+  visible: the panel groups by the label rather than naming the value, so
+  presign arrives as a series from the data instead of from the file.
 - The acceptance also showed `kubectl get capturejobs` printing `EXPIRES` as
   `<invalid>`. A `type=date` print column renders the time elapsed since its
   value, which is what makes `Age` readable, but `status.retentionDeadline` is
