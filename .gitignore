@@ -10,11 +10,14 @@ Dockerfile.cross
 # `go build ./cmd/x` with no -o writes the binary to the repo root, named for
 # the package directory. A 40 MB sensor-agent was committed that way; the
 # Makefile always passes -o bin/, so nothing legitimate lands here.
+/artifact-gateway
+/capture-reporter
 /capture-runner
 /content-init
 /controller-manager
 /event-worker
 /sensor-agent
+/trawlctl
 
 # Test binary, built with `go test -c`
 *.test
@@ -45,6 +48,15 @@ docs/.astro/
 
 # Supply-chain and release output
 dist/
+
+# Acceptance leaves both of these in the working tree: quickstart section 6 has
+# the operator write the downloaded capture to the repository root and export
+# the gateway CA under test/e2e/certs. A pcapng is real traffic from whichever
+# network was tapped, and no capture file or credential is ever a committed
+# fixture.
+*.pcap
+*.pcapng
+/test/e2e/certs/
 
 # Local environment
 .env
