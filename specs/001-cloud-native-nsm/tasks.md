@@ -209,7 +209,7 @@ expired paths.
 - [X] T091 [US3] Deploy the gateway and capture reporter permissions with explicit ServiceAccounts, resource-name-scoped reporter status Roles, `capturejobs/download` roles, TokenReview/SubjectAccessReview access, artifact-only storage Secret mounts, audit-sink mTLS, TLS, and NetworkPolicies in `config/gateway/deployment.yaml` and `config/rbac/artifact-gateway-role.yaml`
 - [ ] T092 [US3] Generate and review the CaptureJob CRD/cluster-wide namespace-rejecting webhook/namespaced RBAC, manual analyst and retention-admin roles, successful/invalid samples, and capture image digest patch in `config/crd/bases/trawl.cloud_capturejobs.yaml`, `config/rbac/capturejob-roles.yaml`, and `config/samples/`
 - [x] T093 [US3] Extend Trawl Overview with recent capture activity and add execution lifecycle, artifact health, retention, storage usage, and non-secret copyable `trawlctl` commands to `config/grafana/dashboards/trawl-overview.json` and `config/grafana/dashboards/capture-management.json`
-- [ ] T094 [US3] Complete real dumpcap/reporter/MinIO/audit-ledger/gateway/CLI integration fixtures, including checksum comparison and secret-leak assertions, in `test/integration/manual_capture_test.go`
+- [x] T094 [US3] Complete real dumpcap/reporter/MinIO/audit-ledger/gateway/CLI integration fixtures, including checksum comparison and secret-leak assertions, in `test/integration/manual_capture_test.go`
 - [ ] T095 [US3] Make the full manual capture/CLI matrix pass and record sanitized lifecycle and timing evidence in `test/e2e/manual_capture_test.go` and `test/e2e/results/manual-capture.md`
 
 ### US3 implementation notes (deviations from the task text)
@@ -400,6 +400,27 @@ diverge.
   verification, the exclusive deadline, and the completedAt-based recomputation
   - were removed one at a time and each was caught by a named test failing for
   the right reason.
+- T094 is split across two files rather than the one the task names. The
+  gateway, CLI and ledger half is `test/integration/manual_capture_test.go`,
+  written in Slice B2 against envtest and real MinIO. The real-dumpcap half is
+  `test/integration/capture_lifecycle_test.go` behind the `investigation` build
+  tag: real dumpcap on loopback, the real reporter against envtest, real MinIO,
+  the checksum comparison, and the secret-leak assertions over both the runner's
+  log output and the status. Splitting it keeps the default `make test` free of
+  a suite that needs a capture-capable binary.
+- T094: the tagged file skips unless dumpcap is present *and* permitted to open
+  an interface, which are different problems with different fixes, so the skip
+  says which. On a Debian-family workstation `/usr/bin/dumpcap` is mode 754
+  `root:wireshark`, so it is not executable at all unless the account is in the
+  `wireshark` group - `sg wireshark -c '...'` picks that up without a re-login.
+  A skipping test proves nothing, so these were not counted until they had run:
+  changing the capture filter by one port makes the capture see no packets, and
+  making the invalid filter valid stops it reporting `InvalidFilter`, each
+  caught by its named assertion.
+- T094: the `investigation` lint pass covered `./test/e2e/...` only, so a tagged
+  file under `test/integration/` would have rotted unlinted. Widening it to both
+  directories found four real issues in the new file on its first run, which is
+  the argument for the widening.
 - T093: `capture-management.json` is the first Prometheus dashboard in the
   repository; the other three are Loki-only. Two contract rules were written as
   statements about every query and are really statements about LogQL - Loki
