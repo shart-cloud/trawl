@@ -293,6 +293,21 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Retention is a separate controller over the same resource: it runs on a
+	// deadline rather than on the runner's progress, and a bucket that will not
+	// accept a delete must not hold up captures that are still running.
+	if err := (&controller.RetentionReconciler{
+		Client:  mgr.GetClient(),
+		Scheme:  mgr.GetScheme(),
+		Config:  installCfg,
+		Store:   artifactStore,
+		Audit:   auditSink,
+		Metrics: trawlMetrics,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to set up the retention controller")
+		os.Exit(1)
+	}
+
 	// The gate holds the audit sink because FR-036 makes a durable audit commit
 	// a precondition of admission, not a side effect of it.
 	gate := &admission.Gate{
