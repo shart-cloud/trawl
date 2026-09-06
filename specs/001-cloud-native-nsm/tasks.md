@@ -400,6 +400,70 @@ diverge.
   verification, the exclusive deadline, and the completedAt-based recomputation
   - were removed one at a time and each was caught by a named test failing for
   the right reason.
+- **Defect found by the cluster acceptance, fixed here.** An authorized
+  retention change permanently stopped a capture being downloadable, and the
+  status blamed expiry for it. A retention change bumps `metadata.generation`;
+  `ArtifactVerified` was stamped at the previous one and nothing re-verifies an
+  artifact a retention change did not touch, so `status.IsTrue` read the stale
+  True as not-true and `capture.DecideDownload` answered not-ready forever. The
+  gateway refused with `409 the capture has no verified artifact to download`
+  for an artifact that was verified, present, and two hours short of its
+  deadline. `setDownloadable` then reported the reason as `Expired` because it
+  tested downloadability and guessed the reason from the phase. Two fixes: the
+  controller carries `ArtifactVerified` forward to the new generation on the
+  retention-change path (`status.CarryForward`, which moves only the observed
+  generation and not the transition time), and `setDownloadable` switches on
+  `DecideDownload`'s decision rather than re-deriving it, so the reason can no
+  longer be a lie. No envtest case caught this because none bumped the
+  generation of a completed capture; the regression test that does is
+  `TestAnAuthorizedRetentionChangeKeepsTheArtifactDownloadable`.
+- T075 is **not complete**. `test/e2e/manual_capture_test.go` covers the
+  successful CLI download with checksum agreement, the viewer's refusal and its
+  ledger record, the invalid filter, the unavailable target, an authorized
+  shortening moving the deadline from completion, and - opt-in behind
+  `TRAWL_E2E_EXPIRY=1` - a real expiry with the bytes verified absent from the
+  artifact bucket. Still to add: inactive-source, zero-packet, full-storage,
+  audit outage, and restart. The last three are installation-wide disruptions
+  and belong behind their own environment gates, the way the NetworkTap suite
+  gates its ledger-outage spec.
+- T075: the acceptance specs found three rules no unit test had exercised. The
+  shortest retention the API accepts is an hour, so a live expiry cannot be
+  made fast and is opt-in rather than faked. Retention may only be changed by a
+  member of `capture.retentionAdminGroups`, which a cluster administrator is
+  deliberately not in, so the spec impersonates one - a service account cannot
+  be put in an installation's own group. The bundle ships a
+  `trawl-retention-admin` ClusterRole and binds nothing to it, because who the
+  retention admins are is an installation decision, so the spec makes the
+  binding itself and that is also what proves the shipped role carries the
+  verbs a retention change needs.
+- T075: the download specs skip unless the presigned redirect can be followed
+  from the machine running them. The gateway answers 303 for the object store
+  endpoint and the client follows it, and the SigV4 signature covers the host
+  header, so the bucket has to be reachable under exactly the name and port it
+  was signed for. Against the development MinIO the suite forwards that exact
+  port when the name already resolves to loopback; when it cannot, it skips
+  with the fix rather than failing, because that describes the machine and not
+  the software.
+- T075: the expiry spec asserted the wrong refusal until review caught it. An
+  expired capture is `410 Gone`, not `404`: the artifact API contract
+  distinguishes a capture whose retention ended from one that never existed,
+  because an analyst told "no such capture" goes looking for a typo rather than
+  for the retention policy. The assertion was never going to pass, and being
+  behind `TRAWL_E2E_EXPIRY=1` meant the hour-long wait would have been spent
+  before anyone found out - the same shape as T094's silently skipping specs.
+  Check an opt-in spec against the shipped contract, not against the design you
+  remember.
+- T075: the refusal specs assert `HTTP 410` and `HTTP 403`, not the bare
+  digits. The capture name carries a nine-digit run id and the CLI's message
+  carries a request id, so a bare `strings.Contains(out, "410")` can be
+  satisfied by a refusal that is not the one under test - including the 409
+  not-ready that the retention defect above produced.
+- T075: the artifact bucket connection is memoized for the run like the
+  ledger's, and the ledger-outage spec drops both when it restores storage.
+  They are the same MinIO, so a connection held across that spec is a socket to
+  a deleted pod either way; memoizing one without adding it to that reset would
+  have made the next reader fail on a refused connection that reads like a
+  broken bucket rather than a stale fixture.
 - T094 is split across two files rather than the one the task names. The
   gateway, CLI and ledger half is `test/integration/manual_capture_test.go`,
   written in Slice B2 against envtest and real MinIO. The real-dumpcap half is

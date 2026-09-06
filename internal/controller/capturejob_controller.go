@@ -252,6 +252,12 @@ func (r *CaptureJobReconciler) reconcileTerminal(ctx context.Context, job *trawl
 	}
 	job.Status.ObservedGeneration = job.Generation
 	job.Status.RetentionDeadline = metaTime(deadline)
+	// ArtifactVerified describes the stored object, and a retention change is
+	// the one spec change that cannot affect it. Left stale it makes
+	// DecideDownload answer not-ready forever - the artifact is never
+	// re-verified, because there is nothing new to verify - so an authorized
+	// retention change would permanently stop the capture being downloadable.
+	status.CarryForward(&job.Status.Conditions, status.TypeArtifactVerified, job.Generation)
 	r.setDownloadable(job)
 	// The retention change itself is audited by the webhook that admitted it.
 	return r.writeStatus(ctx, job, status.ReasonPending)
@@ -766,17 +772,24 @@ func (r *CaptureJobReconciler) setArtifactVerified(job *trawlv1alpha1.CaptureJob
 func (r *CaptureJobReconciler) setDownloadable(job *trawlv1alpha1.CaptureJob) {
 	gen := job.Generation
 	conds := &job.Status.Conditions
-	switch {
-	case capture.Downloadable(job, r.now()):
+	// The decision, not a re-derivation of it. An earlier version tested
+	// Downloadable and then guessed the reason from the phase, which reported
+	// every not-ready completed capture as expired - including one whose
+	// deadline was days away, which sent an operator looking for a retention
+	// bug that did not exist.
+	switch capture.DecideDownload(job, r.now()) {
+	case capture.DownloadAllowed:
 		status.Set(conds, status.New(status.TypeDownloadable, metav1.ConditionTrue,
 			status.ReasonDownloadable, "the artifact is verified and within its retention period", gen))
-	case job.Status.Phase == trawlv1alpha1.CapturePhaseCompleted:
+	case capture.DownloadExpired:
 		status.Set(conds, status.New(status.TypeDownloadable, metav1.ConditionFalse,
 			status.ReasonExpired, "the artifact's retention period has ended", gen))
-	case capture.IsTerminal(job.Status.Phase):
-		status.Set(conds, status.New(status.TypeDownloadable, metav1.ConditionFalse,
-			status.ReasonNotDownloadable, "the capture did not produce a verified artifact", gen))
-	default:
+	case capture.DownloadNotReady:
+		if capture.IsTerminal(job.Status.Phase) {
+			status.Set(conds, status.New(status.TypeDownloadable, metav1.ConditionFalse,
+				status.ReasonNotDownloadable, "the capture did not produce a verified artifact", gen))
+			return
+		}
 		status.Set(conds, status.New(status.TypeDownloadable, metav1.ConditionFalse,
 			status.ReasonPending, "the capture has not completed", gen))
 	}

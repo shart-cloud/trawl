@@ -132,6 +132,19 @@ type acceptance struct {
 	lokiOnce sync.Once
 	loki     *harness.Loki
 	lokiErr  error
+
+	// The artifact store's own reachability, for US3's download specs: the
+	// presigned redirect is followed by the client, so the endpoint has to be
+	// reachable from here under the name it was signed for.
+	objectStoreOnce sync.Once
+	objectStoreErr  error
+
+	// The artifact bucket is opened once for the run, like the ledger. Each
+	// open writes a credential to disk and starts a forward, so opening it
+	// per call left both behind on every artifactExists.
+	artifactsOnce sync.Once
+	artifacts     storage.Store
+	artifactsErr  error
 }
 
 var (
@@ -437,6 +450,9 @@ func (a *acceptance) connectLedger() (storage.Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	// As with the artifact credential: NewS3Store reads the files before it
+	// returns, so the copy on disk goes with it.
+	defer func() { _ = os.RemoveAll(credsDir) }()
 
 	endpoint, err := a.forwardMinIO(installCfg.AuditLedger.Endpoint)
 	if err != nil {
@@ -1066,6 +1082,10 @@ func (a *acceptance) stopLedger(t *testing.T) func() {
 			// holds this while the outage spec runs.
 			a.ledgerOnce = sync.Once{}
 			a.ledger, a.ledgerErr = nil, nil
+			// The artifact bucket is the same MinIO, so its connection is
+			// stale for the same reason and is dropped with it.
+			a.artifactsOnce = sync.Once{}
+			a.artifacts, a.artifactsErr = nil, nil
 		})
 	}
 }
