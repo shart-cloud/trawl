@@ -53,6 +53,11 @@ const (
 	minioAccessKey = "trawltestaccess"
 	minioSecretKey = "trawltestsecret0" //nolint:gosec // fixed credential for an ephemeral test container
 
+	// AccessKey and SecretKey are the same values, exported so a test can
+	// assert that neither ever appears in a log line or a status field.
+	AccessKey = minioAccessKey
+	SecretKey = minioSecretKey
+
 	startupTimeout = 90 * time.Second
 	pollInterval   = 500 * time.Millisecond
 )
