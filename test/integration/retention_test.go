@@ -19,6 +19,8 @@ package integration
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -564,4 +566,66 @@ func TestRetentionSweepsAFailedCapturesLeftovers(t *testing.T) {
 	if h.store.ObjectCount() != 0 {
 		t.Errorf("%d objects left behind by a failed capture, want 0", h.store.ObjectCount())
 	}
+}
+
+// TestAnAuthorizedRetentionChangeKeepsTheArtifactDownloadable is a regression
+// test for a defect the cluster acceptance found and no envtest case had.
+//
+// A retention change bumps metadata.generation. Every other condition on a
+// completed capture was stamped at the previous generation, and status.IsTrue
+// treats a stale True as not true - correctly, because a condition observed
+// against an older spec says nothing about the current one. But ArtifactVerified
+// is a statement about the stored object, and the stored object is exactly what
+// a retention change does not touch. Letting it go stale made
+// capture.DecideDownload answer not-ready forever, so the gateway refused the
+// download permanently and the status blamed expiry for it.
+func TestAnAuthorizedRetentionChangeKeepsTheArtifactDownloadable(t *testing.T) {
+	ns := NewNamespace(t)
+	ch, job, runner := startedCapture(t, ns, "retention-change")
+	storeArtifact(t, ch.store, job, 0)
+	finishRunner(t, runner, batchv1.JobComplete, "")
+	reconcileCapture(t, ch.r, job)
+
+	job = reloadCapture(t, job)
+	if !capture.Downloadable(job, time.Now()) {
+		t.Fatalf("setup: a freshly completed capture is not downloadable:\n%+v", job.Status.Conditions)
+	}
+
+	// A retention admin extends the period. Nothing about the artifact changes.
+	job.Spec.Retention = "14d"
+	if err := Client().Update(t.Context(), job); err != nil {
+		t.Fatalf("changing retention: %v", err)
+	}
+	job = reloadCapture(t, job)
+	reconcileCapture(t, ch.r, job)
+
+	after := reloadCapture(t, job)
+	if after.Status.ObservedGeneration != after.Generation {
+		t.Fatalf("the controller did not observe the new generation: observed=%d generation=%d",
+			after.Status.ObservedGeneration, after.Generation)
+	}
+	if !capture.Downloadable(after, time.Now()) {
+		t.Errorf("an artifact stopped being downloadable because its retention changed:\n%s",
+			conditionSummary(after))
+	}
+	if c := condOf(after, status.TypeDownloadable); c == nil || c.Status != metav1.ConditionTrue {
+		t.Errorf("Downloadable = %+v, want True well inside the extended period", c)
+	}
+	// The reason must never say expired while the deadline is in the future:
+	// an operator reading that would go looking for a retention bug that is
+	// not there.
+	if c := condOf(after, status.TypeDownloadable); c != nil && c.Reason == status.ReasonExpired {
+		t.Errorf("Downloadable is reported as %q with the deadline still ahead", c.Reason)
+	}
+}
+
+func conditionSummary(job *trawlv1alpha1.CaptureJob) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "generation=%d observedGeneration=%d deadline=%v\n",
+		job.Generation, job.Status.ObservedGeneration, job.Status.RetentionDeadline)
+	for _, c := range job.Status.Conditions {
+		fmt.Fprintf(&b, "  %s=%s reason=%s observedGeneration=%d\n",
+			c.Type, c.Status, c.Reason, c.ObservedGeneration)
+	}
+	return b.String()
 }

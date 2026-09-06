@@ -201,6 +201,34 @@ func IsStale(conditions []metav1.Condition, condType string, generation int64) b
 	return c == nil || c.ObservedGeneration < generation
 }
 
+// CarryForward re-stamps an existing condition at a newer generation without
+// otherwise changing it, and reports whether it did.
+//
+// It exists for the narrow case of a spec change that cannot affect what the
+// condition describes. Most conditions must go stale when the spec moves,
+// because they were derived from the spec: that is what IsTrue's generation
+// check is for. A few describe something outside it - ArtifactVerified is
+// about the bytes in the bucket, and changing how long they are kept does not
+// touch them - and letting those go stale reports the object as unverified
+// when nothing about it has changed.
+//
+// The transition time is deliberately preserved: nothing transitioned. Only
+// the generation the observation is claimed against moves.
+func CarryForward(conditions *[]metav1.Condition, condType string, generation int64) bool {
+	for i := range *conditions {
+		c := &(*conditions)[i]
+		if c.Type != condType {
+			continue
+		}
+		if c.ObservedGeneration >= generation {
+			return false
+		}
+		c.ObservedGeneration = generation
+		return true
+	}
+	return false
+}
+
 // IsTrue reports whether the condition is True and was observed against the
 // current generation. A stale True is not a True.
 func IsTrue(conditions []metav1.Condition, condType string, generation int64) bool {
