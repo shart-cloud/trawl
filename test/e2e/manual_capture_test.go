@@ -42,6 +42,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -828,6 +830,11 @@ func assertLedgerHasDownload(t *testing.T, a *acceptance, cursor, capture, decis
 			if rec.RequestID == "" {
 				t.Error("a download record carries no request id, so the operator's error cannot be correlated with it")
 			}
+			// Logged so an evidence run can name the object an assertion
+			// passed against. A document that says "the ledger recorded it"
+			// without saying which record cannot be checked by anyone later.
+			t.Logf("ledger %s: action=%s decision=%s actor=%s requestID=%s",
+				rec.LedgerKey, rec.Action, rec.Decision, rec.Actor.Username, rec.RequestID)
 			return
 		}
 	}
@@ -873,4 +880,148 @@ func conditionFalse(conds []metav1.Condition, typ string) bool {
 		}
 	}
 	return false
+}
+
+// SC-006 is a rate, not a single observation: 95% of manual capture requests
+// begin collection within 10s, and their artifact becomes downloadable within
+// 60s of collection ending. One capture cannot show that, so this spec takes a
+// sample and reports the distribution, and T095's evidence document is written
+// from its summary.
+//
+// The two measurements come from the record the controller already keeps, not
+// from the test's own clock. A test that timed its own polling would be
+// measuring its poll interval as much as the system, and would report a budget
+// met or missed for reasons no operator could reproduce from the object.
+//
+// Those timestamps are metav1.Time, which serializes to whole seconds, so every
+// figure here is quantized to a second and carries up to a second of rounding
+// either way. Against a 10s and a 60s budget that is comfortably fine, and it
+// is the reason the percentiles below are round numbers rather than a sign the
+// sample is degenerate.
+//
+// Sample size is deliberately an argument. The suite runs a small one so a
+// regression in the timings is caught with the rest; the evidence run uses a
+// sample large enough for a 95th percentile to mean something.
+func TestManualCaptureTimingMeetsSC006(t *testing.T) {
+	a := requireAcceptanceCluster(t)
+
+	samples := envInt(t, "TRAWL_E2E_TIMING_SAMPLES", 5)
+	if samples < 1 {
+		t.Fatalf("TRAWL_E2E_TIMING_SAMPLES=%d is not a sample", samples)
+	}
+
+	starts := make([]time.Duration, 0, samples)
+	ready := make([]time.Duration, 0, samples)
+	for i := range samples {
+		name := a.captureName(t, fmt.Sprintf("sc006-%02d", i))
+		a.applyCapture(t, name, a.defaultCaptureOptions())
+		status := a.waitForCapture(t, name, captureCompleteTimeout, "complete",
+			capturePhaseIs(trawlv1alpha1.CapturePhaseCompleted))
+
+		start, err := startLatency(status)
+		if err != nil {
+			t.Fatalf("capture %d: %v", i, err)
+		}
+		downloadable, err := downloadableLatency(status)
+		if err != nil {
+			t.Fatalf("capture %d: %v", i, err)
+		}
+		starts = append(starts, start)
+		ready = append(ready, downloadable)
+		packets := int64(-1)
+		if status.PacketCount != nil {
+			packets = *status.PacketCount
+		}
+		t.Logf("sc006 sample=%d start=%s downloadable=%s packets=%d",
+			i, start.Round(time.Millisecond), downloadable.Round(time.Millisecond), packets)
+	}
+
+	reportLatency(t, "start (requestedAt -> startedAt)", starts, 10*time.Second)
+	reportLatency(t, "downloadable (captureEndedAt -> Downloadable)", ready, 60*time.Second)
+}
+
+// startLatency is the request-to-collection figure SC-006 budgets at 10s.
+//
+// StartedAt is the node clock and RequestedAt the controller's. On the
+// reference single-node cluster they are the same clock; anywhere else this
+// difference carries the skew between them, which is why the evidence document
+// records the cluster it was measured on.
+func startLatency(s trawlv1alpha1.CaptureJobStatus) (time.Duration, error) {
+	if s.RequestedAt == nil || s.StartedAt == nil {
+		return 0, fmt.Errorf("a completed capture is missing a timestamp: requestedAt=%v startedAt=%v",
+			s.RequestedAt, s.StartedAt)
+	}
+	return s.StartedAt.Sub(s.RequestedAt.Time), nil
+}
+
+// downloadableLatency is measured from collection ending to the condition an
+// analyst acts on, not to CompletedAt. Verification is most of the gap, and a
+// figure that stopped at the artifact being verified would report a budget the
+// person waiting to download does not experience.
+func downloadableLatency(s trawlv1alpha1.CaptureJobStatus) (time.Duration, error) {
+	if s.CaptureEndedAt == nil {
+		return 0, fmt.Errorf("a completed capture has no captureEndedAt")
+	}
+	for i := range s.Conditions {
+		c := &s.Conditions[i]
+		if c.Type != "Downloadable" {
+			continue
+		}
+		if c.Status != metav1.ConditionTrue {
+			return 0, fmt.Errorf("Downloadable is %s on a completed capture", c.Status)
+		}
+		return c.LastTransitionTime.Sub(s.CaptureEndedAt.Time), nil
+	}
+	return 0, fmt.Errorf("a completed capture has no Downloadable condition")
+}
+
+// reportLatency logs the distribution and fails if fewer than 95% are within
+// budget. The percentiles are logged whether or not the budget is met: a run
+// that only says "failed" makes the next person measure it again to find out
+// by how much.
+func reportLatency(t *testing.T, label string, samples []time.Duration, budget time.Duration) {
+	t.Helper()
+	sorted := slices.Clone(samples)
+	slices.Sort(sorted)
+
+	within := 0
+	for _, d := range sorted {
+		if d <= budget {
+			within++
+		}
+	}
+	rate := float64(within) / float64(len(sorted)) * 100
+
+	t.Logf("%s: n=%d p50=%s p95=%s max=%s within %s: %.2f%% (%d/%d)",
+		label, len(sorted), percentile(sorted, 50).Round(time.Millisecond),
+		percentile(sorted, 95).Round(time.Millisecond),
+		sorted[len(sorted)-1].Round(time.Millisecond),
+		budget, rate, within, len(sorted))
+
+	if rate < 95 {
+		t.Errorf("%s: only %.2f%% within %s, SC-006 budgets 95%%", label, rate, budget)
+	}
+}
+
+// percentile is the nearest-rank value, which for a sample this size is the
+// only definition that returns a figure that was actually observed.
+func percentile(sorted []time.Duration, p int) time.Duration {
+	if len(sorted) == 0 {
+		return 0
+	}
+	rank := max((p*len(sorted)+99)/100, 1)
+	return sorted[rank-1]
+}
+
+func envInt(t *testing.T, key string, fallback int) int {
+	t.Helper()
+	raw, ok := os.LookupEnv(key)
+	if !ok || raw == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		t.Fatalf("%s=%q is not a number: %v", key, raw, err)
+	}
+	return n
 }
