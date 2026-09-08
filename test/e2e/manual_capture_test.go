@@ -868,10 +868,7 @@ func TestAnExpiredCaptureIsDeletedAndRefused(t *testing.T) {
 	if completed.RetentionDeadline == nil {
 		t.Fatal("a completed capture has no retention deadline, so there is no expiry to wait for")
 	}
-	// The deadline plus a margin for the reconcile that acts on it.
-	wait := time.Until(completed.RetentionDeadline.Time) + expiryTimeout
-	expired := a.waitForCapture(t, name, wait, "expire",
-		capturePhaseIs(trawlv1alpha1.CapturePhaseExpired))
+	expired := a.waitForExpiry(t, name, completed.RetentionDeadline.Time)
 
 	if conditionTrue(expired.Conditions, "Downloadable") {
 		t.Error("an expired capture is still downloadable")
@@ -1542,6 +1539,54 @@ func (a *acceptance) listControllerPods(t *testing.T) (all, ready []string) {
 	slices.Sort(all)
 	slices.Sort(ready)
 	return all, ready
+}
+
+// waitForExpiry waits until the capture reports Expired, re-reading the
+// deadline as it goes rather than computing one timeout from the first value it
+// saw.
+//
+// The deadline is re-read because the installation itself corrects it. The
+// retention reconciler recomputes completedAt + retention and writes the answer
+// back whenever status disagrees, so the value a spec reads at completion is
+// not guaranteed to be the one enforcement acts on. A wait latched to that
+// first reading gives up early by exactly the correction - which is how this
+// spec failed the first time it was ever run, twenty-two seconds short of the
+// deadline the object was carrying at that moment.
+//
+// The poll is slow until the deadline is close. An hour of two-second polling
+// is eighteen hundred kubectl invocations to watch a clock that has not moved.
+func (a *acceptance) waitForExpiry(t *testing.T, name string, deadline time.Time) trawlv1alpha1.CaptureJobStatus {
+	t.Helper()
+	var last trawlv1alpha1.CaptureJobStatus
+	for {
+		status, ok := a.captureStatus(t, name)
+		if ok {
+			last = status
+			if status.Phase == trawlv1alpha1.CapturePhaseExpired {
+				return status
+			}
+			if status.RetentionDeadline != nil && !status.RetentionDeadline.Time.Equal(deadline) {
+				// Logged, not silently accepted: a deadline that moves is worth
+				// seeing in the evidence run's output even when the spec then
+				// waits for the new one and passes.
+				t.Logf("the retention deadline moved from %s to %s while waiting",
+					deadline.UTC().Format(time.RFC3339), status.RetentionDeadline.Time.UTC().Format(time.RFC3339))
+				deadline = status.RetentionDeadline.Time
+			}
+		}
+		if giveUp := deadline.Add(expiryTimeout); time.Now().After(giveUp) {
+			t.Fatalf("capture %s did not expire by %s (its deadline %s plus %s): "+
+				"phase=%q completedAt=%v retentionDeadline=%v\n%s",
+				name, giveUp.UTC().Format(time.RFC3339), deadline.UTC().Format(time.RFC3339),
+				expiryTimeout, last.Phase, last.CompletedAt, last.RetentionDeadline,
+				formatConditions(last.Conditions))
+		}
+		if time.Until(deadline) > 2*time.Minute {
+			time.Sleep(30 * time.Second)
+			continue
+		}
+		time.Sleep(pollInterval)
+	}
 }
 
 // artifactExists reports whether the object is still in the artifact bucket.

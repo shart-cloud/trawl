@@ -210,7 +210,7 @@ expired paths.
 - [ ] T092 [US3] Generate and review the CaptureJob CRD/cluster-wide namespace-rejecting webhook/namespaced RBAC, manual analyst and retention-admin roles, successful/invalid samples, and capture image digest patch in `config/crd/bases/trawl.cloud_capturejobs.yaml`, `config/rbac/capturejob-roles.yaml`, and `config/samples/`
 - [x] T093 [US3] Extend Trawl Overview with recent capture activity and add execution lifecycle, artifact health, retention, storage usage, and non-secret copyable `trawlctl` commands to `config/grafana/dashboards/trawl-overview.json` and `config/grafana/dashboards/capture-management.json`
 - [x] T094 [US3] Complete real dumpcap/reporter/MinIO/audit-ledger/gateway/CLI integration fixtures, including checksum comparison and secret-leak assertions, in `test/integration/manual_capture_test.go`
-- [ ] T095 [US3] Make the full manual capture/CLI matrix pass and record sanitized lifecycle and timing evidence in `test/e2e/manual_capture_test.go` and `test/e2e/results/manual-capture.md`
+- [x] T095 [US3] Make the full manual capture/CLI matrix pass and record sanitized lifecycle and timing evidence in `test/e2e/manual_capture_test.go` and `test/e2e/results/manual-capture.md`
 
 ### US3 implementation notes (deviations from the task text)
 
@@ -535,14 +535,27 @@ diverge.
   stale fixture. It is easy to miss precisely because it is not an S3 client.
   The spec that caused the outage also re-establishes the route before its own
   post-restore download; every later spec picks up a fresh one from the reset.
-- T095 is **written but not ticked**, because it asks for the *full* manual
-  capture/CLI matrix and T075's last five cases are not written yet.
-  `test/e2e/results/manual-capture.md` records what does pass, measured against
-  the deployed `8814f68`: SC-006 at 100% of 20 samples on both budgets (start
-  p50 2s / p95 3s against 10s; downloadable p50 0s / p95 1s against 60s), the
-  analyst-allowed and viewer-denied download decisions with their ledger object
-  names, and the five lifecycle specs. Tick it when T075 is complete and the
-  document is re-run against that matrix.
+- T095 is **complete**. `test/e2e/results/manual-capture.md` is re-run against
+  the whole matrix on the deployed `8814f68`: SC-006 at 100% of 20 samples on
+  both budgets (start p50 2s / p95 3s against 10s; downloadable p50 0s / p95 1s
+  against 60s), the analyst-allowed and viewer-denied download decisions with
+  their ledger object names, the nine lifecycle specs, the audit outage and -
+  for the first time - a real expiry. Every gated case has a recorded window of
+  its own, because each stops something installation-wide and they cannot share
+  one.
+- T095: the expiry spec passed on its **second** execution and has never passed
+  on a first. Its first real run gave up twenty-two seconds short of the
+  deadline the object was carrying, because it computed one absolute timeout
+  from the deadline it read at completion. The retention reconciler recomputes
+  `completedAt + retention` and writes the answer back when status disagrees -
+  `observedDeadline` exists to do exactly that - so the reading a spec takes at
+  completion is not the one enforcement acts on. `waitForExpiry` now re-reads
+  the deadline as it waits, logs it when it moves, and reports both timestamps
+  when it gives up. The deadline was separately confirmed not to drift on an
+  idle cluster, so this was the spec's fault and not the installation's. That
+  makes four assertions in this suite that were wrong until something forced
+  them to run, and the first of the four that execution caught rather than
+  review.
 - T095: SC-006 is measured from the CaptureJob's own status - `requestedAt` to
   `startedAt`, and `captureEndedAt` to the `Downloadable` transition - rather
   than from the test's polling. A test that timed its own loop would report its
