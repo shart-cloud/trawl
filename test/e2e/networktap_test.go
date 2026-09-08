@@ -135,9 +135,12 @@ type acceptance struct {
 
 	// The artifact store's own reachability, for US3's download specs: the
 	// presigned redirect is followed by the client, so the endpoint has to be
-	// reachable from here under the name it was signed for.
-	objectStoreOnce sync.Once
-	objectStoreErr  error
+	// reachable from here under the name it was signed for. The forward is held
+	// so a spec that takes the object store away can drop it; see
+	// dropObjectStoreForward.
+	objectStoreOnce    sync.Once
+	objectStoreErr     error
+	objectStoreForward *exec.Cmd
 
 	// The artifact bucket is opened once for the run, like the ledger. Each
 	// open writes a credential to disk and starts a forward, so opening it
@@ -1086,6 +1089,11 @@ func (a *acceptance) stopLedger(t *testing.T) func() {
 			// stale for the same reason and is dropped with it.
 			a.artifactsOnce = sync.Once{}
 			a.artifacts, a.artifactsErr = nil, nil
+			// And so is the port-forward the presigned redirect is followed
+			// over, which is a third connection to the same pod. It is not an
+			// S3 client and so is easy to forget; forgetting it fails the next
+			// download inside the object store fetch, long after this spec.
+			a.dropObjectStoreForward()
 		})
 	}
 }

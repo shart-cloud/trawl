@@ -187,7 +187,7 @@ expired paths.
 - [x] T072 [P] [US3] Add failing envtest cases for target resolution, stable Job/reporter creation, reporter field ownership and progress patches, existing Job/object adoption, storage failure, audit failure, controller restart, and one terminal result in `internal/controller/capturejob_controller_test.go`
 - [X] T073 [P] [US3] Add failing OpenAPI/handler/CLI tests for TokenReview audience, `capturejobs/download` SubjectAccessReview, enumeration resistance, lifecycle responses, no-store headers, short redirects, and durable audit acknowledgement before redirect in `internal/gateway/handler_test.go` and `internal/gateway/client_test.go`
 - [x] T074 [P] [US3] Add failing fake-clock tests for exact deadline denial, authorized shortening/extension, upload protection, hourly deletion retry, 24-hour bound, and metadata preservation in `internal/controller/retention_test.go`
-- [ ] T075 [US3] Add a failing end-to-end manual capture matrix for reporter-driven progress, successful CLI download, invalid-filter, inactive-source, unavailable-target, zero-packet, full-storage, audit outage, restart, unauthorized-download, and expiry cases in `test/e2e/manual_capture_test.go`
+- [x] T075 [US3] Add a failing end-to-end manual capture matrix for reporter-driven progress, successful CLI download, invalid-filter, inactive-source, unavailable-target, zero-packet, full-storage, audit outage, restart, unauthorized-download, and expiry cases in `test/e2e/manual_capture_test.go`
 
 ### Implementation for User Story 3
 
@@ -210,7 +210,7 @@ expired paths.
 - [ ] T092 [US3] Generate and review the CaptureJob CRD/cluster-wide namespace-rejecting webhook/namespaced RBAC, manual analyst and retention-admin roles, successful/invalid samples, and capture image digest patch in `config/crd/bases/trawl.cloud_capturejobs.yaml`, `config/rbac/capturejob-roles.yaml`, and `config/samples/`
 - [x] T093 [US3] Extend Trawl Overview with recent capture activity and add execution lifecycle, artifact health, retention, storage usage, and non-secret copyable `trawlctl` commands to `config/grafana/dashboards/trawl-overview.json` and `config/grafana/dashboards/capture-management.json`
 - [x] T094 [US3] Complete real dumpcap/reporter/MinIO/audit-ledger/gateway/CLI integration fixtures, including checksum comparison and secret-leak assertions, in `test/integration/manual_capture_test.go`
-- [ ] T095 [US3] Make the full manual capture/CLI matrix pass and record sanitized lifecycle and timing evidence in `test/e2e/manual_capture_test.go` and `test/e2e/results/manual-capture.md`
+- [x] T095 [US3] Make the full manual capture/CLI matrix pass and record sanitized lifecycle and timing evidence in `test/e2e/manual_capture_test.go` and `test/e2e/results/manual-capture.md`
 
 ### US3 implementation notes (deviations from the task text)
 
@@ -417,15 +417,16 @@ diverge.
   longer be a lie. No envtest case caught this because none bumped the
   generation of a completed capture; the regression test that does is
   `TestAnAuthorizedRetentionChangeKeepsTheArtifactDownloadable`.
-- T075 is **not complete**. `test/e2e/manual_capture_test.go` covers the
-  successful CLI download with checksum agreement, the viewer's refusal and its
-  ledger record, the invalid filter, the unavailable target, an authorized
-  shortening moving the deadline from completion, and - opt-in behind
-  `TRAWL_E2E_EXPIRY=1` - a real expiry with the bytes verified absent from the
-  artifact bucket. Still to add: inactive-source, zero-packet, full-storage,
-  audit outage, and restart. The last three are installation-wide disruptions
-  and belong behind their own environment gates, the way the NetworkTap suite
-  gates its ledger-outage spec.
+- T075 is **complete**. `test/e2e/manual_capture_test.go` covers the successful
+  CLI download with checksum agreement, the viewer's refusal and its ledger
+  record, the invalid filter, the unavailable target, the inactive source, the
+  zero-packet capture, an authorized shortening moving the deadline from
+  completion, and - each opt-in behind its own gate - a full artifact store
+  (`TRAWL_E2E_FULL_STORAGE=1`), an audit outage (`TRAWL_E2E_LEDGER_OUTAGE=1`, the
+  gate the NetworkTap suite already uses), a controller restart mid-capture
+  (`TRAWL_E2E_RESTART=1`) and a real expiry (`TRAWL_E2E_EXPIRY=1`). Every gated
+  spec has been run, not merely written; see the note below on why that was the
+  condition for ticking this.
 - T075: the acceptance specs found three rules no unit test had exercised. The
   shortest retention the API accepts is an hour, so a live expiry cannot be
   made fast and is opt-in rather than faked. Retention may only be changed by a
@@ -464,14 +465,97 @@ diverge.
   a deleted pod either way; memoizing one without adding it to that reset would
   have made the next reader fail on a refused connection that reads like a
   broken bucket rather than a stale fixture.
-- T095 is **written but not ticked**, because it asks for the *full* manual
-  capture/CLI matrix and T075's last five cases are not written yet.
-  `test/e2e/results/manual-capture.md` records what does pass, measured against
-  the deployed `8814f68`: SC-006 at 100% of 20 samples on both budgets (start
-  p50 2s / p95 3s against 10s; downloadable p50 0s / p95 1s against 60s), the
-  analyst-allowed and viewer-denied download decisions with their ledger object
-  names, and the five lifecycle specs. Tick it when T075 is complete and the
-  document is re-run against that matrix.
+- T075 inactive-source: the fixture is a tap whose node selector matches no
+  node, not a tap naming an interface that does not exist. A tap with a target
+  places a sensor DaemonSet and waits on it, which costs minutes and re-tests
+  what the NetworkTap suite covers; a selector nothing carries leaves the tap
+  out of Active immediately with nothing scheduled, which is all a CaptureJob
+  needs to see. The deployed tap is deliberately left alone - taking the
+  installation's monitoring down to observe a status field would make this a
+  disruptive spec instead of one that runs in every pass.
+- T075 inactive-source: `TapInactive` is also the reason a *missing* tap fails
+  with, so the failure reason alone does not tell an operator which object to
+  look at. The `TargetReady` condition message is the only place the difference
+  survives, so the spec asserts on it as well. The failure arrives after a grace
+  window of twice the tap heartbeat - three minutes on the shipped constant - so
+  the spec's timeout clears that grace rather than a reconcile.
+- T075 zero-packet: an empty capture is a completed capture, not a failure, and
+  the assertion set is built around zero being the value most likely to be lost.
+  It is the zero value of the count, the field is an optional pointer, and it
+  passes through a manifest, a status write and JSON, so anywhere it is treated
+  as unset a real capture is reported as one that never ran. The filter is an
+  RFC 5737 documentation address on a port nothing listens on: a filter that
+  merely looks unlikely can be satisfied by traffic that happens to arrive, and
+  would fail the spec somewhere else and much later. The empty result is also
+  downloaded, because the empty case is the one a shortcut would skip. Note that
+  `stopReason` lives on `status.runnerResult`, not on the status root - it is
+  the runner's relayed claim rather than something the controller verified.
+- T075 full-storage: the lever is a bucket quota below what the artifact bucket
+  already holds, not real bytes. Filling a shared cluster's object store means
+  writing gigabytes and hoping they can all be removed, and the writer is told
+  the same thing either way; MinIO enforces the quota on the next write rather
+  than after a usage scan, which was checked before the spec was written. The
+  quota is set with `mc` inside the MinIO pod, building its alias from the
+  `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD` the pod already has, so the root
+  credential never becomes an argument and never reaches the workstation. The
+  spec ends by completing a capture after the quota is cleared, which is what
+  distinguishes "storage was full" from "captures stopped working" and is also
+  what proves the lever was really lifted.
+- T075 audit outage: two things the installation's shape decides. The ledger and
+  the artifact bucket are the same MinIO, so stopping the ledger stops both and
+  the gateway's `503` does not name the missing dependency - the spec asserts
+  that the gateway refused rather than served, which is the property, and says
+  so rather than claiming more. And the gateway's `readyz` consults the artifact
+  bucket, so the outage takes every gateway pod out of the Service's endpoints;
+  a forward to the Service then fails with no endpoints, which is the Service
+  behaving correctly and says nothing about what the gateway would have
+  answered. The spec forwards a gateway *pod* directly to observe the refusal.
+- T075 restart: the spec compares the controller's pod names before and after.
+  A label selector that matches nothing deletes nothing and reports success, and
+  a rollout that never started reports success immediately, so without the
+  comparison the spec would pass having restarted nothing - the failure shape a
+  disruption spec is most likely to have and least likely to notice. The capture
+  runs for 90s so the restart lands while packets are being collected; a restart
+  before `startedAt` would test the controller creating a runner Job, which
+  every other spec here already covers.
+- T075: two harness defects were found by *running* the gated specs, both of the
+  "reports plausibly while doing nothing" kind. `kubectl port-forward` binds its
+  local listener before it contacts anything, so forwarding a pod on the
+  Service's port number - the container listens on 8443, the Service on 443 -
+  bound happily, passed the old readiness check, and failed minutes later as a
+  refused connection that read like the gateway being down. The forward helper
+  now waits for a TLS handshake, which cannot succeed unless bytes are really
+  reaching the gateway, and reads the container's port from the pod rather than
+  assuming the Service's.
+- T075: the object-store port-forward is a **third** connection the run
+  memoizes, after the ledger and artifact clients, and `stopLedger`'s restore
+  has to drop it too. The presigned redirect is followed by the CLI over that
+  forward, so after an outage the cluster is healthy and the next download fails
+  inside the object-store fetch, which reads like a broken bucket rather than a
+  stale fixture. It is easy to miss precisely because it is not an S3 client.
+  The spec that caused the outage also re-establishes the route before its own
+  post-restore download; every later spec picks up a fresh one from the reset.
+- T095 is **complete**. `test/e2e/results/manual-capture.md` is re-run against
+  the whole matrix on the deployed `8814f68`: SC-006 at 100% of 20 samples on
+  both budgets (start p50 2s / p95 3s against 10s; downloadable p50 0s / p95 1s
+  against 60s), the analyst-allowed and viewer-denied download decisions with
+  their ledger object names, the nine lifecycle specs, the audit outage and -
+  for the first time - a real expiry. Every gated case has a recorded window of
+  its own, because each stops something installation-wide and they cannot share
+  one.
+- T095: the expiry spec passed on its **second** execution and has never passed
+  on a first. Its first real run gave up twenty-two seconds short of the
+  deadline the object was carrying, because it computed one absolute timeout
+  from the deadline it read at completion. The retention reconciler recomputes
+  `completedAt + retention` and writes the answer back when status disagrees -
+  `observedDeadline` exists to do exactly that - so the reading a spec takes at
+  completion is not the one enforcement acts on. `waitForExpiry` now re-reads
+  the deadline as it waits, logs it when it moves, and reports both timestamps
+  when it gives up. The deadline was separately confirmed not to drift on an
+  idle cluster, so this was the spec's fault and not the installation's. That
+  makes four assertions in this suite that were wrong until something forced
+  them to run, and the first of the four that execution caught rather than
+  review.
 - T095: SC-006 is measured from the CaptureJob's own status - `requestedAt` to
   `startedAt`, and `captureEndedAt` to the `Downloadable` transition - rather
   than from the test's polling. A test that timed its own loop would report its
