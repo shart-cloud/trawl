@@ -464,6 +464,23 @@ diverge.
   a deleted pod either way; memoizing one without adding it to that reset would
   have made the next reader fail on a refused connection that reads like a
   broken bucket rather than a stale fixture.
+- T095 is **written but not ticked**, because it asks for the *full* manual
+  capture/CLI matrix and T075's last five cases are not written yet.
+  `test/e2e/results/manual-capture.md` records what does pass, measured against
+  the deployed `8814f68`: SC-006 at 100% of 20 samples on both budgets (start
+  p50 2s / p95 3s against 10s; downloadable p50 0s / p95 1s against 60s), the
+  analyst-allowed and viewer-denied download decisions with their ledger object
+  names, and the five lifecycle specs. Tick it when T075 is complete and the
+  document is re-run against that matrix.
+- T095: SC-006 is measured from the CaptureJob's own status - `requestedAt` to
+  `startedAt`, and `captureEndedAt` to the `Downloadable` transition - rather
+  than from the test's polling. A test that timed its own loop would report its
+  poll interval as much as the system's latency, and would give a figure nobody
+  could reproduce from the stored object afterwards. Two honest limits go with
+  it: `metav1.Time` serializes to whole seconds, so every figure is quantized
+  and the `0s` p50 means "under a second, not resolvable further"; and
+  `startedAt` is the node clock while `requestedAt` is the controller's, which
+  is the same clock only because the reference cluster is a single node.
 - T094 is split across two files rather than the one the task names. The
   gateway, CLI and ledger half is `test/integration/manual_capture_test.go`,
   written in Slice B2 against envtest and real MinIO. The real-dumpcap half is
