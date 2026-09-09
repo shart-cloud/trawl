@@ -178,7 +178,7 @@ func TestResumeCoversTheLongestThresholdWindow(t *testing.T) {
 	// The worker sets this to the widest window across armed policies, so the
 	// replay is as long as the evidence any policy still needs and no longer.
 	at := time.Date(2026, 9, 9, 22, 0, 0, 0, time.UTC)
-	c := &Client{ReplayWindow: 15 * time.Minute}
+	c := &Client{replayWindow: 15 * time.Minute}
 	c.advanceWatermark(at)
 
 	if got, want := c.resumePoint(), at.Add(-15*time.Minute); !got.Equal(want) {
@@ -198,7 +198,7 @@ func TestResumeNeverShortensBelowTheDefaultOverlap(t *testing.T) {
 		"shorter than overlap":  5 * time.Second,
 	} {
 		t.Run(name, func(t *testing.T) {
-			c := &Client{ReplayWindow: window}
+			c := &Client{replayWindow: window}
 			c.advanceWatermark(at)
 
 			if got, want := c.resumePoint(), at.Add(-replayOverlap); !got.Equal(want) {
@@ -220,7 +220,7 @@ func TestAnOutageBeyondTheReplayBoundIsReportedAsUnrecoverable(t *testing.T) {
 	at := time.Date(2026, 9, 9, 22, 0, 0, 0, time.UTC)
 	var reasons []string
 	c := &Client{
-		ReplayWindow: time.Minute,
+		replayWindow: time.Minute,
 		OnGap:        func(r string) { reasons = append(reasons, r) },
 		now:          func() time.Time { return at.Add(2 * time.Hour) },
 	}
@@ -240,7 +240,7 @@ func TestAShortOutageIsNotReportedAsUnrecoverable(t *testing.T) {
 	at := time.Date(2026, 9, 9, 22, 0, 0, 0, time.UTC)
 	var reasons []string
 	c := &Client{
-		ReplayWindow: time.Minute,
+		replayWindow: time.Minute,
 		OnGap:        func(r string) { reasons = append(reasons, r) },
 		now:          func() time.Time { return at.Add(10 * time.Second) },
 	}

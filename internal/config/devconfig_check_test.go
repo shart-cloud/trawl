@@ -235,3 +235,53 @@ func TestDevConfigGatewayPathsAreMounted(t *testing.T) {
 		}
 	}
 }
+
+// The same pairing check for the event worker.
+//
+// Its audit client certificate is the one mount that decides whether the worker
+// can act at all: FR-036 makes a capture it cannot record one it must not
+// create, so a certificate path that does not exist in the container is a
+// worker that evaluates every event and creates nothing. That failure is
+// invisible from the outside - no error on any policy, no capture, and a
+// network that looks quiet.
+func TestDevConfigEventWorkerPathsAreMounted(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "config", "dev", "trawl-config.yaml"))
+	if err != nil {
+		t.Skipf("dev configuration absent: %v", err)
+	}
+	var cm struct {
+		Data map[string]string `json:"data"`
+	}
+	if err := yaml.Unmarshal(raw, &cm); err != nil {
+		t.Fatalf("the dev ConfigMap is not valid YAML: %v", err)
+	}
+	cfg, err := Load([]byte(cm.Data["config.yaml"]))
+	if err != nil {
+		t.Fatalf("the dev configuration does not load: %v", err)
+	}
+
+	mounts, volumes := credentialSurface(t, filepath.Join("..", "..", "config", "manager", "event-worker.yaml"))
+
+	for _, want := range []struct {
+		field string
+		path  string
+	}{
+		{"eventWorker.auditClient.caFile", cfg.EventWorker.AuditClient.CAFile},
+		{"eventWorker.auditClient.certFile", cfg.EventWorker.AuditClient.CertFile},
+		{"eventWorker.auditClient.keyFile", cfg.EventWorker.AuditClient.KeyFile},
+		{"hubble.caFile", cfg.Hubble.CAFile},
+		{"hubble.certFile", cfg.Hubble.CertFile},
+		{"hubble.keyFile", cfg.Hubble.KeyFile},
+	} {
+		dir := filepath.Dir(want.path)
+		volume, ok := mounts[dir]
+		if !ok {
+			t.Errorf("%s is %s, but the event worker mounts nothing at %s; it would not start",
+				want.field, want.path, dir)
+			continue
+		}
+		if secret, ok := volumes[volume]; !ok || secret == "" {
+			t.Errorf("%s is mounted from volume %q, which is not backed by a Secret", want.field, volume)
+		}
+	}
+}

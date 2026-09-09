@@ -85,6 +85,16 @@ const (
 	// artifact. A 1 GiB capture over a modest link fits comfortably.
 	DefaultCaptureUploadBudget = 15 * time.Minute
 
+	// DefaultAlertPollInterval is how often the worker queries the alert
+	// stream. It is the floor on how late a signature-triggered capture
+	// starts, traded against a range query per interval against Loki.
+	DefaultAlertPollInterval = 15 * time.Second
+
+	// DefaultPolicyStatusInterval is how often policy status is written.
+	// Decisions are batched between writes, so this is also how stale a
+	// policy's counters may be.
+	DefaultPolicyStatusInterval = 15 * time.Second
+
 	// DefaultEventWorkerServiceAccount is the identity permitted to create
 	// Policy-typed CaptureJobs. It is a service account name in the system
 	// namespace; the webhook matches it against the API server's user info.
@@ -147,6 +157,9 @@ type Config struct {
 
 	// Gateway configures the artifact download API.
 	Gateway GatewayConfig `json:"gateway,omitempty"`
+
+	// EventWorker configures the policy evaluation worker.
+	EventWorker EventWorkerConfig `json:"eventWorker,omitempty"`
 
 	Content ContentConfig `json:"content"`
 	Images  ImageConfig   `json:"images"`
@@ -256,6 +269,31 @@ type GatewayConfig struct {
 	// download - and FR-036 means a download it cannot record is one it must
 	// refuse.
 	AuditClient AuditClientConfig `json:"auditClient"`
+}
+
+// EventWorkerConfig configures the worker that evaluates capture policies.
+//
+// Its only required field is the audit client, and for the same reason the
+// gateway's is required: the worker holds no ledger credentials (ADR-0003), so
+// this is its only way to record that a policy asked for a capture. FR-036
+// makes an unrecordable capture one it must not create, so a worker configured
+// without this is a worker that can watch and never act - which looks exactly
+// like a quiet network.
+type EventWorkerConfig struct {
+	// AuditClient is how the worker reaches the sink.
+	AuditClient AuditClientConfig `json:"auditClient"`
+
+	// AlertPollInterval is how often the Suricata alert stream is queried.
+	// Zero means DefaultAlertPollInterval.
+	//
+	// Unlike the Hubble stream, alerts are polled: they reach the worker
+	// through the observation pipeline rather than a live connection, so this
+	// interval is the floor on how late a signature-triggered capture starts.
+	AlertPollInterval Duration `json:"alertPollInterval,omitempty"`
+
+	// StatusInterval is how often policy status is written. Zero means
+	// DefaultPolicyStatusInterval.
+	StatusInterval Duration `json:"statusInterval,omitempty"`
 }
 
 // AuditClientConfig is the mTLS client half of the audit sink connection.
@@ -444,6 +482,16 @@ func (c *Config) ApplyDefaults() {
 	}
 	c.Capture.applyDefaults()
 	c.Gateway.applyDefaults()
+	c.EventWorker.applyDefaults()
+}
+
+func (w *EventWorkerConfig) applyDefaults() {
+	if w.AlertPollInterval == 0 {
+		w.AlertPollInterval = Duration(DefaultAlertPollInterval)
+	}
+	if w.StatusInterval == 0 {
+		w.StatusInterval = Duration(DefaultPolicyStatusInterval)
+	}
 }
 
 func (g *GatewayConfig) applyDefaults() {
@@ -587,6 +635,20 @@ func (c *Config) Validate() error {
 	req("gateway.auditClient.caFile", c.Gateway.AuditClient.CAFile)
 	req("gateway.auditClient.certFile", c.Gateway.AuditClient.CertFile)
 	req("gateway.auditClient.keyFile", c.Gateway.AuditClient.KeyFile)
+	// The worker's client half, required for the same reason the gateway's is:
+	// a capture it cannot record is one it must not create (FR-036).
+	req("eventWorker.auditClient.endpoint", c.EventWorker.AuditClient.Endpoint)
+	req("eventWorker.auditClient.serverName", c.EventWorker.AuditClient.ServerName)
+	req("eventWorker.auditClient.caFile", c.EventWorker.AuditClient.CAFile)
+	req("eventWorker.auditClient.certFile", c.EventWorker.AuditClient.CertFile)
+	req("eventWorker.auditClient.keyFile", c.EventWorker.AuditClient.KeyFile)
+	if c.EventWorker.AlertPollInterval <= 0 {
+		errs = append(errs, "eventWorker.alertPollInterval must be positive")
+	}
+	if c.EventWorker.StatusInterval <= 0 {
+		errs = append(errs, "eventWorker.statusInterval must be positive")
+	}
+
 	// Negative would be nonsense; zero is "use the default" and is allowed.
 	if c.Gateway.DownloadsPerMinute < 0 {
 		errs = append(errs, "gateway.downloadsPerMinute must not be negative")

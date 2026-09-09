@@ -75,6 +75,17 @@ func valid() *Config {
 				KeyFile:    "/var/run/secrets/trawl/audit-client/tls.key",
 			},
 		},
+		EventWorker: EventWorkerConfig{
+			AlertPollInterval: Duration(DefaultAlertPollInterval),
+			StatusInterval:    Duration(DefaultPolicyStatusInterval),
+			AuditClient: AuditClientConfig{
+				Endpoint:   "https://trawl-audit.trawl-system.svc:8443",
+				ServerName: "trawl-audit.trawl-system.svc",
+				CAFile:     "/var/run/secrets/trawl/audit-client/ca.crt",
+				CertFile:   "/var/run/secrets/trawl/audit-client/tls.crt",
+				KeyFile:    "/var/run/secrets/trawl/audit-client/tls.key",
+			},
+		},
 		CaptureRetentionCeiling: Duration(30 * 24 * time.Hour),
 		SensorAgentResources: ResourceRequirements{
 			RequestsCPU:    "50m",
@@ -399,6 +410,13 @@ auditSink:
   certFile: /etc/trawl/audit-sink/tls.crt
   keyFile: /etc/trawl/audit-sink/tls.key
   caFile: /etc/trawl/audit-sink/ca.crt
+eventWorker:
+  auditClient:
+    endpoint: https://trawl-audit.trawl-system.svc:8443
+    serverName: trawl-audit.trawl-system.svc
+    caFile: /etc/trawl/worker-audit-client/ca.crt
+    certFile: /etc/trawl/worker-audit-client/tls.crt
+    keyFile: /etc/trawl/worker-audit-client/tls.key
 gateway:
   certFile: /etc/trawl/gateway-tls/tls.crt
   keyFile: /etc/trawl/gateway-tls/tls.key

@@ -116,6 +116,38 @@ spec:
     kind: Issuer
     name: ca-issuer
 ---
+# The event worker's client identity for the audit sink.
+#
+# The worker holds no ledger credentials of its own (ADR-0003), so this is the
+# only way it can record that a policy asked for a capture. FR-036 makes an
+# unrecordable capture one it must not create, which means a missing or
+# mismatched certificate here is not a degraded mode: it is a worker that
+# evaluates every event and creates nothing, looking from the outside exactly
+# like a quiet network.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: event-worker-audit-client
+  namespace: system
+spec:
+  secretName: event-worker-audit-client
+  commonName: trawl-event-worker.trawl-system.svc
+  duration: 2160h # 90 days
+  renewBefore: 720h # 30 days
+  privateKey:
+    algorithm: ECDSA
+    size: 384
+    rotationPolicy: Always
+  # Client authentication only, as for the gateway: this identifies a writer of
+  # audit records and must not be usable to stand up something that serves them.
+  usages:
+    - digital signature
+    - key encipherment
+    - client auth
+  issuerRef:
+    kind: Issuer
+    name: ca-issuer
+---
 # The artifact gateway's client identity for the audit sink.
 #
 # Issued here rather than in Slice B so the CA chain lives in one file. The

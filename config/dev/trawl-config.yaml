@@ -120,6 +120,27 @@ data:
         certFile: /var/run/secrets/trawl/audit-client/tls.crt
         keyFile: /var/run/secrets/trawl/audit-client/tls.key
 
+    # The policy evaluation worker. Its client certificate comes from
+    # event-worker-audit-client, whose common name must appear in
+    # auditClientIdentities above -- a mismatch is a 403 on every commit, and
+    # FR-036 turns that into a worker that matches events and creates nothing.
+    eventWorker:
+      auditClient:
+        endpoint: https://trawl-audit.trawl-system.svc:8443
+        serverName: trawl-audit.trawl-system.svc
+        caFile: /var/run/secrets/trawl/audit-client/ca.crt
+        certFile: /var/run/secrets/trawl/audit-client/tls.crt
+        keyFile: /var/run/secrets/trawl/audit-client/tls.key
+      # The floor on how late a signature-triggered capture starts. Alerts
+      # reach the worker through the observation pipeline rather than a live
+      # connection, so unlike denied flows they are polled.
+      alertPollInterval: 15s
+      # How often policy counters and conditions are written, and therefore how
+      # stale they may be. Decisions are batched between writes because a busy
+      # signature produces them faster than the API server should be asked to
+      # record them.
+      statusInterval: 15s
+
     # Not a NetworkTap field on purpose: an under-provisioned sensor drops
     # observations silently, so it is not something a tap author can get wrong.
     sensorAgentResources:

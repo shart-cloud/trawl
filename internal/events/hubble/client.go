@@ -86,11 +86,14 @@ type Client struct {
 	// traffic that never happened (FR-016).
 	OnReject func(reason string)
 
-	// ReplayWindow is how far back a reconnect must resume to rebuild the
+	// replayWindow is how far back a reconnect must resume to rebuild the
 	// rolling threshold windows of armed policies. The worker sets it to the
 	// widest window across them, so the replay is as long as the evidence any
 	// policy still needs and no longer. Zero means only the default overlap.
-	ReplayWindow time.Duration
+	//
+	// Guarded by mu: the worker recomputes it from the policy list on its own
+	// schedule while the stream goroutine reads it on every reconnect.
+	replayWindow time.Duration
 
 	// now is time.Now unless a test replaced it.
 	now func() time.Time
@@ -133,6 +136,17 @@ func NewClient(cfg config.HubbleConfig, normalizer *Normalizer) (*Client, error)
 			MinVersion:   tls.VersionTLS13,
 		},
 	}, nil
+}
+
+// SetReplayWindow sets how far back a reconnect resumes.
+//
+// A setter rather than a field because the two sides run concurrently: the
+// worker recomputes the widest armed threshold window whenever policies change,
+// and the stream goroutine reads it every time it reconnects.
+func (c *Client) SetReplayWindow(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.replayWindow = d
 }
 
 // Connected reports whether the flow stream is currently healthy.
@@ -313,7 +327,7 @@ func (c *Client) resumePoint() time.Time {
 	if c.watermark.IsZero() {
 		return time.Time{}
 	}
-	return c.watermark.Add(-max(replayOverlap, c.ReplayWindow))
+	return c.watermark.Add(-max(replayOverlap, c.replayWindow))
 }
 
 // checkReplayable reports coverage the reconnect cannot recover.

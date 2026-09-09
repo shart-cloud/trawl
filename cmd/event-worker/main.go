@@ -14,22 +14,22 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Command event-worker consumes cluster and analyzer events.
+// Command event-worker consumes cluster and analyzer events and acts on them.
 //
-// In US2 it runs in observation mode: it streams Hubble flows, normalizes them
-// into cluster-flow observations, and writes them to stdout for Alloy. Policy
-// evaluation and CaptureJob creation arrive in US4 and run in the same process,
-// which is why it is leader-elected from the start — two workers evaluating the
-// same policy would create duplicate captures.
+// It streams Hubble flows and polls Suricata alerts back out of the observation
+// pipeline, evaluates both against the armed CapturePolicies, and creates the
+// CaptureJobs they ask for. The flows are also written to stdout for Alloy,
+// which is US2's contract and does not depend on any policy being armed.
 //
-// It is a separate binary from the controller manager so that its failure
-// cannot stop tap reconciliation. Consuming a live gRPC stream is a different
-// availability profile from reconciling declarative state, and the constitution
-// requires one component's failure not to take out independent monitoring.
+// It is leader-elected because two workers evaluating the same policy would
+// create two captures for one event, and it is a separate binary from the
+// controller manager so that its failure cannot stop tap reconciliation.
+// Consuming a live gRPC stream is a different availability profile from
+// reconciling declarative state, and the constitution requires one component's
+// failure not to take out independent monitoring.
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -40,18 +40,33 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/leaderelection"
-	"k8s.io/client-go/tools/leaderelection/resourcelock"
+	"k8s.io/apimachinery/pkg/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	trawlv1alpha1 "trawl.cloud/trawl/api/v1alpha1"
+	"trawl.cloud/trawl/internal/audit"
 	"trawl.cloud/trawl/internal/config"
+	"trawl.cloud/trawl/internal/controller"
 	"trawl.cloud/trawl/internal/events/hubble"
+	"trawl.cloud/trawl/internal/events/loki"
 	"trawl.cloud/trawl/internal/observation"
 	"trawl.cloud/trawl/internal/sanitize"
 	"trawl.cloud/trawl/internal/telemetry"
 )
+
+var scheme = runtime.NewScheme()
+
+func init() {
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		fatal("registering the core scheme", err)
+	}
+	if err := trawlv1alpha1.AddToScheme(scheme); err != nil {
+		fatal("registering the Trawl scheme", err)
+	}
+}
 
 func main() {
 	var (
@@ -86,28 +101,28 @@ func main() {
 		Node:    os.Getenv("TRAWL_NODE_NAME"),
 	}
 
-	client, err := hubble.NewClient(cfg.Hubble, normalizer)
+	flows, err := hubble.NewClient(cfg.Hubble, normalizer)
 	if err != nil {
 		fatal("creating hubble client", err)
 	}
 
-	client.OnConnectionChange = func(connected bool) {
+	flows.OnConnectionChange = func(connected bool) {
 		v := 0.0
 		if connected {
 			v = 1
 		}
 		metrics.TriggerSourceConnected.WithLabelValues(telemetry.TriggerSourceHubbleRelay).Set(v)
 	}
-	client.OnReject = func(reason string) {
+	flows.OnReject = func(reason string) {
 		// A record Trawl cannot store is counted, not dropped quietly. Without
 		// this the only evidence of a contract mismatch is that an
 		// investigation returns fewer records than the traffic warrants
 		// (FR-016).
 		metrics.TriggerEventsTotal.
 			WithLabelValues(telemetry.TriggerSourceHubbleRelay, telemetry.RecordMalformed).Inc()
-		fmt.Fprintf(os.Stderr, "event-worker: dropped a flow: %s\n", reason)
+		logf("dropped a flow: %s", sanitize.String(reason))
 	}
-	client.OnGap = func(reason string) {
+	flows.OnGap = func(reason string) {
 		// A gap is counted, not swallowed. Silently thinner evidence is the
 		// failure an analyst cannot detect (FR-039).
 		metrics.TriggerGapTotal.WithLabelValues(telemetry.TriggerSourceHubbleRelay, reason).Inc()
@@ -117,85 +132,113 @@ func main() {
 	// disconnected would hide the fact that denied-flow evidence is not being
 	// collected.
 	health.AddReadinessCheck("hubble-relay", func() error {
-		if !client.Connected() {
+		if !flows.Connected() {
 			return fmt.Errorf("hubble flow stream is not connected")
 		}
 		return nil
 	})
 
+	// Served from this process rather than the manager's own probe and metrics
+	// servers, so a standby that holds no lease still answers probes and still
+	// reports why it is standing by.
 	serveProbes(*probeAddr, health, registry)
 
-	ctx := ctrl.SetupSignalHandler()
-
-	run := func(ctx context.Context) {
-		err := client.Run(ctx, func(_ context.Context, flow *hubble.ParsedFlow) error {
-			metrics.TriggerEventsTotal.
-				WithLabelValues(telemetry.TriggerSourceHubbleRelay, "accepted").Inc()
-			metrics.TriggerLagSeconds.
-				WithLabelValues(telemetry.TriggerSourceHubbleRelay).
-				Set(time.Since(flow.EventTime).Seconds())
-			return emitter.emit(flow.Observation)
-		})
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "hubble stream: %v\n", sanitize.Error(err))
-		}
+	restCfg, err := ctrl.GetConfig()
+	if err != nil {
+		fatal("reading the kubeconfig", err)
 	}
 
-	if !*leaderElect {
-		run(ctx)
-		return
+	mgr, err := ctrl.NewManager(restCfg, ctrl.Options{
+		Scheme: scheme,
+		// The cache is what makes evaluation affordable: every armed policy is
+		// consulted per event, and uncached reads would put that load on the
+		// API server. It is restricted to the configured system namespace for
+		// the same reason the manager's is - a policy elsewhere is one the
+		// admission gate already refuses, and the worker must not be able to
+		// act on it even if one exists (FR-001).
+		Cache: cache.Options{
+			DefaultNamespaces: map[string]cache.Config{cfg.SystemNamespace: {}},
+		},
+		// Both disabled: this process serves its own, above.
+		Metrics:                 metricsserver.Options{BindAddress: "0"},
+		HealthProbeBindAddress:  "0",
+		LeaderElection:          *leaderElect,
+		LeaderElectionID:        "trawl-event-worker",
+		LeaderElectionNamespace: cfg.SystemNamespace,
+		// Safe here: the process ends when the manager stops, so releasing the
+		// lease on the way out only shortens the gap in which nothing is
+		// evaluating. Holding it to expiry would leave denied flows uncollected
+		// for a lease duration on every rollout.
+		LeaderElectionReleaseOnCancel: true,
+	})
+	if err != nil {
+		fatal("creating the manager", err)
 	}
 
-	if err := runWithLeaderElection(ctx, cfg, run); err != nil {
-		fatal("leader election", err)
+	auditClient, err := audit.NewClient(audit.ClientOptions{
+		Endpoint:   cfg.EventWorker.AuditClient.Endpoint,
+		ServerName: cfg.EventWorker.AuditClient.ServerName,
+		CAFile:     cfg.EventWorker.AuditClient.CAFile,
+		CertFile:   cfg.EventWorker.AuditClient.CertFile,
+		KeyFile:    cfg.EventWorker.AuditClient.KeyFile,
+	})
+	if err != nil {
+		// Fatal rather than degraded. The worker holds no ledger credentials of
+		// its own (ADR-0003), so without this it can never record that a policy
+		// asked for a capture - and FR-036 means it must then never create one.
+		// A worker that starts and silently declines every trigger is worse
+		// than one that does not start.
+		fatal("creating the audit client", err)
+	}
+
+	engine := &controller.PolicyEngine{
+		Client:    mgr.GetClient(),
+		Audit:     auditClient,
+		Actor:     workerActor(cfg),
+		Namespace: cfg.SystemNamespace,
+		Metrics:   metrics,
+	}
+	tracker := &controller.PolicyStatusTracker{
+		Client:    mgr.GetClient(),
+		Namespace: cfg.SystemNamespace,
+		Metrics:   metrics,
+	}
+
+	worker := &worker{
+		engine:  engine,
+		tracker: tracker,
+		emitter: emitter,
+		flows:   flows,
+		alerts:  loki.NewClient(cfg.Loki.Endpoint, cfg.Loki.TenantID, nil),
+		cursors: &loki.ConfigMapStore{
+			Client:    mgr.GetClient(),
+			Namespace: cfg.SystemNamespace,
+		},
+		reader:         mgr.GetClient(),
+		namespace:      cfg.SystemNamespace,
+		metrics:        metrics,
+		pollInterval:   time.Duration(cfg.EventWorker.AlertPollInterval),
+		statusInterval: time.Duration(cfg.EventWorker.StatusInterval),
+	}
+	if err := mgr.Add(worker); err != nil {
+		fatal("registering the worker", err)
+	}
+
+	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+		fatal("running the worker", err)
 	}
 }
 
-// runWithLeaderElection ensures exactly one worker consumes the stream.
+// workerActor is the identity the worker records its own actions under.
 //
-// In US2 a second consumer would only duplicate observations, which the stable
-// record IDs would collapse. It matters from US4 onward, where two workers
-// evaluating the same policy would create two captures for one event — so the
-// election is in place before the code that depends on it.
-func runWithLeaderElection(ctx context.Context, cfg *config.Config, run func(context.Context)) error {
-	restCfg, err := ctrl.GetConfig()
-	if err != nil {
-		return err
+// The workload identity, not the policy's: the act was the worker's, on the
+// policy's behalf, and impersonating the policy would make the ledger say a
+// rule wrote a record it has no way to write.
+func workerActor(cfg *config.Config) audit.Actor {
+	return audit.Actor{
+		Username: fmt.Sprintf("system:serviceaccount:%s:%s",
+			cfg.SystemNamespace, cfg.Capture.EventWorkerServiceAccount),
 	}
-	clientset, err := kubernetes.NewForConfig(restCfg)
-	if err != nil {
-		return err
-	}
-
-	identity := os.Getenv("POD_NAME")
-	if identity == "" {
-		identity, _ = os.Hostname()
-	}
-
-	lock := &resourcelock.LeaseLock{
-		LeaseMeta:  metav1.ObjectMeta{Namespace: cfg.SystemNamespace, Name: "trawl-event-worker"},
-		Client:     clientset.CoordinationV1(),
-		LockConfig: resourcelock.ResourceLockConfig{Identity: identity},
-	}
-
-	leaderelection.RunOrDie(ctx, leaderelection.LeaderElectionConfig{
-		Lock:            lock,
-		ReleaseOnCancel: true,
-		LeaseDuration:   15 * time.Second,
-		RenewDeadline:   10 * time.Second,
-		RetryPeriod:     2 * time.Second,
-		Callbacks: leaderelection.LeaderCallbacks{
-			OnStartedLeading: run,
-			OnStoppedLeading: func() {
-				// Losing the lease means another worker may already be
-				// consuming. Exiting is the safe response: continuing would
-				// mean two consumers, which from US4 means duplicate captures.
-				fmt.Fprintln(os.Stderr, "event-worker: lost leadership, exiting")
-				os.Exit(0)
-			},
-		},
-	})
-	return nil
 }
 
 // emitter serializes observations to stdout for Alloy.
@@ -221,7 +264,7 @@ func serveProbes(addr string, health *telemetry.Health, registry *prometheus.Reg
 	server := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			fmt.Fprintf(os.Stderr, "probe server: %v\n", sanitize.Error(err))
+			logf("probe server: %v", sanitize.Error(err))
 		}
 	}()
 }

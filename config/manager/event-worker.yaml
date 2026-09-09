@@ -102,6 +102,9 @@ spec:
             - name: hubble-tls
               mountPath: /etc/hubble
               readOnly: true
+            - name: audit-client
+              mountPath: /var/run/secrets/trawl/audit-client
+              readOnly: true
       volumes:
         - name: config
           configMap:
@@ -118,4 +121,15 @@ spec:
             # permission denied" before reaching Hubble at all. fsGroup makes
             # the volume group-owned by the runtime user, so group read is
             # enough and the key stays unreadable to everyone else.
+            defaultMode: 0440
+        - name: audit-client
+          secret:
+            # The worker's mTLS identity for the audit sink. It holds no ledger
+            # credentials of its own (ADR-0003), so without this it cannot
+            # record that a policy asked for a capture - and FR-036 means it
+            # must then not create one.
+            secretName: event-worker-audit-client
+            # 0440 for the same reason as the Hubble key above: root owns the
+            # files, the container runs as 65532, and fsGroup makes group read
+            # the way in.
             defaultMode: 0440
