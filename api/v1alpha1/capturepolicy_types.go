@@ -18,17 +18,18 @@ package v1alpha1
 
 import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-// This file currently holds only the trigger half of CapturePolicy: the part
-// the matching logic in internal/policy is written against. The rest of the
-// type - spec.capture, spec.rateLimit, status, phases, conditions, print
-// columns, defaults and the CEL validation markers - is T104, and belongs with
-// the webhook that enforces it (T105).
+// This file holds the parts of CapturePolicy that the pure logic in
+// internal/policy is written against: the trigger union and the rate limit. The
+// rest of the type - the CapturePolicy object itself, spec.tapRef, spec.armed,
+// spec.capture, spec.retention, status, phases, conditions, print columns,
+// defaults and the CEL validation markers - is T104, and belongs with the
+// webhook that enforces it (T105).
 //
-// The split is deliberate rather than incidental. Matching is a pure function
-// of a trigger and an observation, and it is testable long before there is a
-// CRD to install or an API server to admit against. Defining the whole type
-// first would have made the matching tests wait on validation machinery they do
-// not exercise.
+// The split is deliberate rather than incidental. Matching and limit accounting
+// are pure functions of a spec and some evidence, and they are testable long
+// before there is a CRD to install or an API server to admit against. Defining
+// the whole type first would have made those tests wait on validation machinery
+// they do not exercise.
 
 // CaptureTriggerType names the event source a policy evaluates.
 //
@@ -145,4 +146,34 @@ type DropThreshold struct {
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:Pattern=`^([0-9]+(s|m))+$`
 	Window metav1.Duration `json:"window"`
+}
+
+// CaptureRateLimit bounds how often a policy may capture.
+//
+// Both fields are required and both are bounded, because this is the only thing
+// standing between a noisy signature and a capture storm that fills the
+// artifact bucket. An unbounded policy is not a useful default even for a
+// careful operator: the traffic decides how often it fires, and the traffic is
+// not under the operator's control.
+type CaptureRateLimit struct {
+	// MaxCapturesPerHour is how many captures this policy may request in any
+	// trailing hour.
+	//
+	// Counted from the CaptureJobs the policy created rather than from a
+	// running total, so the bound survives a restart or a leader handoff.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
+	MaxCapturesPerHour int32 `json:"maxCapturesPerHour"`
+
+	// Cooldown is the window within which equivalent traffic collapses to one
+	// capture.
+	//
+	// It shapes the deduplication bucket rather than gating the policy as a
+	// whole: FR-031 scopes it to "the equivalent source and traffic", so two
+	// unrelated flows matching the same policy are not held back by each other.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Pattern=`^([0-9]+(s|m|h))+$`
+	Cooldown metav1.Duration `json:"cooldown"`
 }
