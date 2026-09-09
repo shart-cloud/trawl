@@ -17,8 +17,11 @@ limitations under the License.
 package policy
 
 import (
+	"fmt"
 	"slices"
 	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	trawlv1alpha1 "trawl.cloud/trawl/api/v1alpha1"
 	"trawl.cloud/trawl/internal/observation"
@@ -126,4 +129,39 @@ func (w *ThresholdWindow) expire() {
 			delete(w.events, id)
 		}
 	}
+}
+
+// HubbleSnapshot copies the denied flow that fired into the immutable trigger
+// context recorded on the CaptureJob.
+//
+// Like the Suricata snapshot, this is identity and classification only. It
+// carries the count that met the threshold, because a capture answering "three
+// denials in a minute" explains itself very differently from one answering a
+// single drop, and by the time an analyst reads it the flows themselves have
+// aged out of the relay's ring buffer.
+func HubbleSnapshot(
+	obs *observation.Observation, fingerprint string, count int32,
+) (*trawlv1alpha1.TriggerSnapshot, error) {
+	flow := obs.Details.ClusterFlow
+	if flow == nil {
+		return nil, fmt.Errorf("observation %s carries no cluster flow", obs.ID)
+	}
+
+	context := &trawlv1alpha1.HubbleTriggerContext{
+		Reason: truncate(flow.DropReason, maxSnapshotReason),
+		Count:  count,
+	}
+	if obs.Flow != nil {
+		context.SourceNamespace = truncate(obs.Flow.Source.Namespace, maxSnapshotNamespace)
+		context.DestinationNamespace = truncate(obs.Flow.Destination.Namespace, maxSnapshotNamespace)
+	}
+
+	return &trawlv1alpha1.TriggerSnapshot{
+		Source:      trawlv1alpha1.TriggerSourceHubbleDrop,
+		Fingerprint: fingerprint,
+		EventTime:   metav1.NewTime(obs.EventTime),
+		ObservedAt:  metav1.NewTime(obs.ObservedAt),
+		Flow:        flowSnapshot(obs.Flow),
+		Hubble:      context,
+	}, nil
 }

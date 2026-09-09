@@ -37,6 +37,7 @@ import (
 
 	trawlv1alpha1 "trawl.cloud/trawl/api/v1alpha1"
 	"trawl.cloud/trawl/internal/admission"
+	"trawl.cloud/trawl/internal/capture"
 	"trawl.cloud/trawl/internal/config"
 	"trawl.cloud/trawl/internal/sanitize"
 	"trawl.cloud/trawl/internal/status"
@@ -47,13 +48,9 @@ import (
 // disappears.
 const finalizer = "trawl.cloud/networktap-cleanup"
 
-// staleHeartbeat is how long a target's heartbeat may lag before its sensor is
-// treated as gone.
-//
-// A sensor reports on a short interval, so several missed heartbeats mean the
-// pod is unhealthy rather than briefly busy. Treating a stale heartbeat as
-// healthy would let a dead sensor hold a tap in Active.
-const staleHeartbeat = 90 * time.Second
+// staleHeartbeat is the shared target-eligibility window. It is defined in
+// internal/capture because the policy engine decides the same question with it.
+const staleHeartbeat = capture.StaleHeartbeat
 
 // NetworkTapReconciler reconciles NetworkTap resources.
 type NetworkTapReconciler struct {

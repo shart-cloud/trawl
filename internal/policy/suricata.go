@@ -23,6 +23,8 @@ limitations under the License.
 package policy
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"math"
 	"slices"
@@ -85,6 +87,12 @@ const (
 	// ReasonBelowThreshold means the flow qualifies but the trigger's rolling
 	// window has not yet seen enough of them.
 	ReasonBelowThreshold NotMatchedReason = "BelowThreshold"
+
+	// ReasonDifferentTap means the record was observed by a tap this policy
+	// does not watch. A policy is armed against one observation point, and
+	// capturing on its own tap in answer to another tap's alert would collect
+	// an unrelated conversation.
+	ReasonDifferentTap NotMatchedReason = "DifferentTap"
 )
 
 // MatchSuricata evaluates a Suricata alert trigger against an observation.
@@ -109,6 +117,19 @@ func MatchSuricata(t trawlv1alpha1.SuricataAlertTrigger, obs *observation.Observ
 	return Decision{Matched: true}
 }
 
+// EventFingerprint identifies the record that fired a policy.
+//
+// The snapshot's field is bounded to a sha256 digest, so the observation's own
+// ID cannot be carried verbatim. Hashing it keeps the property that matters:
+// two jobs naming one event agree, and an analyst holding a candidate record
+// can hash its ID and check. This is deliberately not the deduplication key -
+// that identifies the window a capture answers, and it is already on the spec.
+// The fingerprint identifies the single event, which is what a snapshot is for.
+func EventFingerprint(obs *observation.Observation) string {
+	sum := sha256.Sum256([]byte(obs.ID))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
 // Snapshot field bounds, mirroring the CaptureJob API's MaxLength markers.
 //
 // Restated here because the markers are validation the API server applies to a
@@ -117,8 +138,10 @@ func MatchSuricata(t trawlv1alpha1.SuricataAlertTrigger, obs *observation.Observ
 // exists only to describe it. The API remains the authority - these are the
 // lengths this package must not exceed, not a second definition of the limit.
 const (
-	maxSnapshotCategory = 128
-	maxSnapshotMessage  = 512
+	maxSnapshotCategory  = 128
+	maxSnapshotMessage   = 512
+	maxSnapshotReason    = 64
+	maxSnapshotNamespace = 253
 )
 
 // SuricataSnapshot copies the alert that fired into the immutable trigger

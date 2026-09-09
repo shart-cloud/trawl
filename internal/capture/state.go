@@ -283,6 +283,19 @@ const storageRetry = 30 * time.Second
 // outlived its activeDeadlineSeconds.
 const jobReasonDeadlineExceeded = "DeadlineExceeded"
 
+// StaleHeartbeat is how long a target's heartbeat may lag before its sensor is
+// treated as gone.
+//
+// A sensor reports on a short interval, so several missed heartbeats mean the
+// pod is unhealthy rather than briefly busy. Treating a stale heartbeat as
+// healthy would let a dead sensor hold a tap in Active - or, for the event
+// worker, let a policy send a capture to a node nothing is observing from.
+//
+// It lives here rather than beside either consumer because both the capture
+// controller and the policy engine decide target eligibility with it, and two
+// copies would drift into disagreeing about whether a node is usable.
+const StaleHeartbeat = 90 * time.Second
+
 // Evaluate returns the outcome the facts support for a CaptureJob.
 //
 // Precedence is object truth first: a verified artifact completes the capture
