@@ -681,10 +681,10 @@ and unaffected parallel policy evaluation.
 - [x] T096 [P] [US4] Add failing CapturePolicy API tests for configured-namespace enforcement, closed trigger unions, severity/reason filters, thresholds, typed placeholders, capture/rate/retention bounds, defaults, armed state, CRUD transitions, delete behavior, and durable-audit failure in `api/v1alpha1/capturepolicy_types_test.go`
 - [x] T097 [P] [US4] Add failing pure Suricata match and safe typed-template rendering tests for severity, rule, category, flow fields, non-match reasons, and final BPF validation in `internal/policy/suricata_test.go`
 - [x] T098 [P] [US4] Add failing Hubble drop match and rolling-threshold tests for reason, namespace, count/window, clock skew, replay, and source gaps in `internal/policy/hubble_test.go`
-- [ ] T099 [P] [US4] Add failing canonical direction-neutral flow key, cooldown bucket, deterministic name, same-policy, and cross-policy duplicate tests in `internal/policy/dedup_test.go`
+- [x] T099 [P] [US4] Add failing canonical direction-neutral flow key, cooldown bucket, deterministic name, same-policy, and cross-policy duplicate tests in `internal/policy/dedup_test.go`
 - [x] T100 [P] [US4] Add failing persisted hourly-limit, active-count, policy-generation, restart-rebuild, and clock-boundary tests in `internal/policy/rate_limit_test.go`
 - [x] T101 [P] [US4] Add failing Loki overlap cursor tests for timestamp ties, fingerprints, safe replay, cursor loss, malformed alerts, query failure, and lag/gap reporting in `internal/events/loki/cursor_test.go`
-- [ ] T102 [P] [US4] Add failing event-worker integration tests for concurrent policies, durable audit before create, audit outage, create-or-get races, leader handoff, CaptureJob snapshots, status counters, policy deletion, and independent failures in `test/integration/event_worker_test.go`
+- [x] T102 [P] [US4] Add failing event-worker integration tests for concurrent policies, durable audit before create, audit outage, create-or-get races, leader handoff, CaptureJob snapshots, status counters, policy deletion, and independent failures in `test/integration/event_worker_test.go`
 - [ ] T103 [US4] Add a failing end-to-end automatic trigger matrix for signature/drop matches, thresholds, non-matches, duplicates, cross-policy collapse, hourly limits, reconnect gaps, and restarts in `test/e2e/automatic_capture_test.go`
 
 ### Implementation for User Story 4
@@ -693,14 +693,14 @@ and unaffected parallel policy evaluation.
 - [x] T105 [US4] Implement CapturePolicy validation/defaulting for configured-namespace enforcement, same-namespace tap references, trigger unions, typed placeholders, bounds, retention ceiling, operator identity, and durable audit acknowledgement in `internal/admission/capturepolicy_webhook.go`
 - [x] T106 [P] [US4] Implement deterministic Suricata signature matching, decision reasons, safe trigger snapshots, and typed filter rendering in `internal/policy/suricata.go`
 - [x] T107 [P] [US4] Implement denied Hubble flow matching and bounded rolling threshold windows with replay-aware event identity in `internal/policy/hubble.go`
-- [ ] T108 [US4] Implement canonical direction-neutral five-tuple keys, cooldown buckets, deterministic CaptureJob names, and persisted create-or-get deduplication in `internal/policy/dedup.go`
+- [x] T108 [US4] Implement canonical direction-neutral five-tuple keys, cooldown buckets, deterministic CaptureJob names, and persisted create-or-get deduplication in `internal/policy/dedup.go`
 - [x] T109 [US4] Implement hourly/active counts rebuilt from CaptureJobs, cooldown decisions, and policy-generation-aware status accounting in `internal/policy/rate_limit.go`
 - [x] T110 [P] [US4] Implement atomic ConfigMap cursor persistence, overlap queries, fingerprint replay suppression, lag, and known-gap state in `internal/events/loki/cursor.go`
 - [x] T111 [P] [US4] Implement bounded Loki range queries and normalized Suricata alert decoding without raw event logging in `internal/events/loki/alerts.go`
 - [x] T112 [P] [US4] Extend the Hubble client with threshold-window replay, reconnect watermarks, and explicit unrecoverable loss reporting in `internal/events/hubble/client.go`
-- [ ] T113 [US4] Implement policy indexing, independent evaluation, target resolution, snapshot/bounds resolution, durable audit acknowledgement, CaptureJob construction, and decision emission in `internal/policy/engine.go`
-- [ ] T114 [US4] Implement CapturePolicy status/condition reconciliation, monotonic decision counters, last execution/suppression references, source health, and retry isolation in `internal/policy/status.go`
-- [ ] T115 [US4] Wire Loki alert polling, Hubble drop evaluation, policy cache watches, mTLS audit client, leader election, persistent cursors, metrics, and graceful handoff into `cmd/event-worker/main.go`
+- [x] T113 [US4] Implement policy indexing, independent evaluation, target resolution, snapshot/bounds resolution, durable audit acknowledgement, CaptureJob construction, and decision emission in `internal/policy/engine.go`
+- [x] T114 [US4] Implement CapturePolicy status/condition reconciliation, monotonic decision counters, last execution/suppression references, source health, and retry isolation in `internal/policy/status.go`
+- [x] T115 [US4] Wire Loki alert polling, Hubble drop evaluation, policy cache watches, mTLS audit client, leader election, persistent cursors, metrics, and graceful handoff into `cmd/event-worker/main.go`
 - [ ] T116 [US4] Grant the event worker only read/watch NetworkTap/CapturePolicy/CaptureJob, create CaptureJob, patch CapturePolicy status, cursor ConfigMap permissions, and egress to the audit sink in `config/rbac/event-worker-role.yaml` and update `config/manager/event-worker.yaml`
 - [ ] T117 [US4] Generate and review the CapturePolicy CRD/cluster-wide namespace-rejecting webhook/namespaced RBAC plus armed/disarmed Suricata and Hubble samples with no deferred trigger types in `config/crd/bases/trawl.cloud_capturepolicies.yaml` and `config/samples/`
 - [ ] T118 [US4] Add policy phase, decision counters, source gaps, active captures, cooldown/rate state, and suppression references to `config/grafana/dashboards/capture-management.json`
@@ -751,8 +751,9 @@ and unaffected parallel policy evaluation.
   is what the edge case describes and what "at most one equivalent bounded
   capture" implies. Policies with *different* cooldowns bucket differently and
   will not collapse - that is accepted, not overlooked. T113 may rely on this.
-- T099/T108 remain open: the persisted create-or-get half needs a Kubernetes
-  client and belongs with T113 and T102.
+- T099/T108 are complete. The persisted create-or-get half landed with T113:
+  propose `CaptureJobName(key)`, and on `AlreadyExists` adopt the existing job
+  rather than capturing twice.
 - T096 lives in `test/integration/capturepolicy_api_test.go`, not the
   `api/v1alpha1/...` path the task names. The schema is only meaningfully
   testable against a real API server: asserting the markers are present in
@@ -772,6 +773,83 @@ and unaffected parallel policy evaluation.
   (`export KUBEBUILDER_ASSETS="$(pwd)/$(bin/setup-envtest use 1.36.2 --bin-dir bin -p path)"`);
   the relative path setup-envtest prints leaves envtest looking in
   `/usr/local/kubebuilder/bin`. `make test` sets this itself.
+
+- **T113 and T114 are not at the paths the tasks name.** Both need a Kubernetes
+  client, and `.golangci.yml` forbids `sigs.k8s.io/controller-runtime` and
+  `k8s.io/client-go` under `internal/policy/**` - the boundary plan.md's Project
+  Structure draws around the pure domain ("pure match, threshold, dedupe,
+  cooldown, hourly limit"). They are
+  `internal/controller/capturepolicy_engine.go` and
+  `internal/controller/capturepolicy_status.go`, as `PolicyEngine` and
+  `PolicyStatusTracker`. `internal/policy` keeps the pure logic they call into.
+  Weakening the lint rule to match the task path would have traded a real
+  architectural boundary for a filename.
+- T113: a policy-created CaptureJob carries **no owner reference**. An owner
+  reference would have the API server delete the evidence when the rule that
+  collected it is deleted. `spec.policyRef` records the relationship without
+  handing it the object's lifetime.
+- T113: a matched event with **no eligible target still creates the job**,
+  without a `targetNode`. FR-034 wants the failure visible on both the policy
+  and the attempted execution, and a request that is simply dropped leaves
+  nothing to look at. The CaptureJob schema already permits this shape for a
+  Policy request, and T102 asserts the API server admits it.
+- T113: a **disarmed policy is still evaluated** and reports what it would have
+  captured, creating nothing and writing nothing to the ledger. That is what the
+  contract's `disarmed` decision label is for, and "this rule would have fired
+  eleven times today" is what an operator needs before arming it. A disarmed
+  policy that did not match reports nothing at all, so its counters do not climb
+  with ordinary traffic.
+- T113: only creations reach the audit ledger. A **deduplicated request created
+  no capture**, so its collapse is recorded in status counters and metrics
+  rather than as ledger history. The stable key covers the deduplication key,
+  the step, and the policy UID: the first is what two racing workers agree on
+  without having spoken, and the last is what stops two policies wanting one
+  capture from claiming one record identity with different content.
+- T114: status is **batched, not written per event**. A busy signature produces
+  decisions faster than the API server should be asked to record them. Counters
+  are applied as deltas so they accumulate, and a failed write keeps its batch
+  for the next flush - a conflict has nothing to do with the policy, and
+  dropping the batch would silently lose decisions that really happened. Every
+  policy is reconciled on each flush, not only the ones with pending decisions,
+  or a newly armed policy would sit with an empty status indefinitely.
+- T114: phase and the rate-limit condition are **derived from the CaptureJobs on
+  every flush** rather than latched on the last suppressed decision, so they
+  clear as captures age out of the trailing hour.
+- T115 replaces the hand-rolled leader election with a **controller-runtime
+  manager**. The cache is what makes evaluation affordable - every armed policy
+  is consulted per event - and it supplies the policy watches and the graceful
+  handoff the task asks for. The probe and metrics servers stay outside it, so a
+  standby holding no lease still answers probes.
+- T115: a **truncated alert page is not counted as a gap**. The page is the
+  front of the window and the cursor advances over what was read, so the rest is
+  backlog; if the backlog ever outruns the lookback, `Cursor.Resume` reports
+  that as the gap it has by then really become. A **failed query does not
+  advance the cursor** (advancing over an unread window makes a transient outage
+  permanent), while a **failed evaluation does** (the failure is already on the
+  policy, and not advancing would stop the cursor forever).
+- T115 added `eventWorker.auditClient` to the installation config, an
+  `event-worker-audit-client` Certificate, and the matching mount in
+  `config/manager/event-worker.yaml`, plus
+  `TestDevConfigEventWorkerPathsAreMounted`. Deferring them to T116 would have
+  left a worker that evaluates every event and creates nothing (FR-036) - a
+  component that looks finished and does nothing.
+- T115: `hubble.Client.ReplayWindow` became `SetReplayWindow`. The worker
+  recomputes the widest armed threshold window on each status tick while the
+  stream goroutine reads it on every reconnect; the exported field was a real
+  data race.
+- **Test provenance for Group E.** The engine, status and worker tests were
+  written before their implementations and each was mutation-checked. One did
+  not discriminate: `TestARecordTheOverlapRedeliversIsNotEvaluatedTwice` passed
+  with the cursor's replay suppression removed entirely, because the
+  deduplication key collapses the repeats downstream - it asserted the wrong
+  mechanism. It now reads the accepted and replayed counters. A second mutation
+  (removing the target heartbeat check) failed to build rather than failing the
+  test, which is the handoff's warning about badly chosen mutations, not a weak
+  test; widening it to a 100x window caught it.
+- **T116 is a hard prerequisite for any rollout.** The event worker has no RBAC
+  to create CaptureJobs, patch CapturePolicy status, or write the cursor
+  ConfigMap, so against a real cluster every one of those is a 403 and the
+  worker is silent in exactly the way FR-036 makes it silent.
 
 **Checkpoint**: All four user stories are functional. Automatic capture reuses the
 same bounded, authorized execution path proven by US3.
