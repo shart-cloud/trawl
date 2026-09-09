@@ -167,3 +167,88 @@ func TestTheWorkerValidatesWhatItEmits(t *testing.T) {
 		t.Errorf("an unparseable flow produced %d total rejections, want 2", len(rejected))
 	}
 }
+
+func TestResumeCoversTheLongestThresholdWindow(t *testing.T) {
+	// A drop policy with a threshold counts flows over a rolling window. If a
+	// reconnect resumes only the default overlap, every flow older than that is
+	// gone from the worker's view and the window rebuilds from almost nothing -
+	// so a threshold that was one flow short of firing silently never fires,
+	// and the burst it was watching for passes unrecorded.
+	//
+	// The worker sets this to the widest window across armed policies, so the
+	// replay is as long as the evidence any policy still needs and no longer.
+	at := time.Date(2026, 9, 9, 22, 0, 0, 0, time.UTC)
+	c := &Client{ReplayWindow: 15 * time.Minute}
+	c.advanceWatermark(at)
+
+	if got, want := c.resumePoint(), at.Add(-15*time.Minute); !got.Equal(want) {
+		t.Errorf("resume point = %s, want %s", got, want)
+	}
+}
+
+func TestResumeNeverShortensBelowTheDefaultOverlap(t *testing.T) {
+	// A policy with a threshold window shorter than the overlap - or no armed
+	// threshold policy at all - must not shrink the replay. The overlap exists
+	// for a different reason: Hubble's stream is lossy across a disconnect, so
+	// re-reading a little is what stops a denied flow being skipped outright.
+	at := time.Date(2026, 9, 9, 22, 0, 0, 0, time.UTC)
+
+	for name, window := range map[string]time.Duration{
+		"no threshold policies": 0,
+		"shorter than overlap":  5 * time.Second,
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := &Client{ReplayWindow: window}
+			c.advanceWatermark(at)
+
+			if got, want := c.resumePoint(), at.Add(-replayOverlap); !got.Equal(want) {
+				t.Errorf("resume point = %s, want %s", got, want)
+			}
+		})
+	}
+}
+
+func TestAnOutageBeyondTheReplayBoundIsReportedAsUnrecoverable(t *testing.T) {
+	// Hubble keeps a ring buffer and offers no cursor, so flows that aged out
+	// of it while the worker was disconnected cannot be recovered by asking
+	// again. That is a different fact from an ordinary reconnect gap, and it
+	// has to be said differently: a gap the worker closed by re-reading is
+	// recovered coverage, while this one is evidence that no longer exists.
+	//
+	// Reported rather than inferred, because the alternative is a policy whose
+	// counters look healthy over a window it never actually saw.
+	at := time.Date(2026, 9, 9, 22, 0, 0, 0, time.UTC)
+	var reasons []string
+	c := &Client{
+		ReplayWindow: time.Minute,
+		OnGap:        func(r string) { reasons = append(reasons, r) },
+		now:          func() time.Time { return at.Add(2 * time.Hour) },
+	}
+	c.advanceWatermark(at)
+
+	c.checkReplayable()
+
+	if len(reasons) != 1 || reasons[0] != GapUnrecoverable {
+		t.Errorf("gap reasons = %v, want exactly [%s]", reasons, GapUnrecoverable)
+	}
+}
+
+func TestAShortOutageIsNotReportedAsUnrecoverable(t *testing.T) {
+	// The counterpart: a brief relay restart is fully covered by the replay,
+	// and calling that unrecoverable would train an operator to ignore the one
+	// signal that means evidence is actually gone.
+	at := time.Date(2026, 9, 9, 22, 0, 0, 0, time.UTC)
+	var reasons []string
+	c := &Client{
+		ReplayWindow: time.Minute,
+		OnGap:        func(r string) { reasons = append(reasons, r) },
+		now:          func() time.Time { return at.Add(10 * time.Second) },
+	}
+	c.advanceWatermark(at)
+
+	c.checkReplayable()
+
+	if len(reasons) != 0 {
+		t.Errorf("a 10-second outage reported %v", reasons)
+	}
+}

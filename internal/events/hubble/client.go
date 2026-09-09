@@ -50,7 +50,22 @@ const (
 	// downstream, whereas a skipped denied flow is a trigger that never fires
 	// and evidence nobody knows is missing.
 	replayOverlap = 30 * time.Second
+
+	// maxReplay bounds how far back a reconnect will try to resume.
+	//
+	// Hubble keeps a ring buffer and offers no cursor, so flows that aged out
+	// of it while the worker was disconnected cannot be recovered by asking
+	// again. Resuming from further back than the relay can serve would not
+	// return the missing flows; it would only make the loss harder to see.
+	maxReplay = 30 * time.Minute
 )
+
+// GapUnrecoverable is the gap reason for coverage that cannot be re-read.
+//
+// Distinct from the reconnect reasons on purpose. A gap the worker closed by
+// re-reading is recovered coverage; this one is evidence that no longer exists,
+// and a policy's counters will look healthy over a window it never saw.
+const GapUnrecoverable = "replay_window_exceeded"
 
 // Client streams flows from Hubble Relay.
 type Client struct {
@@ -70,6 +85,15 @@ type Client struct {
 	// dropped record is counted rather than being indistinguishable from
 	// traffic that never happened (FR-016).
 	OnReject func(reason string)
+
+	// ReplayWindow is how far back a reconnect must resume to rebuild the
+	// rolling threshold windows of armed policies. The worker sets it to the
+	// widest window across them, so the replay is as long as the evidence any
+	// policy still needs and no longer. Zero means only the default overlap.
+	ReplayWindow time.Duration
+
+	// now is time.Now unless a test replaced it.
+	now func() time.Time
 
 	// OnConnectionChange reports connection state for
 	// trawl_trigger_source_connected.
@@ -141,6 +165,11 @@ func (c *Client) Run(ctx context.Context, handle func(context.Context, *ParsedFl
 		if err := ctx.Err(); err != nil {
 			return nil
 		}
+
+		// Before resuming, say whether the outage outran what the relay can
+		// still serve. On the first pass the watermark is zero and this is a
+		// first connection rather than a resumption, so it reports nothing.
+		c.checkReplayable()
 
 		err := c.streamOnce(ctx, handle)
 		c.setConnected(false)
@@ -272,13 +301,47 @@ const (
 )
 
 // resumePoint returns where a reconnecting stream should restart.
+//
+// The further back of two needs. The overlap covers Hubble's lossiness across a
+// disconnect; the replay window covers the rolling threshold windows of armed
+// policies, which rebuild from whatever the stream delivers. Resuming short of
+// the widest window leaves a threshold that was one flow from firing to rebuild
+// from almost nothing and never fire, with no error anywhere.
 func (c *Client) resumePoint() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.watermark.IsZero() {
 		return time.Time{}
 	}
-	return c.watermark.Add(-replayOverlap)
+	return c.watermark.Add(-max(replayOverlap, c.ReplayWindow))
+}
+
+// checkReplayable reports coverage the reconnect cannot recover.
+//
+// Called before resuming: if the watermark is older than what the relay can
+// still serve, the flows in between are gone, and saying so is the only way an
+// operator learns that the window was never examined.
+func (c *Client) checkReplayable() {
+	c.mu.Lock()
+	watermark := c.watermark
+	c.mu.Unlock()
+
+	if watermark.IsZero() {
+		// Nothing processed yet, so nothing was lost - this is a first
+		// connection, not a resumption.
+		return
+	}
+	if c.clock().Sub(watermark) > maxReplay {
+		c.reportGap(GapUnrecoverable)
+	}
+}
+
+// clock is time.Now unless a test replaced it.
+func (c *Client) clock() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
 }
 
 // advanceWatermark moves the watermark forward only.
