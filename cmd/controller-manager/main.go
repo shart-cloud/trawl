@@ -323,6 +323,10 @@ func main() {
 		setupLog.Error(err, "Failed to set up the CaptureJob webhook")
 		os.Exit(1)
 	}
+	if err := (&admission.CapturePolicyWebhook{Gate: gate, Config: installCfg}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to set up the CapturePolicy webhook")
+		os.Exit(1)
+	}
 
 	// Everything that is not this process commits audit records through this
 	// listener, because ledger credentials live here and nowhere else

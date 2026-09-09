@@ -1,0 +1,436 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: capturepolicies.trawl.cloud
+spec:
+  group: trawl.cloud
+  names:
+    kind: CapturePolicy
+    listKind: CapturePolicyList
+    plural: capturepolicies
+    shortNames:
+    - cpolicy
+    - cpolicies
+    singular: capturepolicy
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.armed
+      name: Armed
+      type: boolean
+    - jsonPath: .spec.trigger.type
+      name: Trigger
+      type: string
+    - jsonPath: .spec.tapRef.name
+      name: Tap
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.totalCaptures
+      name: Captures
+      type: integer
+    - jsonPath: .status.activeCaptures
+      name: Active
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: CapturePolicy arms one trigger against one tap with bounded capture
+          behavior.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              CapturePolicySpec is an operator's rule mapping one trigger to bounded
+              capture behavior.
+            properties:
+              armed:
+                default: false
+                description: |-
+                  Armed says whether the policy evaluates events at all.
+
+                  Defaults false so that creating a policy is never the same act as
+                  switching it on. An operator writing a trigger for the first time gets to
+                  read it back before it can start collecting packets.
+                type: boolean
+              capture:
+                description: Capture is the bounded capture requested when the trigger
+                  fires.
+                properties:
+                  duration:
+                    description: Duration bounds wall-clock capture time, 1s to 1h.
+                    pattern: ^([0-9]+(ms|s|m|h))+$
+                    type: string
+                  filterTemplate:
+                    description: |-
+                      FilterTemplate is a BPF expression that may carry the documented typed
+                      placeholders, which are substituted from the triggering event.
+
+                      Not a Go template. The rendered string becomes the expression the capture
+                      runner executes, and the values substituted into it describe traffic an
+                      attacker sends, so the placeholder set is closed and each value is
+                      validated as the type it claims to be (internal/policy/template.go).
+                    maxLength: 1024
+                    type: string
+                  maxSize:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: |-
+                      MaxSize bounds the artifact, 1Mi to 1Gi. Whichever of Duration and
+                      MaxSize is reached first ends the capture.
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                  snaplen:
+                    default: 0
+                    description: Snaplen bounds bytes kept per packet; 0 means whole
+                      packets.
+                    format: int32
+                    type: integer
+                required:
+                - duration
+                - maxSize
+                type: object
+              rateLimit:
+                description: RateLimit bounds how often this policy may capture.
+                properties:
+                  cooldown:
+                    description: |-
+                      Cooldown is the window within which equivalent traffic collapses to one
+                      capture.
+
+                      It shapes the deduplication bucket rather than gating the policy as a
+                      whole: FR-031 scopes it to "the equivalent source and traffic", so two
+                      unrelated flows matching the same policy are not held back by each other.
+                    pattern: ^([0-9]+(s|m|h))+$
+                    type: string
+                  maxCapturesPerHour:
+                    description: |-
+                      MaxCapturesPerHour is how many captures this policy may request in any
+                      trailing hour.
+
+                      Counted from the CaptureJobs the policy created rather than from a
+                      running total, so the bound survives a restart or a leader handoff.
+                    format: int32
+                    maximum: 100
+                    minimum: 1
+                    type: integer
+                required:
+                - cooldown
+                - maxCapturesPerHour
+                type: object
+              retention:
+                default: 30d
+                description: |-
+                  Retention is how long each artifact is kept after completion, 1h to 30d,
+                  further capped by the installation's captureRetentionCeiling.
+                pattern: ^([0-9]+(ms|s|m|h))+$|^[0-9]+d$
+                type: string
+              tapRef:
+                description: |-
+                  TapRef names the NetworkTap whose traffic this policy watches, in the
+                  same namespace.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+              trigger:
+                description: Trigger is the event condition that fires this policy.
+                properties:
+                  hubbleDrop:
+                    description: HubbleDrop is required when Type is HubbleDrop.
+                    properties:
+                      reasons:
+                        description: Reasons are the Hubble drop reasons to match.
+                        items:
+                          maxLength: 64
+                          type: string
+                        maxItems: 100
+                        minItems: 1
+                        type: array
+                        x-kubernetes-list-type: set
+                      sourceNamespaces:
+                        description: SourceNamespaces optionally narrows to flows
+                          leaving these namespaces.
+                        items:
+                          maxLength: 253
+                          type: string
+                        maxItems: 100
+                        type: array
+                        x-kubernetes-list-type: set
+                      threshold:
+                        description: |-
+                          Threshold optionally requires a sustained rate rather than a single flow.
+
+                          Absent means one matching flow triggers. Present means the policy waits
+                          for Count flows within Window before it does.
+                        properties:
+                          count:
+                            description: Count is how many matching flows must fall
+                              inside Window.
+                            format: int32
+                            maximum: 10000
+                            minimum: 1
+                            type: integer
+                          window:
+                            description: |-
+                              Window is the rolling period the count is measured over.
+
+                              Bounded at both ends: a window below a second cannot be measured
+                              meaningfully against event timestamps that arrive with skew, and one
+                              above fifteen minutes holds more flow state than the worker should carry
+                              per policy.
+                            pattern: ^([0-9]+(s|m))+$
+                            type: string
+                        required:
+                        - count
+                        - window
+                        type: object
+                    required:
+                    - reasons
+                    type: object
+                  suricataAlert:
+                    description: SuricataAlert is required when Type is SuricataAlert.
+                    properties:
+                      categories:
+                        description: Categories optionally narrows to specific signature
+                          categories.
+                        items:
+                          maxLength: 128
+                          type: string
+                        maxItems: 100
+                        type: array
+                        x-kubernetes-list-type: set
+                      ruleIDs:
+                        description: RuleIDs optionally narrows to specific signature
+                          IDs.
+                        items:
+                          format: int64
+                          minimum: 0
+                          type: integer
+                        maxItems: 1000
+                        type: array
+                        x-kubernetes-list-type: set
+                      severities:
+                        description: |-
+                          Severities are the Suricata alert severities to match.
+
+                          Suricata's scale runs 1 (most severe) to 4, which is the reverse of what
+                          most people assume, so the bound is enforced rather than documented.
+                        items:
+                          format: int32
+                          maximum: 4
+                          minimum: 1
+                          type: integer
+                        maxItems: 4
+                        minItems: 1
+                        type: array
+                        x-kubernetes-list-type: set
+                    required:
+                    - severities
+                    type: object
+                  type:
+                    description: Type selects which body below is evaluated.
+                    enum:
+                    - SuricataAlert
+                    - HubbleDrop
+                    type: string
+                required:
+                - type
+                type: object
+                x-kubernetes-validations:
+                - message: trigger type SuricataAlert requires suricataAlert
+                  rule: self.type != 'SuricataAlert' || has(self.suricataAlert)
+                - message: trigger type HubbleDrop requires hubbleDrop
+                  rule: self.type != 'HubbleDrop' || has(self.hubbleDrop)
+                - message: suricataAlert is only allowed when trigger type is SuricataAlert
+                  rule: self.type == 'SuricataAlert' || !has(self.suricataAlert)
+                - message: hubbleDrop is only allowed when trigger type is HubbleDrop
+                  rule: self.type == 'HubbleDrop' || !has(self.hubbleDrop)
+            required:
+            - capture
+            - rateLimit
+            - tapRef
+            - trigger
+            type: object
+          status:
+            description: CapturePolicyStatus is what the event worker observed about
+              a policy.
+            properties:
+              activeCaptures:
+                description: |-
+                  ActiveCaptures is how many of its captures have not reached a terminal
+                  phase.
+                format: int32
+                type: integer
+              conditions:
+                description: Conditions carry the detailed reasons behind Phase.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              decisions:
+                description: Decisions counts outcomes by kind.
+                properties:
+                  duplicate:
+                    description: Duplicate is qualifying events collapsed into an
+                      existing capture.
+                    format: int64
+                    type: integer
+                  failed:
+                    description: Failed is qualifying events whose capture could not
+                      be requested.
+                    format: int64
+                    type: integer
+                  matched:
+                    description: Matched is qualifying events that produced a capture
+                      request.
+                    format: int64
+                    type: integer
+                  notMatched:
+                    description: NotMatched is events evaluated and declined.
+                    format: int64
+                    type: integer
+                  rateLimited:
+                    description: RateLimited is qualifying events refused by the hourly
+                      ceiling.
+                    format: int64
+                    type: integer
+                type: object
+              lastCaptureRef:
+                description: LastCaptureRef is the most recent capture created or
+                  deduplicated into.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+              lastTriggerTime:
+                description: |-
+                  LastTriggerTime is the last matching event, including one whose capture
+                  was suppressed. A policy that is matching but suppressing is working;
+                  one that is not matching at all is a different problem, and the two
+                  would otherwise look identical.
+                format: date-time
+                type: string
+              observedGeneration:
+                description: ObservedGeneration is the spec generation being evaluated.
+                format: int64
+                type: integer
+              phase:
+                description: Phase is the policy's operational position.
+                enum:
+                - Disarmed
+                - Armed
+                - Degraded
+                - RateLimited
+                type: string
+              resolvedTapUID:
+                description: |-
+                  ResolvedTapUID is the tap identity bound for the current generation. A
+                  tap deleted and recreated under the same name is a different tap, and
+                  the UID is what makes that visible.
+                type: string
+              totalCaptures:
+                description: TotalCaptures is how many unique captures this policy
+                  has requested.
+                format: int64
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

@@ -30,6 +30,26 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      path: /mutate-trawl-cloud-v1alpha1-capturepolicy
+  failurePolicy: Fail
+  name: mcapturepolicy.trawl.cloud
+  rules:
+  - apiGroups:
+    - trawl.cloud
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - capturepolicies
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
       path: /mutate-trawl-cloud-v1alpha1-networktap
   failurePolicy: Fail
   name: mnetworktap.trawl.cloud
@@ -70,6 +90,27 @@ webhooks:
     - DELETE
     resources:
     - capturejobs
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-trawl-cloud-v1alpha1-capturepolicy
+  failurePolicy: Fail
+  name: vcapturepolicy.trawl.cloud
+  rules:
+  - apiGroups:
+    - trawl.cloud
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    - DELETE
+    resources:
+    - capturepolicies
   sideEffects: None
 - admissionReviewVersions:
   - v1

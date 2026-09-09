@@ -321,3 +321,71 @@ func TestARevisionOutsideTheAPIsRangeIsOmittedNotWrapped(t *testing.T) {
 		t.Errorf("revision = %d, which the API's Minimum=0 rejects", got.Suricata.Revision)
 	}
 }
+
+func TestFilterTemplateValidationRejectsUnknownPlaceholdersBeforeArming(t *testing.T) {
+	// The webhook checks the template when the policy is written, with no event
+	// in hand. Deferring it to render time would mean an operator arms a policy
+	// that looks accepted and then fails silently at the only moment it
+	// mattered - when an alert fired and the capture did not start.
+	for name, template := range map[string]string{
+		"unknown placeholder": "host {{source.mac}}",
+		"payload field":       "host {{signature.message}}",
+		"empty placeholder":   "host {{}}",
+		"unterminated":        "host {{source.ip",
+		"over the byte bound": "host {{source.ip}} " + strings.Repeat("x", 1100),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := policy.ValidateFilterTemplate(template); err == nil {
+				t.Errorf("template %q was accepted", template)
+			}
+		})
+	}
+}
+
+func TestAValidTemplateIsAcceptedWithoutAnEvent(t *testing.T) {
+	// The control: every documented placeholder, and the empty template that
+	// means "capture everything the bounds allow".
+	for _, template := range []string{
+		"",
+		"host {{source.ip}} and host {{destination.ip}}",
+		"{{protocol}} port {{source.port}} or {{protocol}} port {{destination.port}}",
+		"tcp port 443",
+	} {
+		if err := policy.ValidateFilterTemplate(template); err != nil {
+			t.Errorf("template %q was rejected: %v", template, err)
+		}
+	}
+}
+
+func TestTheValidatorAndTheRendererAgreeOnTheDocumentedPlaceholders(t *testing.T) {
+	// Two lists describe the placeholder set: the switch RenderFilter
+	// substitutes from, and the names ValidateFilterTemplate accepts. If they
+	// drift, the failure is silent and one-directional - the webhook admits a
+	// policy naming a placeholder the renderer cannot resolve, and the capture
+	// fails only when an alert finally fires.
+	//
+	// Checked by round-tripping every name through both.
+	obs := alert()
+	for _, name := range []string{
+		"source.ip", "destination.ip", "source.port", "destination.port", "protocol",
+	} {
+		template := "host {{" + name + "}}"
+
+		if err := policy.ValidateFilterTemplate(template); err != nil {
+			t.Errorf("the validator rejects documented placeholder %q: %v", name, err)
+			continue
+		}
+		if _, err := policy.RenderFilter(template, obs); err != nil {
+			t.Errorf("the renderer cannot resolve documented placeholder %q: %v", name, err)
+		}
+	}
+
+	// And the other direction: a name the renderer does not know must not pass
+	// the validator either.
+	for _, name := range []string{"source.mac", "tap.name", "signature.category"} {
+		template := "host {{" + name + "}}"
+		if err := policy.ValidateFilterTemplate(template); err == nil {
+			t.Errorf("the validator accepts %q, which the renderer cannot resolve", name)
+		}
+	}
+}

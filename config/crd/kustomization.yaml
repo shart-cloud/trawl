@@ -5,6 +5,7 @@ kind: Kustomization
 resources:
   - bases/trawl.cloud_networktaps.yaml
   - bases/trawl.cloud_capturejobs.yaml
+  - bases/trawl.cloud_capturepolicies.yaml
 
 # The webhook needs a CA bundle injected into the CRD's conversion stanza only
 # if conversion webhooks are in use. Every kind has one served version, so

@@ -75,30 +75,58 @@ func RenderFilter(template string, obs *observation.Observation) (string, error)
 // else in its place.
 var bpfProtocols = []string{"tcp", "udp", "icmp", "icmp6", "sctp"}
 
+// placeholder is one documented substitution: how to read it from a flow, and
+// a representative value so a template can be checked before any event exists.
+type placeholder struct {
+	resolve  func(name string, flow *observation.Flow) (string, error)
+	specimen string
+}
+
+// placeholders is the closed, documented set - the single source of truth for
+// both RenderFilter and ValidateFilterTemplate.
+//
+// One map rather than a switch beside a list. The two used to be separate, and
+// the drift between them would have been silent and one-directional: the
+// webhook admits a policy naming a placeholder the renderer cannot resolve, and
+// the capture fails only when an alert finally fires.
+var placeholders = map[string]placeholder{
+	"source.ip": {
+		resolve:  func(n string, f *observation.Flow) (string, error) { return ipValue(n, f.Source.IP) },
+		specimen: "192.0.2.1",
+	},
+	"destination.ip": {
+		resolve:  func(n string, f *observation.Flow) (string, error) { return ipValue(n, f.Destination.IP) },
+		specimen: "192.0.2.2",
+	},
+	"source.port": {
+		resolve:  func(n string, f *observation.Flow) (string, error) { return portValue(n, f.Source.Port) },
+		specimen: "65535",
+	},
+	"destination.port": {
+		resolve:  func(n string, f *observation.Flow) (string, error) { return portValue(n, f.Destination.Port) },
+		specimen: "65535",
+	},
+	"protocol": {
+		resolve: func(n string, f *observation.Flow) (string, error) {
+			if !slices.Contains(bpfProtocols, f.Protocol) {
+				return "", fmt.Errorf("placeholder %q: %q is not a filterable protocol", n, f.Protocol)
+			}
+			return f.Protocol, nil
+		},
+		specimen: "tcp",
+	},
+}
+
 // resolvePlaceholder returns the value for one documented placeholder name.
 func resolvePlaceholder(name string, obs *observation.Observation) (string, error) {
-	flow := obs.Flow
-	if flow == nil {
-		return "", fmt.Errorf("placeholder %q: the observation carries no flow", name)
-	}
-
-	switch name {
-	case "source.ip":
-		return ipValue(name, flow.Source.IP)
-	case "destination.ip":
-		return ipValue(name, flow.Destination.IP)
-	case "source.port":
-		return portValue(name, flow.Source.Port)
-	case "destination.port":
-		return portValue(name, flow.Destination.Port)
-	case "protocol":
-		if !slices.Contains(bpfProtocols, flow.Protocol) {
-			return "", fmt.Errorf("placeholder %q: %q is not a filterable protocol", name, flow.Protocol)
-		}
-		return flow.Protocol, nil
-	default:
+	p, ok := placeholders[name]
+	if !ok {
 		return "", fmt.Errorf("unknown placeholder %q", name)
 	}
+	if obs.Flow == nil {
+		return "", fmt.Errorf("placeholder %q: the observation carries no flow", name)
+	}
+	return p.resolve(name, obs.Flow)
 }
 
 // ipValue returns the address only if it parses as one.
@@ -126,4 +154,44 @@ func portValue(name string, port *int32) (string, error) {
 		return "", fmt.Errorf("placeholder %q: %d is not a port number", name, *port)
 	}
 	return fmt.Sprint(*port), nil
+}
+
+// ValidateFilterTemplate checks a template without an event to render from.
+//
+// This is what the webhook calls when a policy is written. Deferring the check
+// to render time would let an operator arm a policy that looks accepted and
+// then fails at the only moment it mattered - when an alert fired and the
+// capture did not start. The failure would be in the worker's logs, not on the
+// object, so the policy would go on reporting itself armed.
+//
+// The placeholder names are checked against the same closed set RenderFilter
+// substitutes from, so the two cannot drift into disagreeing about what is
+// documented.
+func ValidateFilterTemplate(template string) error {
+	if len(template) > capture.MaxFilterBytes {
+		return fmt.Errorf("filter template: longer than %d bytes", capture.MaxFilterBytes)
+	}
+
+	residual := placeholderRE.ReplaceAllStringFunc(template, func(match string) string {
+		name := strings.TrimSpace(placeholderRE.FindStringSubmatch(match)[1])
+		p, ok := placeholders[name]
+		if !ok {
+			// Left in place so the brace check below reports it.
+			return match
+		}
+		// Substituted with a value of the right shape, so the remaining text is
+		// checked as the filter it will become rather than as the template.
+		return p.specimen
+	})
+
+	for _, match := range placeholderRE.FindAllStringSubmatch(residual, -1) {
+		return fmt.Errorf("filter template: unknown placeholder %q", strings.TrimSpace(match[1]))
+	}
+	if strings.Contains(residual, "{{") || strings.Contains(residual, "}}") {
+		return fmt.Errorf("filter template: unterminated placeholder")
+	}
+	if err := capture.ValidateFilterSyntax(residual); err != nil {
+		return fmt.Errorf("filter template: %w", err)
+	}
+	return nil
 }
