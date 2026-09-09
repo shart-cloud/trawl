@@ -65,6 +65,26 @@ const (
 	// ReasonCategoryNotListed means the trigger narrows by category and this
 	// alert's category is not among them.
 	ReasonCategoryNotListed NotMatchedReason = "CategoryNotListed"
+
+	// ReasonNotAClusterFlow means the observation carries no Hubble cluster
+	// flow, the counterpart of ReasonNotAnAlert for drop triggers.
+	ReasonNotAClusterFlow NotMatchedReason = "NotAClusterFlow"
+
+	// ReasonDropReasonNotListed means the flow's drop reason is not in the
+	// trigger.
+	ReasonDropReasonNotListed NotMatchedReason = "DropReasonNotListed"
+
+	// ReasonNotDenied means the flow was not denied, whatever reason it
+	// carries.
+	ReasonNotDenied NotMatchedReason = "NotDenied"
+
+	// ReasonNamespaceNotListed means the trigger narrows by source namespace
+	// and this flow left a different one.
+	ReasonNamespaceNotListed NotMatchedReason = "NamespaceNotListed"
+
+	// ReasonBelowThreshold means the flow qualifies but the trigger's rolling
+	// window has not yet seen enough of them.
+	ReasonBelowThreshold NotMatchedReason = "BelowThreshold"
 )
 
 // MatchSuricata evaluates a Suricata alert trigger against an observation.
