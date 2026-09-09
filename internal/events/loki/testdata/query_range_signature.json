@@ -1,0 +1,40 @@
+{
+ "status": "success",
+ "data": {
+  "resultType": "streams",
+  "result": [
+   {
+    "stream": {
+     "category": "Misc activity",
+     "cluster": "test-cluster",
+     "community_id": "1:BuyrLZyhhfD5p1tv1zy4OLiHzy4=",
+     "destination_ip": "198.51.100.20",
+     "destination_port": "22",
+     "detected_level": "3",
+     "duplication": "NotDetected",
+     "instance": "trawl-system/trawl-tap-example:sensor-agent",
+     "job": "loki.source.kubernetes.trawl_observations",
+     "observation_type": "signature",
+     "protocol": "tcp",
+     "rule_id": "2038968",
+     "service_name": "trawl-observation",
+     "severity": "3",
+     "source_ip": "192.0.2.10",
+     "source_kind": "Suricata",
+     "source_port": "39510",
+     "tap_name": "node-eno1",
+     "tap_namespace": "trawl-system",
+     "tap_uid": "00000000-0000-4000-8000-000000000001",
+     "target_interface": "eno1",
+     "target_node": "node-01"
+    },
+    "values": [
+     [
+      "1788990727527204000",
+      "{\"schema_version\":\"trawl.observation/v1alpha1\",\"id\":\"44405f7ca0812ce2d9126d516b8626ca\",\"event_time\":\"2026-09-09T21:52:07.527204Z\",\"observed_at\":\"2026-09-09T21:52:07.727072412Z\",\"source\":{\"kind\":\"Suricata\",\"version\":\"This is Suricata version 8.0.6 RELEASE\"},\"tap\":{\"namespace\":\"trawl-system\",\"name\":\"node-eno1\",\"uid\":\"00000000-0000-4000-8000-000000000001\"},\"target\":{\"node\":\"node-01\",\"interface\":\"eno1\"},\"observation_type\":\"signature\",\"flow\":{\"community_id\":\"1:BuyrLZyhhfD5p1tv1zy4OLiHzy4=\",\"protocol\":\"tcp\",\"source\":{\"ip\":\"192.0.2.10\",\"port\":39510},\"destination\":{\"ip\":\"198.51.100.20\",\"port\":22}},\"details\":{\"signature\":{\"rule_id\":2038968,\"revision\":1,\"severity\":3,\"category\":\"Misc activity\",\"message\":\"ET INFO SSH-2.0-Go version string Observed in Network Traffic\",\"action\":\"allowed\"}},\"duplication\":\"NotDetected\"}\n"
+     ]
+    ]
+   }
+  ]
+ }
+}
