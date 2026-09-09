@@ -745,10 +745,12 @@ and unaffected parallel policy evaluation.
   records.
 - T099/T108: the deduplication key deliberately excludes the policy, so two
   policies matching the same traffic under the same cooldown collapse to one
-  capture. **This is a reading of an ambiguous spec** - FR-031 says "within the
-  cooldown window" (per-policy) while the edge cases say equivalent cross-policy
-  requests collapse. Policies with *different* cooldowns bucket differently and
-  will not collapse. Worth confirming before T113 depends on it.
+  capture. FR-031 says "within the cooldown window", which reads per-policy,
+  while the edge cases say equivalent cross-policy requests collapse; **the
+  ambiguity was raised and resolved in favour of cross-policy collapse**, which
+  is what the edge case describes and what "at most one equivalent bounded
+  capture" implies. Policies with *different* cooldowns bucket differently and
+  will not collapse - that is accepted, not overlooked. T113 may rely on this.
 - T099/T108 remain open: the persisted create-or-get half needs a Kubernetes
   client and belongs with T113 and T102.
 - T096/T104: only the trigger half of CapturePolicy exists
