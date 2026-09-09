@@ -17,6 +17,8 @@ limitations under the License.
 package contract
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -57,6 +59,29 @@ func alloyLabels(t *testing.T, path string) []string {
 	}
 	return labels
 }
+
+// alloyPromotedFields returns the keys a pipeline promotes from extracted
+// values - stage.labels and stage.structured_metadata. static_labels are
+// excluded: they are literals, not extractions, so nothing needs to populate
+// them.
+func alloyPromotedFields(t *testing.T, path string) []string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), path))
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+
+	var fields []string
+	for _, block := range promotedBlockRE.FindAllStringSubmatch(string(data), -1) {
+		for _, m := range labelKeyRE.FindAllStringSubmatch(block[1], -1) {
+			fields = append(fields, m[1])
+		}
+	}
+	return fields
+}
+
+var promotedBlockRE = regexp.MustCompile(
+	`(?s)stage\.(?:labels|structured_metadata)\s*\{\s*values\s*=\s*\{(.*?)\}`)
 
 func TestObservationPipelinePromotesOnlyContractLabels(t *testing.T) {
 	// contracts/telemetry.md: service_name, cluster, source_kind,
@@ -349,4 +374,175 @@ func TestObservationPipelineCollectsEveryEmitter(t *testing.T) {
 				kind, emitter.container, keep[1])
 		}
 	}
+}
+
+// The tests above assert which fields may be promoted. They cannot tell whether
+// a promoted field is ever populated: they read the names in stage.labels and
+// stage.structured_metadata, and a name declared there is a name whether or not
+// any stage extracts a value for it.
+//
+// That gap shipped. severity, rule_id and category were declared as structured
+// metadata and read by a second stage.json keyed on "details" - a key the first
+// stage never extracted, so the nested stage parsed nothing. Every assertion
+// above passed while the three fields were absent from every signature record
+// in Loki. Nothing errored; a query filtering on severity simply matched
+// nothing, which reads as "no alerts" rather than as a broken pipeline.
+//
+// The tests below close that gap by modelling what the pipeline actually does
+// with a record: resolve each expression against a real envelope and check that
+// the fields the contract promises are the fields a record carries.
+
+// jsonStageRE captures a stage.json block: group 1 is whatever precedes the
+// expressions map (where a nested stage's `source` lives), group 2 the map.
+var jsonStageRE = regexp.MustCompile(`(?s)stage\.json\s*\{(.*?)expressions\s*=\s*\{(.*?)\n\s*\}`)
+
+var exprRE = regexp.MustCompile(`(?m)^\s*([a-z_][a-z0-9_]*)\s*=\s*"([^"]+)"`)
+
+var sourceRE = regexp.MustCompile(`source\s*=\s*"([^"]+)"`)
+
+// alloyExtractions returns each key a pipeline extracts, mapped to the path it
+// reads from the root of the record.
+//
+// A stage.json with a `source` reads from a previously extracted field rather
+// than from the record, so its paths are composed onto that field's path. That
+// composition is the whole point: it is what makes an expression's effective
+// path visible, and an unresolvable source is reported rather than ignored.
+func alloyExtractions(t *testing.T, path string) (map[string]string, []error) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), path))
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+
+	paths := map[string]string{}
+	var problems []error
+
+	for _, stage := range jsonStageRE.FindAllStringSubmatch(string(data), -1) {
+		prefix := ""
+		if m := sourceRE.FindStringSubmatch(stage[1]); m != nil {
+			source := m[1]
+			rooted, ok := paths[source]
+			if !ok {
+				problems = append(problems, fmt.Errorf(
+					"a stage.json reads source %q, which no earlier stage extracts; "+
+						"it will parse nothing and every field it defines stays empty", source))
+				continue
+			}
+			prefix = rooted + "."
+		}
+		for _, e := range exprRE.FindAllStringSubmatch(stage[2], -1) {
+			paths[e[1]] = prefix + e[2]
+		}
+	}
+	return paths, problems
+}
+
+func TestNestedJSONStagesReadAnExtractedField(t *testing.T) {
+	for _, path := range []string{
+		"config/alloy/trawl-observations.alloy",
+		"config/alloy/trawl-audit.alloy",
+	} {
+		if _, problems := alloyExtractions(t, path); len(problems) > 0 {
+			for _, p := range problems {
+				t.Errorf("%s: %v", path, p)
+			}
+		}
+	}
+}
+
+func TestEveryPromotedFieldIsExtracted(t *testing.T) {
+	// A field named in stage.labels or stage.structured_metadata but extracted
+	// by nothing is a promise the pipeline cannot keep: the label or metadata
+	// key is simply absent from the record, and a query filtering on it matches
+	// nothing rather than failing.
+	//
+	// static_labels are literals rather than extractions, so they are excluded
+	// here - they are covered by the contract tests above.
+	for _, path := range []string{
+		"config/alloy/trawl-observations.alloy",
+		"config/alloy/trawl-audit.alloy",
+	} {
+		extracted, _ := alloyExtractions(t, path)
+		for _, field := range alloyPromotedFields(t, path) {
+			if _, ok := extracted[field]; !ok {
+				t.Errorf("%s promotes %q but no stage.json extracts it; "+
+					"records will carry the key with no value", path, field)
+			}
+		}
+	}
+}
+
+func TestSignatureMetadataResolvesAgainstARealObservation(t *testing.T) {
+	// The fields an alert is filtered by. A trigger polling Loki for Suricata
+	// alerts selects on these, so an expression that does not resolve against a
+	// real signature envelope makes every such query return nothing.
+	obs := envelope(observation.TypeSignature, observation.Details{
+		Signature: &observation.Signature{
+			RuleID: 2019401, Severity: 2, Category: "policy", Message: "test",
+		},
+	})
+	obs.Source = observation.Source{Kind: observation.SourceSuricata, Version: "8.0.6"}
+
+	record := marshalToRecord(t, obs)
+	extracted, _ := alloyExtractions(t, "config/alloy/trawl-observations.alloy")
+
+	for field, want := range map[string]string{
+		"severity": "2",
+		"rule_id":  "2019401",
+		"category": "policy",
+	} {
+		expr, ok := extracted[field]
+		if !ok {
+			t.Errorf("the pipeline extracts no %q", field)
+			continue
+		}
+		got, ok := resolvePath(record, expr)
+		if !ok {
+			t.Errorf("%q reads %q, which does not resolve against a signature observation; "+
+				"the field would be absent from every alert in Loki", field, expr)
+			continue
+		}
+		if fmt.Sprint(got) != want {
+			t.Errorf("%q reads %q = %v, want %v", field, expr, got, want)
+		}
+	}
+}
+
+// marshalToRecord renders an observation the way the sensor writes it and reads
+// it back as untyped data, so the paths are resolved against the JSON a
+// pipeline actually sees rather than against the Go struct.
+func marshalToRecord(t *testing.T, v any) map[string]any {
+	t.Helper()
+	data, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshalling observation: %v", err)
+	}
+	dec := json.NewDecoder(strings.NewReader(string(data)))
+	// Numbers stay as written: severity and rule_id are integers in the
+	// envelope, and float64 would render 2019401 in scientific notation.
+	dec.UseNumber()
+	var record map[string]any
+	if err := dec.Decode(&record); err != nil {
+		t.Fatalf("decoding observation: %v", err)
+	}
+	return record
+}
+
+// resolvePath walks a dotted path. Every expression these pipelines use is a
+// plain path, which is why this is enough; an expression using a JMESPath
+// feature beyond that would fail to resolve here and be caught rather than
+// silently passed.
+func resolvePath(record map[string]any, path string) (any, bool) {
+	var cur any = record
+	for seg := range strings.SplitSeq(path, ".") {
+		m, ok := cur.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		cur, ok = m[seg]
+		if !ok {
+			return nil, false
+		}
+	}
+	return cur, true
 }

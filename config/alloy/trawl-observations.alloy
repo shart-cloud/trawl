@@ -74,16 +74,20 @@ loki.process "trawl_observations" {
       destination_port = "flow.destination.port",
       protocol         = "flow.protocol",
       duplication      = "duplication",
-    }
-  }
-
-  // Signature fields, present only on signature records.
-  stage.json {
-    source = "details"
-    expressions = {
-      severity = "signature.severity",
-      rule_id  = "signature.rule_id",
-      category = "signature.category",
+      // Signature fields, present only on signature records; a record without
+      // them extracts empty and carries no signature metadata, which is what a
+      // Zeek connection record should do.
+      //
+      // Read here by full path rather than in a second stage.json keyed on
+      // "details". That form needs "details" to have been extracted into the
+      // map first, and it was not: the nested stage silently parsed nothing, so
+      // severity, rule_id and category were declared as structured metadata and
+      // never populated. Nothing errored - the fields were simply absent from
+      // every record in Loki. One stage with full paths cannot fail that way,
+      // and it is what the audit pipeline already does with actor.username.
+      severity         = "details.signature.severity",
+      rule_id          = "details.signature.rule_id",
+      category         = "details.signature.category",
     }
   }
 
