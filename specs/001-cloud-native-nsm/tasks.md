@@ -682,7 +682,7 @@ and unaffected parallel policy evaluation.
 - [x] T097 [P] [US4] Add failing pure Suricata match and safe typed-template rendering tests for severity, rule, category, flow fields, non-match reasons, and final BPF validation in `internal/policy/suricata_test.go`
 - [x] T098 [P] [US4] Add failing Hubble drop match and rolling-threshold tests for reason, namespace, count/window, clock skew, replay, and source gaps in `internal/policy/hubble_test.go`
 - [ ] T099 [P] [US4] Add failing canonical direction-neutral flow key, cooldown bucket, deterministic name, same-policy, and cross-policy duplicate tests in `internal/policy/dedup_test.go`
-- [ ] T100 [P] [US4] Add failing persisted hourly-limit, active-count, policy-generation, restart-rebuild, and clock-boundary tests in `internal/policy/rate_limit_test.go`
+- [x] T100 [P] [US4] Add failing persisted hourly-limit, active-count, policy-generation, restart-rebuild, and clock-boundary tests in `internal/policy/rate_limit_test.go`
 - [x] T101 [P] [US4] Add failing Loki overlap cursor tests for timestamp ties, fingerprints, safe replay, cursor loss, malformed alerts, query failure, and lag/gap reporting in `internal/events/loki/cursor_test.go`
 - [ ] T102 [P] [US4] Add failing event-worker integration tests for concurrent policies, durable audit before create, audit outage, create-or-get races, leader handoff, CaptureJob snapshots, status counters, policy deletion, and independent failures in `test/integration/event_worker_test.go`
 - [ ] T103 [US4] Add a failing end-to-end automatic trigger matrix for signature/drop matches, thresholds, non-matches, duplicates, cross-policy collapse, hourly limits, reconnect gaps, and restarts in `test/e2e/automatic_capture_test.go`
@@ -694,10 +694,10 @@ and unaffected parallel policy evaluation.
 - [x] T106 [P] [US4] Implement deterministic Suricata signature matching, decision reasons, safe trigger snapshots, and typed filter rendering in `internal/policy/suricata.go`
 - [x] T107 [P] [US4] Implement denied Hubble flow matching and bounded rolling threshold windows with replay-aware event identity in `internal/policy/hubble.go`
 - [ ] T108 [US4] Implement canonical direction-neutral five-tuple keys, cooldown buckets, deterministic CaptureJob names, and persisted create-or-get deduplication in `internal/policy/dedup.go`
-- [ ] T109 [US4] Implement hourly/active counts rebuilt from CaptureJobs, cooldown decisions, and policy-generation-aware status accounting in `internal/policy/rate_limit.go`
+- [x] T109 [US4] Implement hourly/active counts rebuilt from CaptureJobs, cooldown decisions, and policy-generation-aware status accounting in `internal/policy/rate_limit.go`
 - [x] T110 [P] [US4] Implement atomic ConfigMap cursor persistence, overlap queries, fingerprint replay suppression, lag, and known-gap state in `internal/events/loki/cursor.go`
 - [x] T111 [P] [US4] Implement bounded Loki range queries and normalized Suricata alert decoding without raw event logging in `internal/events/loki/alerts.go`
-- [ ] T112 [P] [US4] Extend the Hubble client with threshold-window replay, reconnect watermarks, and explicit unrecoverable loss reporting in `internal/events/hubble/client.go`
+- [x] T112 [P] [US4] Extend the Hubble client with threshold-window replay, reconnect watermarks, and explicit unrecoverable loss reporting in `internal/events/hubble/client.go`
 - [ ] T113 [US4] Implement policy indexing, independent evaluation, target resolution, snapshot/bounds resolution, durable audit acknowledgement, CaptureJob construction, and decision emission in `internal/policy/engine.go`
 - [ ] T114 [US4] Implement CapturePolicy status/condition reconciliation, monotonic decision counters, last execution/suppression references, source health, and retry isolation in `internal/policy/status.go`
 - [ ] T115 [US4] Wire Loki alert polling, Hubble drop evaluation, policy cache watches, mTLS audit client, leader election, persistent cursors, metrics, and graceful handoff into `cmd/event-worker/main.go`
