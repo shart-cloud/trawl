@@ -17,6 +17,7 @@ limitations under the License.
 package loki_test
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -179,5 +180,53 @@ func TestPruningBoundsTheIdentitySet(t *testing.T) {
 	}
 	if !cursor.Handled("current") {
 		t.Error("pruning dropped an identity still inside the overlap")
+	}
+}
+
+func TestTheCursorSurvivesASerializationRoundTrip(t *testing.T) {
+	// The cursor is persisted to a ConfigMap and read back after a restart or a
+	// leader handoff. If the handled identities do not survive that, the
+	// overlap on the first poll after every restart re-delivers records already
+	// processed - and each one re-triggers its policy. Restarting the worker
+	// would create duplicate captures, which is the exact failure the cursor
+	// exists to prevent.
+	at := time.Date(2026, 9, 9, 21, 37, 59, 123456789, time.UTC)
+
+	var cursor loki.Cursor
+	cursor.Advance(at, "alert-a")
+	cursor.Advance(at, "alert-tie")
+	cursor.Advance(at.Add(-5*time.Second), "alert-late")
+
+	encoded, err := json.Marshal(cursor)
+	if err != nil {
+		t.Fatalf("marshalling cursor: %v", err)
+	}
+
+	var restored loki.Cursor
+	if err := json.Unmarshal(encoded, &restored); err != nil {
+		t.Fatalf("unmarshalling cursor: %v", err)
+	}
+
+	if !restored.Timestamp.Equal(cursor.Timestamp) {
+		t.Errorf("timestamp = %s, want %s", restored.Timestamp, cursor.Timestamp)
+	}
+	for _, id := range []string{"alert-a", "alert-tie", "alert-late"} {
+		if !restored.Handled(id) {
+			t.Errorf("identity %q did not survive the round trip; a restart would re-trigger it", id)
+		}
+	}
+}
+
+func TestLagIsMeasuredFromTheNewestRecordHandled(t *testing.T) {
+	// Lag is how far behind the alert stream the worker is running. It is the
+	// signal that distinguishes "keeping up with quiet traffic" from "falling
+	// behind and not noticing", which otherwise look the same from the outside.
+	now := time.Date(2026, 9, 9, 22, 0, 0, 0, time.UTC)
+
+	var cursor loki.Cursor
+	cursor.Advance(now.Add(-90*time.Second), "alert-a")
+
+	if got := cursor.Lag(now); got != 90*time.Second {
+		t.Errorf("lag = %s, want 90s", got)
 	}
 }

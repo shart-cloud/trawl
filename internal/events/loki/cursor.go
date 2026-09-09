@@ -23,7 +23,10 @@ limitations under the License.
 // rather than seeking to an exact offset.
 package loki
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Cursor is the resume position in the alert stream.
 //
@@ -99,6 +102,48 @@ func (c Cursor) Resume(now time.Time, overlap, maxLookback time.Duration) (time.
 // QueryStart is where the next range query should begin, ignoring bounds.
 func (c Cursor) QueryStart(overlap time.Duration) time.Time {
 	return c.Timestamp.Add(-overlap)
+}
+
+// Lag is how far behind the newest handled record the worker is running.
+//
+// It separates "keeping up with quiet traffic" from "falling behind and not
+// noticing", which look identical from the outside: both produce few captures.
+func (c Cursor) Lag(now time.Time) time.Duration {
+	if c.Timestamp.IsZero() {
+		return 0
+	}
+	return now.Sub(c.Timestamp)
+}
+
+// persistedCursor is the on-disk shape.
+//
+// The identity set is unexported, so without an explicit encoding it would be
+// dropped silently on save. That failure would be invisible until a restart,
+// when the first overlap re-delivers records already handled and every one of
+// them re-triggers its policy - restarting the worker would manufacture
+// duplicate captures, which is what the cursor exists to prevent.
+type persistedCursor struct {
+	Timestamp time.Time            `json:"timestamp"`
+	Seen      map[string]time.Time `json:"seen,omitempty"`
+}
+
+// MarshalJSON encodes the cursor for persistence.
+func (c Cursor) MarshalJSON() ([]byte, error) {
+	return json.Marshal(persistedCursor{Timestamp: c.Timestamp, Seen: c.seen})
+}
+
+// UnmarshalJSON restores a persisted cursor.
+func (c *Cursor) UnmarshalJSON(data []byte) error {
+	var p persistedCursor
+	if err := json.Unmarshal(data, &p); err != nil {
+		return err
+	}
+	c.Timestamp = p.Timestamp
+	c.seen = p.Seen
+	if c.seen == nil {
+		c.seen = map[string]time.Time{}
+	}
+	return nil
 }
 
 // Prune drops identities that have fallen out of the overlap window.
