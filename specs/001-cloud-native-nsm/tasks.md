@@ -207,7 +207,7 @@ expired paths.
 - [X] T089 [US3] Implement the artifact gateway download handler and CLI client library with live CaptureJob/object verification, five-minute/deadline presign calculation, enumeration-safe errors, no-store responses, rate limits, and durable audit acknowledgement before redirect in `internal/gateway/handler.go` and `internal/gateway/client.go`
 - [X] T090 [US3] Wire TLS serving, auth/audit/storage clients, probes, metrics, request IDs, graceful shutdown, and log redaction in `cmd/artifact-gateway/main.go`, and implement bearer-producing kubeconfig-exec or token-stdin download without credential arguments in `cmd/trawlctl/main.go`
 - [X] T091 [US3] Deploy the gateway and capture reporter permissions with explicit ServiceAccounts, resource-name-scoped reporter status Roles, `capturejobs/download` roles, TokenReview/SubjectAccessReview access, artifact-only storage Secret mounts, audit-sink mTLS, TLS, and NetworkPolicies in `config/gateway/deployment.yaml` and `config/rbac/artifact-gateway-role.yaml`
-- [ ] T092 [US3] Generate and review the CaptureJob CRD/cluster-wide namespace-rejecting webhook/namespaced RBAC, manual analyst and retention-admin roles, successful/invalid samples, and capture image digest patch in `config/crd/bases/trawl.cloud_capturejobs.yaml`, `config/rbac/capturejob-roles.yaml`, and `config/samples/`
+- [X] T092 [US3] Generate and review the CaptureJob CRD/cluster-wide namespace-rejecting webhook/namespaced RBAC, manual analyst and retention-admin roles, successful/invalid samples, and capture image digest patch in `config/crd/bases/trawl.cloud_capturejobs.yaml`, `config/rbac/capturejob-roles.yaml`, and `config/samples/`
 - [x] T093 [US3] Extend Trawl Overview with recent capture activity and add execution lifecycle, artifact health, retention, storage usage, and non-secret copyable `trawlctl` commands to `config/grafana/dashboards/trawl-overview.json` and `config/grafana/dashboards/capture-management.json`
 - [x] T094 [US3] Complete real dumpcap/reporter/MinIO/audit-ledger/gateway/CLI integration fixtures, including checksum comparison and secret-leak assertions, in `test/integration/manual_capture_test.go`
 - [x] T095 [US3] Make the full manual capture/CLI matrix pass and record sanitized lifecycle and timing evidence in `test/e2e/manual_capture_test.go` and `test/e2e/results/manual-capture.md`
@@ -625,6 +625,40 @@ diverge.
   `/artifact-gateway`, `/capture-reporter` and `/trawlctl`, which were missing
   from the list of binaries a `go build ./cmd/x` without `-o` drops in the
   repository root.
+
+- T092 is **review-and-tick, not build**: every artefact it names already
+  existed and the cluster runs off them, and `make verify` reports no drift, so
+  the "generate" half needed nothing. The review half is recorded in
+  `test/e2e/results/t092-security-review.md` - the off-namespace rejection with
+  an in-namespace control, the analyst/viewer/retention-admin verb matrix
+  including the `capturejobs/download` split, and the invalid sample's failure
+  reason read off the live object. Nothing was corrected; all three claims held.
+- T092: unlike everything else in `test/e2e/results/`, that document was
+  measured **by hand**, which is a limit and not a new convention. T121
+  (`test/contract/security_manifests_test.go`) is the task that makes the static
+  half re-runnable, and the review was deliberately not written there - T121's
+  remit is much wider (wildcard RBAC, host namespaces, floating tags, hostPath,
+  public buckets, telemetry) and half-filling it under T092's tick would have
+  hidden how much of it is still missing.
+- T092: **`kubectl auth can-i` cannot see a subresource.** Asked about
+  `capturejobs.trawl.cloud/download` it silently answers for `capturejobs`,
+  reporting the analyst as able to `create` the download subresource and the
+  viewer as able to `get` it - the one permission the whole design withholds.
+  T121 must assert this boundary with a `SubjectAccessReview` carrying an
+  explicit `subresource` field, which is also what the gateway itself submits.
+  Written with `can-i`, T121 would pass against RBAC flattened to let any viewer
+  download every capture.
+- T092: `status.failure.reason` is the `FailureReason` enum (`InvalidFilter`)
+  while the `FilterValid` condition's reason is `FilterInvalid`
+  (`internal/status/conditions.go:105`). Both spellings are correct in their own
+  field. A check that reads conditions expecting the enum spelling will call the
+  sample wrong when it is right.
+- T092: `config/samples/trawl_v1alpha1_capturejob_manual.yaml` names
+  `targetNode: talos-sensor-01`, which does not exist on this single-node
+  cluster; applied verbatim here it would fail `TargetUnavailable`. Left as is -
+  a node name is necessarily installation-specific and the sample is
+  illustrative - but it is why the live `manual-tls` object carries
+  `talos-node` and the file does not.
 
 **Checkpoint**: US3 provides bounded, restart-safe manual evidence collection and
 authorized retrieval without requiring automatic policy evaluation.
