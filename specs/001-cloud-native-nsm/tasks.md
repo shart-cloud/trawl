@@ -679,8 +679,8 @@ and unaffected parallel policy evaluation.
 ### Tests for User Story 4
 
 - [ ] T096 [P] [US4] Add failing CapturePolicy API tests for configured-namespace enforcement, closed trigger unions, severity/reason filters, thresholds, typed placeholders, capture/rate/retention bounds, defaults, armed state, CRUD transitions, delete behavior, and durable-audit failure in `api/v1alpha1/capturepolicy_types_test.go`
-- [ ] T097 [P] [US4] Add failing pure Suricata match and safe typed-template rendering tests for severity, rule, category, flow fields, non-match reasons, and final BPF validation in `internal/policy/suricata_test.go`
-- [ ] T098 [P] [US4] Add failing Hubble drop match and rolling-threshold tests for reason, namespace, count/window, clock skew, replay, and source gaps in `internal/policy/hubble_test.go`
+- [x] T097 [P] [US4] Add failing pure Suricata match and safe typed-template rendering tests for severity, rule, category, flow fields, non-match reasons, and final BPF validation in `internal/policy/suricata_test.go`
+- [x] T098 [P] [US4] Add failing Hubble drop match and rolling-threshold tests for reason, namespace, count/window, clock skew, replay, and source gaps in `internal/policy/hubble_test.go`
 - [ ] T099 [P] [US4] Add failing canonical direction-neutral flow key, cooldown bucket, deterministic name, same-policy, and cross-policy duplicate tests in `internal/policy/dedup_test.go`
 - [ ] T100 [P] [US4] Add failing persisted hourly-limit, active-count, policy-generation, restart-rebuild, and clock-boundary tests in `internal/policy/rate_limit_test.go`
 - [ ] T101 [P] [US4] Add failing Loki overlap cursor tests for timestamp ties, fingerprints, safe replay, cursor loss, malformed alerts, query failure, and lag/gap reporting in `internal/events/loki/cursor_test.go`
@@ -691,8 +691,8 @@ and unaffected parallel policy evaluation.
 
 - [ ] T104 [US4] Define CapturePolicy trigger/capture/rate spec, runtime counters, phases, conditions, print columns, status subresource, defaults, and structural/CEL validation markers in `api/v1alpha1/capturepolicy_types.go`
 - [ ] T105 [US4] Implement CapturePolicy validation/defaulting for configured-namespace enforcement, same-namespace tap references, trigger unions, typed placeholders, bounds, retention ceiling, operator identity, and durable audit acknowledgement in `internal/admission/capturepolicy_webhook.go`
-- [ ] T106 [P] [US4] Implement deterministic Suricata signature matching, decision reasons, safe trigger snapshots, and typed filter rendering in `internal/policy/suricata.go`
-- [ ] T107 [P] [US4] Implement denied Hubble flow matching and bounded rolling threshold windows with replay-aware event identity in `internal/policy/hubble.go`
+- [x] T106 [P] [US4] Implement deterministic Suricata signature matching, decision reasons, safe trigger snapshots, and typed filter rendering in `internal/policy/suricata.go`
+- [x] T107 [P] [US4] Implement denied Hubble flow matching and bounded rolling threshold windows with replay-aware event identity in `internal/policy/hubble.go`
 - [ ] T108 [US4] Implement canonical direction-neutral five-tuple keys, cooldown buckets, deterministic CaptureJob names, and persisted create-or-get deduplication in `internal/policy/dedup.go`
 - [ ] T109 [US4] Implement hourly/active counts rebuilt from CaptureJobs, cooldown decisions, and policy-generation-aware status accounting in `internal/policy/rate_limit.go`
 - [ ] T110 [P] [US4] Implement atomic ConfigMap cursor persistence, overlap queries, fingerprint replay suppression, lag, and known-gap state in `internal/events/loki/cursor.go`
@@ -705,6 +705,56 @@ and unaffected parallel policy evaluation.
 - [ ] T117 [US4] Generate and review the CapturePolicy CRD/cluster-wide namespace-rejecting webhook/namespaced RBAC plus armed/disarmed Suricata and Hubble samples with no deferred trigger types in `config/crd/bases/trawl.cloud_capturepolicies.yaml` and `config/samples/`
 - [ ] T118 [US4] Add policy phase, decision counters, source gaps, active captures, cooldown/rate state, and suppression references to `config/grafana/dashboards/capture-management.json`
 - [ ] T119 [US4] Make unit, integration, restart, and end-to-end automatic trigger matrices pass and record sanitized count evidence in `test/e2e/automatic_capture_test.go` and `test/e2e/results/automatic-capture.md`
+
+### US4 implementation notes
+
+- The Loki blocker recorded in earlier handoffs was a measurement error, not a
+  gap. Suricata alerts do reach Loki: the pipeline sets `service_name`,
+  `observation_type` and `source_kind`, so the probes that queried
+  `{namespace="trawl-system"}` and `{pod=~"trawl-tap.*"}` could never have
+  matched - those are precisely the high-cardinality labels the telemetry
+  contract forbids. `{service_name="trawl-observation", source_kind="Suricata"}`
+  returns the alerts. T101 and T111 can be written against a populated stream.
+- A real defect was found while confirming that: `severity`, `rule_id` and
+  `category` were declared as structured metadata and populated by nothing,
+  because the second `stage.json` read `source = "details"` and no earlier stage
+  extracted `details`. Fixed by reading them at full path in the first stage.
+  **The gitops HelmRelease still needs `hack/render-alloy-config.sh` run against
+  `main`** before the fix reaches the cluster; until then those three fields are
+  absent from every alert in Loki, and any query filtering on them matches
+  nothing rather than failing.
+- The contract tests could not have caught it: they regex the names in
+  `stage.labels`, and a name declared there is a name whether or not anything
+  populates it. `test/contract/alloy_labels_test.go` now also resolves each
+  expression against a real marshalled envelope.
+- T097/T106, T098/T107 were run as vertical TDD pairs rather than
+  tests-then-implementation, because writing a full suite against code that does
+  not exist yet tests imagined behavior. Task content is unchanged; only the
+  order differs.
+- **Matching takes the normalized envelope**, not raw EVE JSON or `flowpb.Flow`.
+  Both sources already normalize to `observation.Observation`, and that is also
+  the shape sitting in Loki, so the matchers are pure functions with no fakes.
+- **Placeholder values are typed, not escaped.** BPF has no quoting to escape
+  into, so a value carrying filter syntax can only be refused. A source IP of
+  `1.2.3.4 or tcp` would otherwise render a filter capturing all TCP traffic
+  instead of one host.
+- **The threshold window counts on `ObservedAt`, not `EventTime`.** A window
+  measured on producer time is one an unsynchronized producer can distort: a
+  single flow stamped an hour ahead advances the window past every real event
+  and silently stops the policy firing. `EventTime` is still what the snapshot
+  records.
+- T099/T108: the deduplication key deliberately excludes the policy, so two
+  policies matching the same traffic under the same cooldown collapse to one
+  capture. **This is a reading of an ambiguous spec** - FR-031 says "within the
+  cooldown window" (per-policy) while the edge cases say equivalent cross-policy
+  requests collapse. Policies with *different* cooldowns bucket differently and
+  will not collapse. Worth confirming before T113 depends on it.
+- T099/T108 remain open: the persisted create-or-get half needs a Kubernetes
+  client and belongs with T113 and T102.
+- T096/T104: only the trigger half of CapturePolicy exists
+  (`api/v1alpha1/capturepolicy_types.go`), which is what the matchers are
+  written against. Spec capture/rateLimit, status, phases, conditions, defaults
+  and CEL markers are still T104's.
 
 **Checkpoint**: All four user stories are functional. Automatic capture reuses the
 same bounded, authorized execution path proven by US3.
