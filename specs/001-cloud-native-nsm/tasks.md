@@ -678,7 +678,7 @@ and unaffected parallel policy evaluation.
 
 ### Tests for User Story 4
 
-- [ ] T096 [P] [US4] Add failing CapturePolicy API tests for configured-namespace enforcement, closed trigger unions, severity/reason filters, thresholds, typed placeholders, capture/rate/retention bounds, defaults, armed state, CRUD transitions, delete behavior, and durable-audit failure in `api/v1alpha1/capturepolicy_types_test.go`
+- [x] T096 [P] [US4] Add failing CapturePolicy API tests for configured-namespace enforcement, closed trigger unions, severity/reason filters, thresholds, typed placeholders, capture/rate/retention bounds, defaults, armed state, CRUD transitions, delete behavior, and durable-audit failure in `api/v1alpha1/capturepolicy_types_test.go`
 - [x] T097 [P] [US4] Add failing pure Suricata match and safe typed-template rendering tests for severity, rule, category, flow fields, non-match reasons, and final BPF validation in `internal/policy/suricata_test.go`
 - [x] T098 [P] [US4] Add failing Hubble drop match and rolling-threshold tests for reason, namespace, count/window, clock skew, replay, and source gaps in `internal/policy/hubble_test.go`
 - [ ] T099 [P] [US4] Add failing canonical direction-neutral flow key, cooldown bucket, deterministic name, same-policy, and cross-policy duplicate tests in `internal/policy/dedup_test.go`
@@ -689,8 +689,8 @@ and unaffected parallel policy evaluation.
 
 ### Implementation for User Story 4
 
-- [ ] T104 [US4] Define CapturePolicy trigger/capture/rate spec, runtime counters, phases, conditions, print columns, status subresource, defaults, and structural/CEL validation markers in `api/v1alpha1/capturepolicy_types.go`
-- [ ] T105 [US4] Implement CapturePolicy validation/defaulting for configured-namespace enforcement, same-namespace tap references, trigger unions, typed placeholders, bounds, retention ceiling, operator identity, and durable audit acknowledgement in `internal/admission/capturepolicy_webhook.go`
+- [x] T104 [US4] Define CapturePolicy trigger/capture/rate spec, runtime counters, phases, conditions, print columns, status subresource, defaults, and structural/CEL validation markers in `api/v1alpha1/capturepolicy_types.go`
+- [x] T105 [US4] Implement CapturePolicy validation/defaulting for configured-namespace enforcement, same-namespace tap references, trigger unions, typed placeholders, bounds, retention ceiling, operator identity, and durable audit acknowledgement in `internal/admission/capturepolicy_webhook.go`
 - [x] T106 [P] [US4] Implement deterministic Suricata signature matching, decision reasons, safe trigger snapshots, and typed filter rendering in `internal/policy/suricata.go`
 - [x] T107 [P] [US4] Implement denied Hubble flow matching and bounded rolling threshold windows with replay-aware event identity in `internal/policy/hubble.go`
 - [ ] T108 [US4] Implement canonical direction-neutral five-tuple keys, cooldown buckets, deterministic CaptureJob names, and persisted create-or-get deduplication in `internal/policy/dedup.go`
@@ -753,10 +753,25 @@ and unaffected parallel policy evaluation.
   will not collapse - that is accepted, not overlooked. T113 may rely on this.
 - T099/T108 remain open: the persisted create-or-get half needs a Kubernetes
   client and belongs with T113 and T102.
-- T096/T104: only the trigger half of CapturePolicy exists
-  (`api/v1alpha1/capturepolicy_types.go`), which is what the matchers are
-  written against. Spec capture/rateLimit, status, phases, conditions, defaults
-  and CEL markers are still T104's.
+- T096 lives in `test/integration/capturepolicy_api_test.go`, not the
+  `api/v1alpha1/...` path the task names. The schema is only meaningfully
+  testable against a real API server: asserting the markers are present in
+  source tests that someone typed them, not that they mean what was intended.
+  Confirmed load-bearing by stripping the trigger's CEL block, which fails three
+  of the four union cases (the fourth passes on the enum alone).
+- T105's reason for existing is the filter template. No schema rule can express
+  "one of these five placeholder names", so `policy.ValidateFilterTemplate` is
+  shared between the webhook and the renderer - one map keyed by name holding
+  both the resolver and a specimen value, so the two cannot drift.
+- The CapturePolicy webhook is registered in `cmd/controller-manager/main.go`
+  and the CRD is listed in `config/crd/kustomization.yaml`. Both were done with
+  T104/T105 rather than deferred: either omission leaves the feature passing its
+  tests and absent from the cluster.
+- `make setup-envtest` is required before `go test ./test/integration/...`, and
+  `KUBEBUILDER_ASSETS` must be an **absolute** path
+  (`export KUBEBUILDER_ASSETS="$(pwd)/$(bin/setup-envtest use 1.36.2 --bin-dir bin -p path)"`);
+  the relative path setup-envtest prints leaves envtest looking in
+  `/usr/local/kubebuilder/bin`. `make test` sets this itself.
 
 **Checkpoint**: All four user stories are functional. Automatic capture reuses the
 same bounded, authorized execution path proven by US3.
