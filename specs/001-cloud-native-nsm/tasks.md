@@ -685,7 +685,7 @@ and unaffected parallel policy evaluation.
 - [x] T100 [P] [US4] Add failing persisted hourly-limit, active-count, policy-generation, restart-rebuild, and clock-boundary tests in `internal/policy/rate_limit_test.go`
 - [x] T101 [P] [US4] Add failing Loki overlap cursor tests for timestamp ties, fingerprints, safe replay, cursor loss, malformed alerts, query failure, and lag/gap reporting in `internal/events/loki/cursor_test.go`
 - [x] T102 [P] [US4] Add failing event-worker integration tests for concurrent policies, durable audit before create, audit outage, create-or-get races, leader handoff, CaptureJob snapshots, status counters, policy deletion, and independent failures in `test/integration/event_worker_test.go`
-- [ ] T103 [US4] Add a failing end-to-end automatic trigger matrix for signature/drop matches, thresholds, non-matches, duplicates, cross-policy collapse, hourly limits, reconnect gaps, and restarts in `test/e2e/automatic_capture_test.go`
+- [x] T103 [US4] Add a failing end-to-end automatic trigger matrix for signature/drop matches, thresholds, non-matches, duplicates, cross-policy collapse, hourly limits, reconnect gaps, and restarts in `test/e2e/automatic_capture_test.go`
 
 ### Implementation for User Story 4
 
@@ -878,6 +878,25 @@ and unaffected parallel policy evaluation.
   reviewed templates as the contract. Two new contract tests pin the panels:
   both were mutation-checked by deleting the panels and by gutting the text
   panel's content.
+- T103 **pushes synthetic alert observations into Loki** rather than trying to
+  trip a specific ET rule with generated traffic. Suricata alerts reach the
+  worker through the observation pipeline, so this makes the alert content
+  synthetic and everything downstream real: a real worker polls it, real
+  policies evaluate it, a real CaptureJob is admitted by the installed webhook,
+  and a real runner collects packets. The sensor-to-Loki half is covered where
+  it belongs, in the investigation and NetworkTap acceptance suites, against
+  live traffic. The fixture reads the deployed tap's UID, node and interface off
+  the cluster, because the engine attributes an alert to a policy by tap UID and
+  an invented one would be declined as another tap's traffic.
+- T103's denied-flow specs are **not** written against synthetic data, because
+  the worker reads drops from Hubble's live gRPC stream rather than from Loki.
+  They are the outstanding half of the matrix and belong with T119, where a
+  deployed worker exists to drive them.
+- T103 currently **skips**, loudly, naming the missing CapturePolicy CRD: the
+  cluster runs `8814f68`, which predates US4. That is the intended pre-T119
+  state - a skip describes the installation rather than the software, and a red
+  build on a cluster running last month's image teaches people to ignore the
+  colour.
 - **Test provenance for Group E.** The engine, status and worker tests were
   written before their implementations and each was mutation-checked. One did
   not discriminate: `TestARecordTheOverlapRedeliversIsNotEvaluatedTwice` passed
