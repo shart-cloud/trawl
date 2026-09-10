@@ -217,6 +217,10 @@ spec:
                         - count
                         - window
                         type: object
+                        x-kubernetes-validations:
+                        - message: window must be between 1s and 15m
+                          rule: duration(self.window) >= duration('1s') && duration(self.window)
+                            <= duration('15m')
                     required:
                     - reasons
                     type: object

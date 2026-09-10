@@ -897,6 +897,73 @@ and unaffected parallel policy evaluation.
   state - a skip describes the installation rather than the software, and a red
   build on a cluster running last month's image teaches people to ignore the
   colour.
+### Code review of the US4 branch
+
+Two passes: one over the branch, one over its own fixes. The second found a
+defect in the first's fix, which is the pattern this project keeps producing.
+
+- **An IPv6 zone was a BPF injection.** `netip.ParseAddr` accepts everything
+  after `%` as a zone - spaces, operators, whole clauses - and `String`
+  re-emits it verbatim, so `RenderFilter` turned a source IP of
+  `fe80::1%or udp port 53` into exactly that filter. The address comes from an
+  observation record, which nothing validates as an address on ingest, so a
+  crafted `flow.source.ip` widened any capture using `{{source.ip}}`. Parsing
+  was the whole defense and parsing alone was not it. Zones are refused; a zone
+  names a local interface and is meaningless in an on-wire filter.
+- **The alert path would have hung on its first poll.** The cursor store is
+  handed the manager's cached client, controller-runtime caches ConfigMaps by
+  default, and a cached read starts an informer that LISTs and WATCHes every
+  ConfigMap in the namespace - which the worker's Role deliberately withholds.
+  Reflector forbidden, informer never syncs, `Get` blocks forever: no alert ever
+  polled, no error anywhere. The review proposed granting `list`/`watch`, which
+  works and **undoes the least privilege**: neither verb can be restricted by
+  `resourceNames`, so it hands the worker every ConfigMap in the namespace,
+  `trawl-config` included. The fix is `Client.Cache.DisableFor` on ConfigMaps
+  instead. Every RBAC test used a direct client and would have passed with this
+  broken, so one now builds the client the way `cmd/event-worker` does.
+- **`spec.retention`'s clamp was dead code, in both webhooks.** The structural
+  schema default of `30d` is applied while the API server decodes the request,
+  before any mutating webhook runs, so the emptiness check never fired - and on
+  an installation with a lower ceiling (the dev config's is 7d) validation then
+  refused **every** policy *and every manual capture* that omitted retention.
+  Both now clamp whenever the value exceeds the ceiling, which is what the
+  field's own documentation always described. The consequence to know: an
+  explicit `retention: 90d` in a Git-managed manifest is rewritten to the
+  ceiling on every apply, which a GitOps tool will show as permanent drift.
+- **The dedup race left a dangling audit intent** - but only across two
+  *different* policies. For one policy on two workers the intent records are
+  byte-identical and converge, so nothing was dangling there. The first fix
+  gave the race path its own message, which made it **conflict** with the
+  winner's record on the same stable key: a healthy collapse reported as an
+  integrity error. The key now carries the decision (as `StableKeyForAdmission`
+  already does, and for the same reason) and the race path writes the winner's
+  content exactly. This also separates a failed outcome from a succeeded one,
+  which shared a key before. Caught only by testing against a real `audit.Sink`;
+  the fake committer returns success for anything and resolves no keys.
+- **The threshold window was discarded on any generation bump** - arming a
+  policy, changing its retention - throwing away a count that might have been
+  one flow from firing. Keyed on the threshold itself now.
+- **`DropThreshold.Window`'s documented 1s-15m bound was enforced nowhere.** A
+  `0s` window expires everything not simultaneous with the newest event, so a
+  threshold policy is armed, matching, and structurally incapable of firing. Now
+  a CEL rule. Note for the test: `600m` is refused by the pattern, not the rule,
+  because `metav1.Duration` marshals it as `10h0m0s`; `16m` is the smallest
+  value that reaches CEL.
+- **A node-name fix was reverted after review.** Hubble can report
+  `<cluster>/<node>`; stripping the qualifier to make it match is the obvious
+  fix and the wrong one. Under ClusterMesh the relay serves peer clusters' flows
+  and node names repeat, so `prod-eu/worker-1` would match a local target called
+  `worker-1` and the capture would file **the local node's unrelated traffic as
+  evidence for another cluster's flow**. The comparison stays exact: withholding
+  evidence is loud and recoverable, manufacturing the wrong evidence is neither.
+  Stripping safely needs to know which cluster is ours, which nothing here does.
+  This cluster reports bare names, so the original finding was hypothetical.
+- Not fixed, recorded: `CapturePolicy` now clamps an over-ceiling retention
+  while a `CaptureJob` update still rejects one, so the same input gets two
+  answers depending on which resource is written. And a stored policy with a
+  window over 15m becomes un-updatable, including to disarm it, on a cluster
+  without CRD validation ratcheting.
+
 - **Test provenance for Group E.** The engine, status and worker tests were
   written before their implementations and each was mutation-checked. One did
   not discriminate: `TestARecordTheOverlapRedeliversIsNotEvaluatedTwice` passed

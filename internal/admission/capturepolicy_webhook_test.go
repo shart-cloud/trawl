@@ -122,23 +122,51 @@ func TestCapturePolicyCreateRejectsAnUnrenderableFilterTemplate(t *testing.T) {
 }
 
 func TestCapturePolicyRetentionIsClampedToTheInstallationCeiling(t *testing.T) {
-	// The API default is 30d, the contract maximum. This installation's ceiling
-	// is 7d, so a policy that left retention blank would otherwise be rejected
-	// on every create.
+	// The value that actually arrives when an operator omits the field.
+	//
+	// spec.retention carries a structural schema default of 30d, and the API
+	// server applies structural defaults while decoding the request - before
+	// any mutating webhook runs. So Default never sees an empty string in a
+	// real create: it sees the contract maximum. A clamp keyed on emptiness
+	// therefore never fired, and validation refused every policy that left
+	// retention blank on an installation with a lower ceiling.
+	//
+	// This installation's ceiling is 7d.
 	w, _ := policyWebhook(t)
-	p := testPolicy(func(p *trawlv1alpha1.CapturePolicy) { p.Spec.Retention = "" })
+	defaulted := testPolicy(func(p *trawlv1alpha1.CapturePolicy) { p.Spec.Retention = "30d" })
 
-	if err := w.Default(requestCtx(admissionv1.Create, "alice"), p); err != nil {
+	if err := w.Default(requestCtx(admissionv1.Create, "alice"), defaulted); err != nil {
 		t.Fatalf("defaulting: %v", err)
 	}
-	if p.Spec.Retention != "7d" {
-		t.Errorf("retention defaulted to %q, want the 7d ceiling", p.Spec.Retention)
+	if defaulted.Spec.Retention != "7d" {
+		t.Errorf("retention is %q, want the 7d ceiling", defaulted.Spec.Retention)
+	}
+	// And the clamped object is then admitted, which is the whole point: the
+	// clamp only means something if what it produces passes validation.
+	if _, err := w.ValidateCreate(requestCtx(admissionv1.Create, "alice"), defaulted); err != nil {
+		t.Errorf("the clamped policy was refused: %v", err)
 	}
 
-	// And a policy asking for more than the ceiling is refused outright.
-	over := testPolicy(func(p *trawlv1alpha1.CapturePolicy) { p.Spec.Retention = "30d" })
-	if _, err := w.ValidateCreate(requestCtx(admissionv1.Create, "alice"), over); err == nil {
-		t.Error("retention above the installation ceiling was admitted")
+	// An object that reached here without the schema default - restored into
+	// etcd, or written before the field existed - is clamped the same way
+	// rather than left empty for validation to reject.
+	empty := testPolicy(func(p *trawlv1alpha1.CapturePolicy) { p.Spec.Retention = "" })
+	if err := w.Default(requestCtx(admissionv1.Create, "alice"), empty); err != nil {
+		t.Fatalf("defaulting: %v", err)
+	}
+	if empty.Spec.Retention != "7d" {
+		t.Errorf("an empty retention became %q, want the 7d ceiling", empty.Spec.Retention)
+	}
+
+	// A retention inside the ceiling is left exactly as asked. Without this the
+	// clamp could be rewriting every policy to the ceiling and the assertions
+	// above would not notice.
+	kept := testPolicy(func(p *trawlv1alpha1.CapturePolicy) { p.Spec.Retention = "2h" })
+	if err := w.Default(requestCtx(admissionv1.Create, "alice"), kept); err != nil {
+		t.Fatalf("defaulting: %v", err)
+	}
+	if kept.Spec.Retention != "2h" {
+		t.Errorf("retention within the ceiling became %q, want 2h", kept.Spec.Retention)
 	}
 }
 

@@ -82,8 +82,23 @@ var (
 // ceiling would otherwise reject every policy that left the field blank, so the
 // default is clamped rather than refused.
 func (w *CapturePolicyWebhook) Default(ctx context.Context, p *trawlv1alpha1.CapturePolicy) error {
-	if p.Spec.Retention == "" {
-		p.Spec.Retention = formatRetention(w.retentionCeiling())
+	// Clamped whenever it exceeds the ceiling, not only when it is absent.
+	//
+	// "Absent" is a state this never sees. spec.retention carries a structural
+	// schema default of 30d, and the API server applies structural defaults
+	// while decoding the request - before any mutating webhook runs. So an
+	// operator who omits the field arrives here asking for the contract
+	// maximum, and on an installation with a lower ceiling the emptiness check
+	// this replaces never fired and validation rejected the object: every
+	// policy that left retention blank was refused, which is the exact outcome
+	// the clamp exists to prevent.
+	//
+	// Clamping an explicit request rather than refusing it is the same bargain
+	// the field's own documentation describes - "further capped by the
+	// installation's captureRetentionCeiling". The stored value is the
+	// authority, so an operator reads back what they will actually get.
+	if ceiling := w.retentionCeiling(); p.Spec.Retention == "" || retentionExceeds(p.Spec.Retention, ceiling) {
+		p.Spec.Retention = formatRetention(ceiling)
 	}
 
 	if req, err := admission.RequestFromContext(ctx); err == nil &&
@@ -175,12 +190,27 @@ func (w *CapturePolicyWebhook) ValidateDelete(ctx context.Context, p *trawlv1alp
 }
 
 func (w *CapturePolicyWebhook) retentionCeiling() time.Duration {
-	if w.Config != nil {
-		if d := time.Duration(w.Config.CaptureRetentionCeiling); d > 0 {
-			return d
-		}
+	if w.Config == nil || w.Config.CaptureRetentionCeiling <= 0 {
+		// The shared constant, not a literal of the same value. Two webhooks
+		// deciding the same installation's ceiling from two sources would
+		// agree today and diverge the first time the constant moves.
+		return config.DefaultCaptureRetentionCeiling
 	}
-	return 30 * 24 * time.Hour
+	return w.Config.CaptureRetentionCeiling.Duration()
+}
+
+// retentionExceeds reports whether a retention string asks for longer than the
+// ceiling allows.
+//
+// An unparseable value is not "too long" - it is invalid, and saying so is
+// ValidateCapturePolicySpec's job. Clamping it here would replace a value the
+// operator can see is wrong with one that looks deliberate.
+func retentionExceeds(retention string, ceiling time.Duration) bool {
+	d, err := config.ParseDuration(retention)
+	if err != nil {
+		return false
+	}
+	return d > ceiling
 }
 
 // ValidateCapturePolicySpec checks bounds the schema also enforces, plus the

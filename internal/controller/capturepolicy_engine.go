@@ -178,15 +178,24 @@ type PolicyEngine struct {
 	windows map[types.UID]*policyWindow
 }
 
-// policyWindow is one policy's rolling threshold state, pinned to the
-// generation that configured it.
+// policyWindow is one policy's rolling threshold state, pinned to the threshold
+// that configured it.
 //
-// Pinned because an operator who widens a window expects the new one to apply.
-// Carrying counts gathered under the old configuration forward would let a
-// policy fire on a threshold nobody currently has written down.
+// Pinned because an operator who widens a window expects the new one to apply,
+// and counts gathered under the old configuration would let a policy fire on a
+// threshold nobody currently has written down.
+//
+// Keyed on the threshold rather than on the spec generation, which is what it
+// used to be. A generation moves for any edit at all - arming the policy,
+// changing its retention, raising its hourly limit - and each of those would
+// have discarded a rolling window that might have been one flow from firing,
+// with nothing recording that it happened. The threshold is the only part of
+// the spec this state depends on.
 type policyWindow struct {
-	generation int64
-	window     *policy.ThresholdWindow
+	// threshold is the configuration this window was built for, rendered so two
+	// generations carrying the same threshold compare equal.
+	threshold string
+	window    *policy.ThresholdWindow
 }
 
 // Evaluate offers one observation to every policy armed against its source.
@@ -325,8 +334,24 @@ func (e *PolicyEngine) evaluateOne(
 			// Another worker proposed the same name first. That is the
 			// deduplication working, not a failure - both wanted one capture
 			// of one conversation and there is one.
+			//
+			// The outcome record still has to be written. An intent was
+			// committed above, and an intent with no outcome is the shape an
+			// operator reads as "a capture was authorized and then went
+			// missing" - the ledger would report this race as the one thing it
+			// is not.
 			res.Outcome = OutcomeDuplicate
 			res.CaptureName = name
+			// The outcome record is still written, and written identically to
+			// the winner's. For two workers racing on one policy that means it
+			// converges onto the winner's record rather than doubling it. For
+			// two different policies racing it is the only outcome record this
+			// policy's intent will ever have - and an intent with no outcome is
+			// the shape an operator reads as "a capture was authorized and then
+			// went missing", which is the one thing this race is not.
+			if err := e.commit(ctx, p, job, audit.DecisionSucceeded, "outcome", ""); err != nil {
+				res.Err = err
+			}
 			return res, true
 		}
 		failure := sanitize.Errorf("creating the capture: %v", err)
@@ -417,19 +442,21 @@ func snapshotCount(n int) int32 {
 }
 
 // window returns the policy's rolling threshold window, rebuilding it when the
-// generation that configured it has changed.
+// threshold that configured it has changed.
 func (e *PolicyEngine) window(p *trawlv1alpha1.CapturePolicy) *policy.ThresholdWindow {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.windows == nil {
 		e.windows = map[types.UID]*policyWindow{}
 	}
+	t := p.Spec.Trigger.HubbleDrop.Threshold
+	threshold := fmt.Sprintf("%d/%s", t.Count, t.Window.Duration)
+
 	held, ok := e.windows[p.UID]
-	if !ok || held.generation != p.Generation {
-		t := p.Spec.Trigger.HubbleDrop.Threshold
+	if !ok || held.threshold != threshold {
 		held = &policyWindow{
-			generation: p.Generation,
-			window:     policy.NewThresholdWindow(int(t.Count), t.Window.Duration),
+			threshold: threshold,
+			window:    policy.NewThresholdWindow(int(t.Count), t.Window.Duration),
 		}
 		e.windows[p.UID] = held
 	}
@@ -576,6 +603,21 @@ func (e *PolicyEngine) snapshot(
 // still reporting. Sending a capture to a node whose sensor is gone would
 // produce a job that waits and fails; sending it anywhere else would capture
 // traffic that has nothing to do with the event.
+//
+// The comparison is exact, and deliberately so. Depending on the Cilium version
+// and its cluster configuration, Hubble can report the observing node as
+// "<cluster>/<node>" rather than "<node>" - this cluster reports it bare. It is
+// tempting to strip the qualifier, and that would be wrong: under ClusterMesh
+// the relay serves flows from peer clusters, node names repeat across them, and
+// a stripped "prod-eu/worker-1" would match a healthy local target called
+// "worker-1". The capture would then collect the local node's unrelated traffic
+// and file it as evidence for a flow that happened in another cluster.
+//
+// Failing to resolve a target is loud: the job is created without one and the
+// capture controller fails it naming the node. Capturing the wrong node's
+// packets is silent, and it is silent in the direction that matters - it
+// produces evidence rather than withholding it. Stripping the qualifier safely
+// needs to know which cluster is ours, which nothing here does yet.
 func (e *PolicyEngine) eligibleTarget(tap *trawlv1alpha1.NetworkTap, node string) string {
 	if node == "" {
 		return ""
@@ -592,12 +634,26 @@ func (e *PolicyEngine) eligibleTarget(tap *trawlv1alpha1.NetworkTap, node string
 
 // commit writes one audit record for a policy-created capture.
 //
-// The stable key covers the deduplication key, the step, and the policy. The
-// deduplication key is what two workers racing on one event agree on without
-// having spoken, so their records converge instead of doubling. The policy is
-// part of it because two policies can want the same capture: each one's request
-// is its own act, and collapsing them into one identity would make the second
-// one's record a conflict with the first.
+// The stable key covers the deduplication key, the step, the decision, and the
+// policy. Each part earns its place:
+//
+//   - The deduplication key is what two workers racing on one event agree on
+//     without having spoken, so their records converge instead of doubling.
+//   - The policy, because two policies can want the same capture. Each one's
+//     request is its own act, and collapsing them into one identity would make
+//     the second one's record conflict with the first.
+//   - The decision, for the same reason StableKeyForAdmission carries it: an
+//     intent and its outcome are separate records for one request, and so are a
+//     failed outcome and a succeeded one. Without it a worker whose create
+//     failed and a worker whose create succeeded write different content under
+//     one identity, and the sink reports the disagreement rather than the two
+//     outcomes.
+//
+// What the key must not include is anything that varies between two workers
+// performing the same act. A stable key is an identity claim, and the sink
+// refuses a second claim on one identity with different content - so the
+// message on the race path below is the same empty string the winner writes,
+// deliberately, rather than a description of which side of the race this was.
 func (e *PolicyEngine) commit(
 	ctx context.Context,
 	p *trawlv1alpha1.CapturePolicy,
@@ -621,7 +677,8 @@ func (e *PolicyEngine) commit(
 			Name:      job.Name,
 		},
 		StableKey: audit.StableKeyForAutomatic(
-			audit.ActionCaptureJobPolicyCreate, job.Spec.DeduplicationKey, step+":"+string(p.UID)),
+			audit.ActionCaptureJobPolicyCreate, job.Spec.DeduplicationKey,
+			step+":"+decision+":"+string(p.UID)),
 	}
 
 	result, err := e.Audit.Commit(ctx, rec)

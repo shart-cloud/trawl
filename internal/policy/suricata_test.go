@@ -389,3 +389,52 @@ func TestTheValidatorAndTheRendererAgreeOnTheDocumentedPlaceholders(t *testing.T
 		}
 	}
 }
+
+func TestAnAddressCarryingFilterSyntaxInAnIPv6ZoneIsRefused(t *testing.T) {
+	// netip.ParseAddr accepts everything after "%" as an IPv6 zone - spaces,
+	// operators, whole BPF clauses - and String round-trips it unchanged. That
+	// makes "parse the value" insufficient on its own, and the value here is
+	// attacker-influenced: it is the source address of traffic somebody chose
+	// to send, copied out of an observation record that nothing validates as an
+	// address on the way in.
+	//
+	// The consequence if this regresses is not a malformed filter. It is a
+	// capture scoped to one conversation quietly widened to whatever the
+	// injected clause names, on a policy an operator armed believing it was
+	// narrow.
+	for _, ip := range []string{
+		"fe80::1%or udp port 53",
+		"fe80::1% and not host 192.0.2.1",
+		"fe80::1%eth0",
+	} {
+		obs := alert(func(o *observation.Observation) { o.Flow.Source.IP = ip })
+
+		got, err := policy.RenderFilter("host {{source.ip}}", obs)
+
+		if err == nil {
+			t.Errorf("rendering with source IP %q produced %q, want a refusal", ip, got)
+		}
+		if got != "" {
+			t.Errorf("a refused render returned %q, want the empty string", got)
+		}
+	}
+}
+
+func TestOrdinaryAddressesStillRender(t *testing.T) {
+	// The control for the refusal above. A rejection only means what it claims
+	// if the addresses a real alert carries still render in the same breath -
+	// otherwise the test proves the renderer refuses things, not that it
+	// refuses the right ones.
+	for _, ip := range []string{"192.168.0.6", "2001:db8::1", "::1"} {
+		obs := alert(func(o *observation.Observation) { o.Flow.Source.IP = ip })
+
+		got, err := policy.RenderFilter("host {{source.ip}}", obs)
+
+		if err != nil {
+			t.Errorf("rendering with source IP %q failed: %v", ip, err)
+		}
+		if !strings.Contains(got, ip) {
+			t.Errorf("rendered %q, want it to carry %q", got, ip)
+		}
+	}
+}

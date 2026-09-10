@@ -97,8 +97,17 @@ func (w *CaptureJobWebhook) Default(ctx context.Context, job *trawlv1alpha1.Capt
 	if job.Spec.RequestType == "" {
 		job.Spec.RequestType = trawlv1alpha1.CaptureRequestManual
 	}
-	if job.Spec.Retention == "" {
-		job.Spec.Retention = formatRetention(w.retentionCeiling())
+	// Clamped whenever it exceeds the ceiling, not only when it is absent - the
+	// same correction as CapturePolicy, and for the same reason. spec.retention
+	// carries a structural schema default of 30d, and the API server applies
+	// structural defaults while decoding the request, before any mutating
+	// webhook runs. So an analyst who omits the field arrives here asking for
+	// the contract maximum, the emptiness check never fired, and on an
+	// installation with a lower ceiling validation refused the request outright:
+	// every manual capture that left retention blank was rejected.
+	if ceiling := w.retentionCeiling(); job.Spec.Retention == "" ||
+		retentionExceeds(job.Spec.Retention, ceiling) {
+		job.Spec.Retention = formatRetention(ceiling)
 	}
 
 	// The requester is stamped once, on create, from the authenticated

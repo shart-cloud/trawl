@@ -133,12 +133,26 @@ func resolvePlaceholder(name string, obs *observation.Observation) (string, erro
 //
 // Parsing rather than escaping is the whole defense. BPF has no quoting to
 // escape into, so a value carrying filter syntax cannot be neutralized - it can
-// only be refused. netip.ParseAddr accepts an address and nothing else: no
-// spaces, no operators, no hostname.
+// only be refused.
+//
+// netip.ParseAddr is not by itself that refusal. It accepts everything after a
+// "%" in an IPv6 address as a zone, spaces and all, and String re-emits it
+// verbatim: "fe80::1%or udp port 53" parses, round-trips unchanged, and lands
+// in the expression the capture runner executes. The address in an observation
+// describes traffic an attacker sends, and nothing validates it on the way in,
+// so a crafted flow.source.ip would rewrite the filter of any policy using
+// {{source.ip}} - widening a capture scoped to one conversation into whatever
+// the injected clause names.
+//
+// A zone identifies a local interface. It is meaningless in a filter matching
+// addresses seen on the wire, so there is no case to weigh against refusing it.
 func ipValue(name, ip string) (string, error) {
 	addr, err := netip.ParseAddr(ip)
 	if err != nil {
 		return "", fmt.Errorf("placeholder %q: %q is not an IP address", name, ip)
+	}
+	if addr.Zone() != "" {
+		return "", fmt.Errorf("placeholder %q: %q carries an IPv6 zone", name, ip)
 	}
 	// Re-rendered from the parsed value rather than passed through, so the
 	// output is the canonical form of what was validated and not the original

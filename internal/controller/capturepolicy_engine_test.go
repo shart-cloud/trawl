@@ -41,6 +41,7 @@ import (
 	"trawl.cloud/trawl/internal/observation"
 	"trawl.cloud/trawl/internal/policy"
 	"trawl.cloud/trawl/internal/status"
+	"trawl.cloud/trawl/internal/storage"
 )
 
 const (
@@ -148,12 +149,15 @@ func (c *recordingCommitter) Commit(_ context.Context, rec audit.Record) (audit.
 	return audit.CommitResult{Result: audit.ResultSuccess, LedgerKey: "audit/v1/records/x"}, nil
 }
 
-func (c *recordingCommitter) commits(action, decision string) int {
+// commits counts the policy-created-capture records at one decision. The action
+// is fixed because it is the only one this engine writes; a second action here
+// would be a record nothing in the contract's audit enum accounts for.
+func (c *recordingCommitter) commits(decision string) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	n := 0
 	for _, r := range c.records {
-		if r.Action == action && r.Decision == decision {
+		if r.Action == audit.ActionCaptureJobPolicyCreate && r.Decision == decision {
 			n++
 		}
 	}
@@ -421,7 +425,7 @@ func TestTheAuditRecordIsCommittedBeforeTheCaptureExists(t *testing.T) {
 	if f.steps[1] != "create:CaptureJob" {
 		t.Errorf("second step = %q, want the CaptureJob create", f.steps[1])
 	}
-	if n := f.audit.commits(audit.ActionCaptureJobPolicyCreate, audit.DecisionSucceeded); n != 1 {
+	if n := f.audit.commits(audit.DecisionSucceeded); n != 1 {
 		t.Errorf("committed %d succeeded records, want 1 - the outcome record completes the pair", n)
 	}
 }
@@ -594,7 +598,7 @@ func TestThePolicyStopsCapturingAtItsHourlyLimit(t *testing.T) {
 	if n := len(f.jobs(t)); n != 5 {
 		t.Errorf("got %d capture jobs, want the 5 that already existed", n)
 	}
-	if n := f.audit.commits(audit.ActionCaptureJobPolicyCreate, audit.DecisionAllowed); n != 0 {
+	if n := f.audit.commits(audit.DecisionAllowed); n != 0 {
 		t.Errorf("committed %d intent records for a capture that was never requested, want 0", n)
 	}
 }
@@ -616,7 +620,7 @@ func TestADisarmedPolicyReportsWhatItWouldHaveCapturedWithoutCapturing(t *testin
 	if jobs := f.jobs(t); len(jobs) != 0 {
 		t.Errorf("a disarmed policy created %d captures, want none", len(jobs))
 	}
-	if n := f.audit.commits(audit.ActionCaptureJobPolicyCreate, audit.DecisionAllowed); n != 0 {
+	if n := f.audit.commits(audit.DecisionAllowed); n != 0 {
 		t.Errorf("a disarmed policy committed %d capture intents, want none", n)
 	}
 }
@@ -805,5 +809,241 @@ func TestAnAlertIsNotOfferedToADenialPolicy(t *testing.T) {
 
 	if len(results) != 0 {
 		t.Errorf("got %+v, want no results - a Suricata alert is not a denied flow", results)
+	}
+}
+
+func TestTheRaceLoserStillCompletesItsLedgerPair(t *testing.T) {
+	// An intent record is committed before the create. When the create loses the
+	// race the capture exists, made by the other worker - but this worker's
+	// ledger entry would be an intent with no outcome, which is the shape an
+	// operator reads as "a capture was authorized and then went missing". The
+	// one situation the ledger must not describe as evidence disappearing is the
+	// one where the evidence is fine.
+	f := newEngineWith(t, interceptor.Funcs{
+		Create: func(_ context.Context, _ client.WithWatch, obj client.Object, _ ...client.CreateOption) error {
+			return apierrors.NewAlreadyExists(
+				trawlv1alpha1.GroupVersion.WithResource("capturejobs").GroupResource(), obj.GetName())
+		},
+	}, activeTap(), suricataPolicy())
+
+	got := only(t, f.evaluate(t, alert()))
+
+	if got.Outcome != OutcomeDuplicate {
+		t.Fatalf("outcome = %s, want Duplicate", got.Outcome)
+	}
+	if n := f.audit.commits(audit.DecisionAllowed); n != 1 {
+		t.Errorf("committed %d intent records, want 1", n)
+	}
+	if n := f.audit.commits(audit.DecisionSucceeded); n != 1 {
+		t.Errorf("committed %d outcome records, want 1 - the intent is dangling without it", n)
+	}
+}
+
+func TestEditingAnUnrelatedFieldDoesNotDiscardTheThresholdWindow(t *testing.T) {
+	// A rolling window is state gathered over minutes. Rebuilding it on any
+	// generation bump meant that arming a policy, changing its retention, or
+	// raising its hourly limit silently threw away a count that might have been
+	// one flow from firing - and nothing anywhere would record that it had
+	// happened.
+	f := newEngine(t, activeTap(), hubblePolicy(func(p *trawlv1alpha1.CapturePolicy) {
+		p.Spec.Trigger.HubbleDrop.Threshold = &trawlv1alpha1.DropThreshold{
+			Count:  3,
+			Window: metav1.Duration{Duration: time.Minute},
+		}
+	}))
+	ctx := context.Background()
+
+	for i := range 2 {
+		f.evaluate(t, drop(func(o *observation.Observation) {
+			o.ID = "drop-" + strconv.Itoa(i)
+			o.ObservedAt = o.ObservedAt.Add(time.Duration(i) * time.Second)
+		}))
+	}
+
+	// An edit that has nothing to do with the threshold.
+	var p trawlv1alpha1.CapturePolicy
+	key := types.NamespacedName{Namespace: testNamespace, Name: "denied-egress"}
+	if err := f.client.Get(ctx, key, &p); err != nil {
+		t.Fatalf("reading the policy: %v", err)
+	}
+	p.Spec.Retention = "3d"
+	p.Generation++
+	if err := f.client.Update(ctx, &p); err != nil {
+		t.Fatalf("updating the policy: %v", err)
+	}
+
+	got := only(t, f.evaluate(t, drop(func(o *observation.Observation) {
+		o.ID = "drop-2"
+		o.ObservedAt = o.ObservedAt.Add(2 * time.Second)
+	})))
+
+	if got.Outcome != OutcomeCreated {
+		t.Errorf("outcome on the third drop = %s (%v), want Created - the window was discarded",
+			got.Outcome, got.Err)
+	}
+}
+
+func TestChangingTheThresholdDoesDiscardTheWindow(t *testing.T) {
+	// The other direction, and the reason the rebuild exists at all. An operator
+	// who narrows a window expects the new one to apply; carrying the old counts
+	// forward would fire the policy on a threshold nobody has written down.
+	f := newEngine(t, activeTap(), hubblePolicy(func(p *trawlv1alpha1.CapturePolicy) {
+		p.Spec.Trigger.HubbleDrop.Threshold = &trawlv1alpha1.DropThreshold{
+			Count:  3,
+			Window: metav1.Duration{Duration: time.Minute},
+		}
+	}))
+	ctx := context.Background()
+
+	for i := range 2 {
+		f.evaluate(t, drop(func(o *observation.Observation) {
+			o.ID = "drop-" + strconv.Itoa(i)
+			o.ObservedAt = o.ObservedAt.Add(time.Duration(i) * time.Second)
+		}))
+	}
+
+	var p trawlv1alpha1.CapturePolicy
+	key := types.NamespacedName{Namespace: testNamespace, Name: "denied-egress"}
+	if err := f.client.Get(ctx, key, &p); err != nil {
+		t.Fatalf("reading the policy: %v", err)
+	}
+	p.Spec.Trigger.HubbleDrop.Threshold.Count = 4
+	p.Generation++
+	if err := f.client.Update(ctx, &p); err != nil {
+		t.Fatalf("updating the policy: %v", err)
+	}
+
+	got := only(t, f.evaluate(t, drop(func(o *observation.Observation) {
+		o.ID = "drop-2"
+		o.ObservedAt = o.ObservedAt.Add(2 * time.Second)
+	})))
+
+	if got.Outcome != OutcomeNotMatched || got.Reason != policy.ReasonBelowThreshold {
+		t.Errorf("outcome = %s/%s, want NotMatched/BelowThreshold on a rebuilt window",
+			got.Outcome, got.Reason)
+	}
+}
+
+func TestAClusterQualifiedNodeNameResolvesNoTarget(t *testing.T) {
+	// Hubble can report the observing node as "<cluster>/<node>" depending on
+	// the Cilium version and its cluster configuration. Stripping the qualifier
+	// to make it match looks like the obvious fix and is the wrong one: under
+	// ClusterMesh the relay serves flows from peer clusters, node names repeat
+	// across them, and "prod-eu/worker-1" would match a healthy local target
+	// called "worker-1". The capture would collect the local node's unrelated
+	// traffic and file it as evidence for a flow in another cluster.
+	//
+	// So the comparison stays exact and this fails the loud way: a capture with
+	// no target, which the capture controller fails naming the node. Withholding
+	// evidence is recoverable; manufacturing the wrong evidence is not.
+	f := newEngine(t, activeTap(), hubblePolicy())
+
+	got := only(t, f.evaluate(t, drop(func(o *observation.Observation) {
+		o.Target.Node = "prod-eu/" + testNode
+	})))
+
+	if got.Outcome != OutcomeCreated {
+		t.Fatalf("outcome = %s (%v), want Created - the attempt must still be recorded", got.Outcome, got.Err)
+	}
+	jobs := f.jobs(t)
+	if len(jobs) != 1 {
+		t.Fatalf("got %d captures, want 1", len(jobs))
+	}
+	if jobs[0].Spec.TargetNode != "" {
+		t.Errorf("target node = %q, want empty - a qualified name may name another cluster's node",
+			jobs[0].Spec.TargetNode)
+	}
+}
+
+// realLedger is the actual sink over an in-memory store.
+//
+// recordingCommitter cannot answer the question below: it returns success for
+// anything and does no stable-key resolution, so two records claiming one
+// identity with different content look identical to it. That is exactly the
+// defect this test exists to catch, and it is why the fake is not enough here.
+func realLedger(t *testing.T) *audit.Sink {
+	t.Helper()
+	sink, err := audit.NewSink(audit.Options{
+		Store:     storage.NewFake(),
+		Prefix:    audit.DefaultPrefix,
+		Retention: 90 * 24 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("building the audit sink: %v", err)
+	}
+	return sink
+}
+
+func TestTwoWorkersRacingWriteOneLedgerPairAndNoConflict(t *testing.T) {
+	// A stable key is an identity claim. Two records claiming one identity with
+	// different content is an integrity error by construction - the sink refuses
+	// the second and counts a conflict - and a deduplication race is the one
+	// situation where that must not happen, because nothing is actually wrong.
+	//
+	// Both workers derive the same deduplication key from the same event and the
+	// same policy, so both derive the same stable keys. Their records therefore
+	// have to be byte-identical for the same act, or the loser turns a healthy
+	// collapse into an integrity alarm an operator has to go and disprove.
+	ledger := realLedger(t)
+
+	winner := newEngine(t, activeTap(), suricataPolicy())
+	winner.engine.Audit = ledger
+
+	// The second worker sees the same cluster state but loses the create.
+	loser := newEngineWith(t, interceptor.Funcs{
+		Create: func(_ context.Context, _ client.WithWatch, obj client.Object, _ ...client.CreateOption) error {
+			return apierrors.NewAlreadyExists(
+				trawlv1alpha1.GroupVersion.WithResource("capturejobs").GroupResource(), obj.GetName())
+		},
+	}, activeTap(), suricataPolicy())
+	loser.engine.Audit = ledger
+
+	if got := only(t, winner.evaluate(t, alert())).Outcome; got != OutcomeCreated {
+		t.Fatalf("the winner's outcome = %s, want Created", got)
+	}
+
+	got := only(t, loser.evaluate(t, alert()))
+
+	if got.Outcome != OutcomeDuplicate {
+		t.Fatalf("the loser's outcome = %s, want Duplicate", got.Outcome)
+	}
+	if got.Err != nil {
+		t.Errorf("the loser reported %v; a collapse onto an existing capture is "+
+			"the deduplication working, not something to raise against the ledger", got.Err)
+	}
+}
+
+func TestAFailedCaptureAndASucceededOneDoNotClaimTheSameLedgerIdentity(t *testing.T) {
+	// The outcome half of the pair carries a decision, and the two decisions are
+	// different acts. Keyed without it, a worker whose create failed and a worker
+	// whose create succeeded would write two different records under one
+	// identity - and the ledger would report the disagreement rather than the
+	// two outcomes.
+	ledger := realLedger(t)
+
+	failing := newEngineWith(t, interceptor.Funcs{
+		Create: func(_ context.Context, _ client.WithWatch, _ client.Object, _ ...client.CreateOption) error {
+			return apierrors.NewInternalError(errors.New("the API server is unavailable"))
+		},
+	}, activeTap(), suricataPolicy())
+	failing.engine.Audit = ledger
+
+	if got := only(t, failing.evaluate(t, alert())).Outcome; got != OutcomeFailed {
+		t.Fatalf("outcome = %s, want Failed", got)
+	}
+
+	// The same event, the same policy, now succeeding - as it would on a retry
+	// or from the other worker.
+	succeeding := newEngine(t, activeTap(), suricataPolicy())
+	succeeding.engine.Audit = ledger
+
+	got := only(t, succeeding.evaluate(t, alert()))
+
+	if got.Outcome != OutcomeCreated {
+		t.Fatalf("outcome = %s (%v), want Created", got.Outcome, got.Err)
+	}
+	if got.Err != nil {
+		t.Errorf("recording the successful outcome reported %v; it claims the same "+
+			"ledger identity as the earlier failure", got.Err)
 	}
 }

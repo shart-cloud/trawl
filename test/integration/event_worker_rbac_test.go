@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -29,7 +30,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/yaml"
 
 	"trawl.cloud/trawl/internal/controller"
@@ -223,5 +227,75 @@ func TestTheWorkerCannotReadSecretsOrOtherConfiguration(t *testing.T) {
 	err = workerClient.Get(ctx, types.NamespacedName{Namespace: f.namespace, Name: "trawl-config"}, &cm)
 	if !apierrors.IsForbidden(err) {
 		t.Errorf("reading trawl-config returned %v, want a forbidden error", err)
+	}
+}
+
+// The worker does not use a direct client. It uses the manager's, which reads
+// through a cache, and the difference is not a detail: a cached read starts an
+// informer that LISTs and WATCHes the whole type in the namespace, so a Role
+// scoped to one object by name is refused at the reflector rather than at the
+// call. The reflector retries forever, the informer never syncs, and the Get
+// blocks - no error, no log, just a poll loop that never reaches its first tick.
+//
+// Every test above builds a direct client and would pass with that wiring
+// broken, which is how it reached a code review once already. This one builds
+// the client the way cmd/event-worker does.
+func TestTheWorkersCursorIsReadableThroughTheClientTheWorkerActuallyUses(t *testing.T) {
+	ns := NewNamespace(t)
+	grantWorkerRole(t, ns)
+
+	cfg := rest.CopyConfig(RESTConfig())
+	cfg.Impersonate = rest.ImpersonationConfig{UserName: workerIdentity}
+
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+		Scheme:                 Scheme(),
+		Cache:                  cache.Options{DefaultNamespaces: map[string]cache.Config{ns: {}}},
+		Metrics:                metricsserver.Options{BindAddress: "0"},
+		HealthProbeBindAddress: "0",
+		// The line under test. Without it the cursor read below never returns.
+		Client: client.Options{
+			Cache: &client.CacheOptions{DisableFor: []client.Object{&corev1.ConfigMap{}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("creating the manager: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() {
+		if err := mgr.Start(ctx); err != nil {
+			t.Errorf("running the manager: %v", err)
+		}
+	}()
+	if !mgr.GetCache().WaitForCacheSync(ctx) {
+		t.Fatal("the manager's cache did not sync")
+	}
+
+	store := &loki.ConfigMapStore{Client: mgr.GetClient(), Namespace: ns}
+
+	// Bounded, because the failure this catches is a hang rather than an error.
+	// An unbounded call would take the whole package's timeout to report a
+	// defect that is decided in milliseconds when the wiring is right.
+	done := make(chan error, 1)
+	go func() {
+		var cursor loki.Cursor
+		cursor.Advance(time.Now(), "an-alert")
+		if err := store.Save(ctx, cursor); err != nil {
+			done <- err
+			return
+		}
+		_, loadErr := store.Load(ctx)
+		done <- loadErr
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("the cursor could not be read through the worker's client: %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("reading the cursor through the worker's client blocked; a cached ConfigMap read " +
+			"needs list and watch on every ConfigMap in the namespace, which the worker must not have")
 	}
 }

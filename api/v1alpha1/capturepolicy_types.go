@@ -145,6 +145,15 @@ type HubbleDropTrigger struct {
 }
 
 // DropThreshold is a count of matching flows within a rolling window.
+//
+// The window's bounds are a CEL rule rather than a pattern, because the pattern
+// that shapes the string cannot express a range over what it denotes: it admits
+// both "0s" and "600m". Neither is a wrong-looking value that fails loudly. A
+// zero window expires every event that is not simultaneous with the newest, so
+// a count of five can never be reached and the policy silently never fires; a
+// window past the reconnect replay bound cannot be rebuilt after a disconnect,
+// so it under-counts with nothing to say it did.
+// +kubebuilder:validation:XValidation:rule="duration(self.window) >= duration('1s') && duration(self.window) <= duration('15m')",message="window must be between 1s and 15m"
 type DropThreshold struct {
 	// Count is how many matching flows must fall inside Window.
 	// +kubebuilder:validation:Required

@@ -358,3 +358,36 @@ func TestCaptureJobDeleteIsNamespaceGatedOnly(t *testing.T) {
 		t.Fatal("delete outside the system namespace admitted")
 	}
 }
+
+func TestCaptureJobRetentionIsClampedToTheInstallationCeiling(t *testing.T) {
+	// The same defect CapturePolicy had, in the path an analyst uses by hand.
+	// spec.retention's structural default of 30d is applied while the request is
+	// decoded, before this webhook runs, so the emptiness check that was here
+	// never fired - and on an installation whose ceiling is lower, validation
+	// then refused every capture that left retention blank.
+	w, _ := captureWebhook(t)
+	defaulted := manualJob()
+	defaulted.Spec.Retention = "30d"
+
+	if err := w.Default(requestCtx(admissionv1.Create, "alice"), defaulted); err != nil {
+		t.Fatalf("defaulting: %v", err)
+	}
+	if defaulted.Spec.Retention != "7d" {
+		t.Errorf("retention is %q, want the 7d ceiling", defaulted.Spec.Retention)
+	}
+	// The clamp only means something if what it produces is then admitted.
+	if _, err := w.ValidateCreate(requestCtx(admissionv1.Create, "alice"), defaulted); err != nil {
+		t.Errorf("the clamped capture was refused: %v", err)
+	}
+
+	// And a retention inside the ceiling is left exactly as asked, or the clamp
+	// could be rewriting every request and the assertion above would not notice.
+	kept := manualJob()
+	kept.Spec.Retention = "2h"
+	if err := w.Default(requestCtx(admissionv1.Create, "alice"), kept); err != nil {
+		t.Fatalf("defaulting: %v", err)
+	}
+	if kept.Spec.Retention != "2h" {
+		t.Errorf("retention within the ceiling became %q, want 2h", kept.Spec.Retention)
+	}
+}

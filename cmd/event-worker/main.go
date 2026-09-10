@@ -40,10 +40,12 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	trawlv1alpha1 "trawl.cloud/trawl/api/v1alpha1"
@@ -158,6 +160,26 @@ func main() {
 		// act on it even if one exists (FR-001).
 		Cache: cache.Options{
 			DefaultNamespaces: map[string]cache.Config{cfg.SystemNamespace: {}},
+		},
+		Client: client.Options{
+			Cache: &client.CacheOptions{
+				// The alert cursor is read straight from the API server.
+				//
+				// Everything else this worker reads is cached, because every
+				// armed policy is consulted per event. The cursor is the
+				// opposite case: it is read once at startup, written by this
+				// process alone, and caching it would start a ConfigMap
+				// informer that LISTs and WATCHes every ConfigMap in the
+				// namespace. That is not a permission the worker should hold -
+				// trawl-config is in that namespace - so its Role grants get
+				// and update on the cursor by name and nothing wider. A cached
+				// read would therefore be Forbidden at the reflector, the
+				// informer would never sync, and the Get would block forever:
+				// the alert poll loop would never reach its first tick and no
+				// signature would ever trigger a capture, with no error on any
+				// policy and nothing in the logs but silence.
+				DisableFor: []client.Object{&corev1.ConfigMap{}},
+			},
 		},
 		// Both disabled: this process serves its own, above.
 		Metrics:                 metricsserver.Options{BindAddress: "0"},

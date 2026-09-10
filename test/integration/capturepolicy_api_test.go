@@ -20,6 +20,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -273,4 +274,74 @@ func TestDeletingAPolicyDoesNotRequireAnything(t *testing.T) {
 	if err := Client().Delete(ctx, policy); err != nil {
 		t.Fatalf("deleting a policy was refused: %v", err)
 	}
+}
+
+func TestTheThresholdWindowIsBoundedAtBothEnds(t *testing.T) {
+	// The pattern that shapes the string cannot express a range over what it
+	// denotes: `^([0-9]+(s|m))+$` admits both "0s" and "600m", and neither is a
+	// wrong-looking value that fails loudly.
+	//
+	// A zero window expires every event that is not simultaneous with the
+	// newest, so a count of five can never be reached and the policy silently
+	// never fires - armed, matching, and structurally incapable of the thing it
+	// was written to do. A window past the reconnect replay bound cannot be
+	// rebuilt after a disconnect, so it under-counts with nothing to say so.
+	ns := NewNamespace(t)
+
+	// Both values are chosen to reach CEL rather than to be caught before it.
+	// Sub-second is not here because the pattern already refuses it - `s` is its
+	// smallest unit. Nor is anything an hour or more: metav1.Duration marshals
+	// 600m as "10h0m0s", which the pattern refuses for the `h`, so a test using
+	// it would pass with this rule deleted. 16m is the smallest value that is
+	// expressible, well-formed, and over the line.
+	for name, window := range map[string]string{
+		"zero":           "0s",
+		"past the bound": "16m",
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := newPolicy(t, ns, "threshold-"+strings.ReplaceAll(name, " ", "-"),
+				func(s *trawlv1alpha1.CapturePolicySpec) {
+					s.Trigger = trawlv1alpha1.CapturePolicyTrigger{
+						Type: trawlv1alpha1.CaptureTriggerHubbleDrop,
+						HubbleDrop: &trawlv1alpha1.HubbleDropTrigger{
+							Reasons: []string{"POLICY_DENIED"},
+							Threshold: &trawlv1alpha1.DropThreshold{
+								Count:  5,
+								Window: metav1.Duration{Duration: mustParseWindow(t, window)},
+							},
+						},
+					}
+				})
+			if err := Client().Create(context.Background(), p); err == nil {
+				t.Errorf("a threshold window of %s was admitted", window)
+			}
+		})
+	}
+
+	// The control. A rejection only means what it claims if the otherwise
+	// identical valid object is admitted in the same breath.
+	valid := newPolicy(t, ns, "threshold-valid", func(s *trawlv1alpha1.CapturePolicySpec) {
+		s.Trigger = trawlv1alpha1.CapturePolicyTrigger{
+			Type: trawlv1alpha1.CaptureTriggerHubbleDrop,
+			HubbleDrop: &trawlv1alpha1.HubbleDropTrigger{
+				Reasons: []string{"POLICY_DENIED"},
+				Threshold: &trawlv1alpha1.DropThreshold{
+					Count:  5,
+					Window: metav1.Duration{Duration: time.Minute},
+				},
+			},
+		}
+	})
+	if err := Client().Create(context.Background(), valid); err != nil {
+		t.Fatalf("a one-minute threshold window was rejected: %v", err)
+	}
+}
+
+func mustParseWindow(t *testing.T, s string) time.Duration {
+	t.Helper()
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		t.Fatalf("parsing %q: %v", s, err)
+	}
+	return d
 }
