@@ -1071,7 +1071,7 @@ operations, supply chain, and the complete quickstart before release.
 - [ ] T127 Run exact deadline-denial and accelerated 24-hour deletion validation with upload protection and preserved metadata in `test/e2e/retention_test.go`
 - [ ] T128 Generate SBOMs, provenance, vulnerability results, upstream source verification, rule/script hashes, and immutable image digests in `dist/supply-chain/manifest.json`
 - [x] T129 Configure release-blocking Go, container, manifest, dependency, and secret scanning with reviewed suppressions and expiry dates in `.github/workflows/security.yml` and `security/suppressions.yaml`
-- [ ] T130 Regenerate CRDs, RBAC, webhooks, install bundle, examples, observation schema embedding, and dashboards and prove a clean drift check in `dist/install.yaml` and `test/contract/generated_artifacts_test.go`
+- [x] T130 Regenerate CRDs, RBAC, webhooks, install bundle, examples, observation schema embedding, and dashboards and prove a clean drift check in `dist/install.yaml` and `test/contract/generated_artifacts_test.go`
 - [ ] T131 Execute every command and expected outcome plus the defined 20-attempt exact-correlation timing protocol in `specs/001-cloud-native-nsm/quickstart.md` on the representative cluster and save only sanitized durations/counts in `test/e2e/results/quickstart.md`
 - [ ] T132 Complete the constitutional, security, operational, and measurable-outcome release checklist with links to passing evidence in `docs/release/readiness.md`
 
@@ -1096,8 +1096,12 @@ operations, supply chain, and the complete quickstart before release.
   Directly because of T119: a check that reads the pre-kustomize files is
   checking a workload nobody runs. All four were mutation-checked - a
   `namespaceSelector`, an unbound ServiceAccount, an added `NET_ADMIN`, and an
-  `mc anonymous set download` line in documentation - and each failed naming the
-  defect.
+  anonymous bucket grant written into documentation - and each failed naming the
+  defect. (The grant is described rather than quoted here on purpose: the check
+  scans `specs/` and `docs/` too, so spelling the command out in prose about the
+  check makes the check fail on its own description. That is the scanner working,
+  not a false positive worth loosening it for - a copyable grant in
+  documentation is exactly what it is meant to catch.)
 
 - **T122 found that `make undeploy` destroyed every capture record.** It
   rendered `config/default` - which lists `../crd` - and piped the whole thing
@@ -1191,6 +1195,28 @@ operations, supply chain, and the complete quickstart before release.
   is required only when branch protection says so. Someone with admin on the
   repository has to add the Security jobs to the protected-branch rules, or the
   gate is advisory in practice.
+
+- **T130's value is bundle completeness, not regeneration.** `make verify`
+  already proved no drift and `dist/` is gitignored, so "regenerate and check"
+  asserts almost nothing on its own. The two new contract tests ask the
+  question that has actually bitten this repository twice: is the generated
+  artifact *shipped*? A CRD reaches the installer only if someone listed it in
+  `config/crd/kustomization.yaml`; controller-gen writes the file either way and
+  envtest reads `config/crd/bases` directly, so a forgotten entry leaves every
+  test passing while the installer ships without the type. The audit Service and
+  the artifact gateway were both written-but-never-applied for exactly this
+  reason, as `config/default/kustomization.yaml`'s own comments record.
+- **The webhook check is the more dangerous half.** A configured path the
+  manager does not register is worse than a missing one, because `failurePolicy`
+  is `Fail`: the API server calls a path nothing serves and refuses every create
+  and update of that kind installation-wide, naming a webhook rather than the
+  real fault. Comparing markers to manifests would be circular - controller-gen
+  generates one from the other - so the check compares the configuration against
+  the manager's registration calls instead.
+- **A mutation check caught a loose assertion in one of these tests.** The
+  webhook check first matched the handler name as a bare substring, which a
+  rename satisfies; it is anchored on the construction now, and the mutation was
+  redone as an outright deletion of the registration block.
 
 **Checkpoint**: All required checks pass, no critical security finding or
 unresolved source gap is hidden, and the release has reproducible evidence for the
