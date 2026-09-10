@@ -701,7 +701,7 @@ and unaffected parallel policy evaluation.
 - [x] T113 [US4] Implement policy indexing, independent evaluation, target resolution, snapshot/bounds resolution, durable audit acknowledgement, CaptureJob construction, and decision emission in `internal/policy/engine.go`
 - [x] T114 [US4] Implement CapturePolicy status/condition reconciliation, monotonic decision counters, last execution/suppression references, source health, and retry isolation in `internal/policy/status.go`
 - [x] T115 [US4] Wire Loki alert polling, Hubble drop evaluation, policy cache watches, mTLS audit client, leader election, persistent cursors, metrics, and graceful handoff into `cmd/event-worker/main.go`
-- [ ] T116 [US4] Grant the event worker only read/watch NetworkTap/CapturePolicy/CaptureJob, create CaptureJob, patch CapturePolicy status, cursor ConfigMap permissions, and egress to the audit sink in `config/rbac/event-worker-role.yaml` and update `config/manager/event-worker.yaml`
+- [x] T116 [US4] Grant the event worker only read/watch NetworkTap/CapturePolicy/CaptureJob, create CaptureJob, patch CapturePolicy status, cursor ConfigMap permissions, and egress to the audit sink in `config/rbac/event-worker-role.yaml` and update `config/manager/event-worker.yaml`
 - [ ] T117 [US4] Generate and review the CapturePolicy CRD/cluster-wide namespace-rejecting webhook/namespaced RBAC plus armed/disarmed Suricata and Hubble samples with no deferred trigger types in `config/crd/bases/trawl.cloud_capturepolicies.yaml` and `config/samples/`
 - [ ] T118 [US4] Add policy phase, decision counters, source gaps, active captures, cooldown/rate state, and suppression references to `config/grafana/dashboards/capture-management.json`
 - [ ] T119 [US4] Make unit, integration, restart, and end-to-end automatic trigger matrices pass and record sanitized count evidence in `test/e2e/automatic_capture_test.go` and `test/e2e/results/automatic-capture.md`
@@ -846,10 +846,31 @@ and unaffected parallel policy evaluation.
   (removing the target heartbeat check) failed to build rather than failing the
   test, which is the handoff's warning about badly chosen mutations, not a weak
   test; widening it to a 100x window caught it.
-- **T116 is a hard prerequisite for any rollout.** The event worker has no RBAC
-  to create CaptureJobs, patch CapturePolicy status, or write the cursor
-  ConfigMap, so against a real cluster every one of those is a 403 and the
-  worker is silent in exactly the way FR-036 makes it silent.
+- T116 grants **`update` on `capturepolicies/status`, not `patch`** as the task
+  text says. The status tracker reads the policy, applies its batch of
+  decisions, and writes back against the resourceVersion it read, so a
+  concurrent writer loses with a conflict rather than silently clobbering the
+  counters; a merge patch of computed totals would discard the other writer's
+  increments with nothing noticing.
+- T116: the worker gets `create` on CaptureJobs and deliberately no `update`,
+  `patch` or `delete`. A capture is evidence and the worker's job ends when it
+  has asked for one. Likewise the ConfigMap grant is restricted by
+  `resourceNames` to `trawl-alert-cursor`, since an unrestricted one would
+  include `trawl-config`.
+- T116 also opened **egress to Loki** in
+  `config/networkpolicy/event-worker.yaml`, which the task text does not name.
+  T115 made the alert stream a polled Loki query, so without it every poll times
+  out and no signature ever triggers a capture. The audit-sink egress and the
+  `event-worker-audit-client` mount landed with T115 for the same reason.
+- T116 is tested rather than reviewed. envtest runs the API server with
+  `--authorization-mode=RBAC`, so
+  `test/integration/event_worker_rbac_test.go` applies the Role from
+  `config/rbac/event-worker-role.yaml` verbatim, binds it, and runs the real
+  engine and status tracker through an impersonating client. Restating the rules
+  in the test would have tested the file against itself. Four mutations were
+  checked: dropping `create` on capturejobs, dropping `update` on
+  `capturepolicies/status`, adding `update` on `capturepolicies`, and removing
+  the `resourceNames` restriction each fail a test.
 
 **Checkpoint**: All four user stories are functional. Automatic capture reuses the
 same bounded, authorized execution path proven by US3.

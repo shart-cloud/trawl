@@ -1,8 +1,13 @@
 # Egress allowlist for the event worker.
 #
-# It talks to exactly three things: DNS, the Kubernetes API for leader election
-# and tap lookups, and Hubble Relay. Nothing else, and no ingress except probes
-# and metrics scraping.
+# It talks to exactly five things: DNS, the Kubernetes API for leader election
+# and object access, Hubble Relay, Loki for the alert stream, and the audit sink
+# on the controller manager. Nothing else, and no ingress except probes and
+# metrics scraping.
+#
+# Every port below is a port on the receiving pod, not the port its Service
+# publishes. Naming the Service port is what left the audit sink closed in
+# Slice B0 while appearing to be allowed.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -40,6 +45,36 @@ spec:
               k8s-app: hubble-relay
       ports:
         - port: 4245
+          protocol: TCP
+    # Loki, for the Suricata alert stream. The worker reads alerts back out of
+    # the observation pipeline rather than from the sensor, so without this rule
+    # every poll times out and no signature ever triggers a capture - with the
+    # policies still reporting themselves armed until the SourceConnected
+    # condition catches up.
+    #
+    # Trawl does not own this store, so the namespace is where the installation
+    # put it. Narrow the selector at install time if Loki lives elsewhere.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 3100
+          protocol: TCP
+    # The audit sink on the controller manager. 9444 is the manager's container
+    # port; the trawl-audit Service publishes 8443 and forwards to it.
+    #
+    # The worker holds no ledger credentials of its own (ADR-0003), so this is
+    # its only way to record that a policy asked for a capture. FR-036 makes an
+    # unrecordable capture one it must not create, so closing this rule does not
+    # degrade the worker - it stops it collecting anything at all.
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: trawl
+              app.kubernetes.io/component: controller-manager
+      ports:
+        - port: 9444
           protocol: TCP
     # Kubernetes API. Expressed as a port rather than a peer because the
     # apiserver endpoint is not a labelled pod on Talos.

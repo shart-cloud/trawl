@@ -1,8 +1,13 @@
 # Least-privilege identity for the event worker.
 #
-# In US2 it only reads. The CaptureJob create and CapturePolicy status grants
-# arrive with US4; they are not granted ahead of the code that uses them,
-# because an unused permission is attack surface with no benefit.
+# The worker is the one Trawl component that creates evidence without a human
+# asking, so its grants are the ones worth reading closely. It may create
+# CaptureJobs and it may write CapturePolicy status - and that is all it may do
+# to them. It cannot update or delete a capture once created, cannot edit a
+# policy's spec, and cannot read a Secret. A compromised worker can start
+# captures within the policies an operator already wrote; it cannot rewrite the
+# rules it is acting under, and it cannot make the evidence it collected
+# disappear.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -32,10 +37,56 @@ rules:
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
     verbs: ["create"]
-  # Resolving which tap a flow belongs to.
+  # Resolving which tap a flow belongs to, and which armed policies to offer it
+  # to. Watch as well as list: the worker's cache is what makes per-event
+  # evaluation affordable, and a cache without watch is a poll.
   - apiGroups: ["trawl.cloud"]
-    resources: ["networktaps"]
+    resources: ["networktaps", "capturepolicies"]
     verbs: ["get", "list", "watch"]
+  # Writing what each policy decided.
+  #
+  # update rather than patch: the tracker reads the policy, applies its batch of
+  # decisions, and writes back against the resourceVersion it read, so a
+  # concurrent writer loses with a conflict instead of silently clobbering
+  # counters. A merge patch of computed totals would discard the other writer's
+  # increments without anything noticing.
+  #
+  # The status subresource only. The worker must not be able to edit the rule it
+  # is acting under - a compromised worker that could arm a policy, widen its
+  # trigger, or raise its hourly limit would be able to author the evidence it
+  # then collects.
+  - apiGroups: ["trawl.cloud"]
+    resources: ["capturepolicies/status"]
+    verbs: ["get", "update"]
+  # Reading captures is how the hourly limit and the active count are rebuilt
+  # after a restart or a leader handoff, and how the create-or-get finds an
+  # existing capture to collapse onto.
+  #
+  # create, and deliberately no update, patch or delete. A capture is evidence:
+  # the worker's job ends when it has asked for one, and everything after that
+  # belongs to the capture controller. Without this line a compromised worker
+  # could alter or remove the evidence it had collected.
+  - apiGroups: ["trawl.cloud"]
+    resources: ["capturejobs"]
+    verbs: ["get", "list", "watch", "create"]
+  # The alert cursor. Named, because this is the only ConfigMap the worker has
+  # any business touching and an unrestricted grant would include every
+  # configuration object in the namespace - trawl-config among them.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "update"]
+    resourceNames: ["trawl-alert-cursor"]
+  # Creating it requires an unnamed create, since the name cannot be checked
+  # before the object exists - the same shape as the lease above.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create"]
+  # Leader election emits events describing the handoff. Without this the
+  # election still works and the record of who held the lease, and when, is
+  # missing from the one place an operator would look.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
