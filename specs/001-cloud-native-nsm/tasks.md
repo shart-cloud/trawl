@@ -703,7 +703,7 @@ and unaffected parallel policy evaluation.
 - [x] T115 [US4] Wire Loki alert polling, Hubble drop evaluation, policy cache watches, mTLS audit client, leader election, persistent cursors, metrics, and graceful handoff into `cmd/event-worker/main.go`
 - [x] T116 [US4] Grant the event worker only read/watch NetworkTap/CapturePolicy/CaptureJob, create CaptureJob, patch CapturePolicy status, cursor ConfigMap permissions, and egress to the audit sink in `config/rbac/event-worker-role.yaml` and update `config/manager/event-worker.yaml`
 - [x] T117 [US4] Generate and review the CapturePolicy CRD/cluster-wide namespace-rejecting webhook/namespaced RBAC plus armed/disarmed Suricata and Hubble samples with no deferred trigger types in `config/crd/bases/trawl.cloud_capturepolicies.yaml` and `config/samples/`
-- [ ] T118 [US4] Add policy phase, decision counters, source gaps, active captures, cooldown/rate state, and suppression references to `config/grafana/dashboards/capture-management.json`
+- [x] T118 [US4] Add policy phase, decision counters, source gaps, active captures, cooldown/rate state, and suppression references to `config/grafana/dashboards/capture-management.json`
 - [ ] T119 [US4] Make unit, integration, restart, and end-to-end automatic trigger matrices pass and record sanitized count evidence in `test/e2e/automatic_capture_test.go` and `test/e2e/results/automatic-capture.md`
 
 ### US4 implementation notes
@@ -863,6 +863,21 @@ and unaffected parallel policy evaluation.
   webhook-rejected rather than schema-rejected and a blanket assertion would
   pass for the wrong reason; the one sample the schema itself refuses is
   asserted by name.
+- T118: **policy phase, active captures and the suppression references are not
+  on a Prometheus panel**, and could not be. contracts/telemetry.md closes the
+  label set and forbids a policy or rule identifier as a label, because a rule
+  identifier turns one series into as many as an operator can write. So the
+  dashboard splits them: six metric panels for the aggregate shape (decisions,
+  source health, lag, gaps, suppression, events), a Loki panel over the audit
+  ledger for per-policy attribution, and a text panel with the `kubectl`
+  commands that read phase, active captures, `lastTriggerTime` and
+  `lastCaptureRef` off the object. Omitting them silently would have left an
+  operator concluding Trawl does not report them.
+- T118: the audit query was added to `config/grafana/queries/trawl.logql` as
+  `policy_actions`, because `TestLogQLTemplatesAndDashboardsAgree` treats the
+  reviewed templates as the contract. Two new contract tests pin the panels:
+  both were mutation-checked by deleting the panels and by gutting the text
+  panel's content.
 - **Test provenance for Group E.** The engine, status and worker tests were
   written before their implementations and each was mutation-checked. One did
   not discriminate: `TestARecordTheOverlapRedeliversIsNotEvaluatedTwice` passed

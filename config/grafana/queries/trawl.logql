@@ -163,6 +163,18 @@ sum by (action, decision) (
 # audit_denials: refused actions, which is where an operator looks first.
 {service_name="trawl-audit", cluster="$cluster", decision="denied"}
 
+# policy_actions: who armed a policy, and which policy asked for which capture.
+#
+# This is where per-policy attribution lives. It is deliberately not a metric
+# label: a rule identifier as a label turns one series into as many as an
+# operator can write, and contracts/telemetry.md closes the label set for
+# exactly that reason. initiatedBy names the policy behind an automatic capture;
+# the actor is the worker's own workload identity, because the act was the
+# worker's on the policy's behalf rather than the policy impersonating a user.
+{service_name="trawl-audit", cluster="$cluster"}
+  | json
+  | action=~"capturepolicy.arm|capturepolicy.disarm|capturepolicy.create|capturepolicy.update|capturepolicy.delete|capturejob.policy_create"
+
 # audit_by_stable_key: one action's records.
 #
 # Replay deliberately re-delivers around its cursor, so duplicate copies are

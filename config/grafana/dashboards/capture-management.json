@@ -5,7 +5,8 @@
   "tags": [
     "trawl",
     "capture",
-    "us3"
+    "us3",
+    "us4"
   ],
   "timezone": "utc",
   "schemaVersion": 39,
@@ -120,6 +121,240 @@
       }
     },
     {
+      "id": 14,
+      "title": "Policy decisions",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (trigger_type, decision) (rate(trawl_policy_decisions_total[$__rate_interval]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "{{trigger_type}} {{decision}}"
+        }
+      ],
+      "description": "What the armed policies decided about each event they saw. not_matched is the ordinary outcome and should dominate - the worker offers every record to every policy. The others are the story: created is a capture, duplicate collapsed onto one that already existed, rate_limited hit the hourly ceiling, disarmed is a policy that would have fired if it were armed, and failed is a qualifying event that produced no capture. No policy or rule identifier is a label here (contracts/telemetry.md), so read this for the shape and the panels below for which policy.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 15,
+      "title": "Trigger source health",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "trawl_trigger_source_connected",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "{{source}}"
+        }
+      ],
+      "description": "1 when the source is delivering. A policy armed against a disconnected source produces no captures and no errors, which is indistinguishable from a quiet network - this is the panel that tells them apart. suricata_loki is a query path rather than a connection, so it reflects the last poll."
+    },
+    {
+      "id": 16,
+      "title": "Trigger lag",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "trawl_trigger_lag_seconds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "{{source}}"
+        }
+      ],
+      "description": "Now minus the newest event the worker has fully processed. Keeping up with quiet traffic and falling steadily behind look identical in the decision counts above; they do not look identical here.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 17,
+      "title": "Trigger coverage gaps",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 16
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (source, reason) (increase(trawl_trigger_gap_total[$__rate_interval]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "{{source}} {{reason}}"
+        }
+      ],
+      "description": "Coverage the worker knows it lost. A reconnect re-reads what it can; replay_window_exceeded and cursor_beyond_lookback are the reasons it could not, and both mean a window was never examined. Absence of captures over such a window is not evidence of absence of traffic (FR-039)."
+    },
+    {
+      "id": 18,
+      "title": "Suppressed triggers",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 16
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (decision) (rate(trawl_policy_decisions_total{decision=~\"duplicate|rate_limited\"}[$__rate_interval]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "{{decision}}"
+        }
+      ],
+      "description": "Qualifying events that produced no new capture. duplicate is the cooldown working as intended - equivalent traffic inside one window collapses onto a single capture. rate_limited is a policy at its hourly ceiling, which recovers on its own as captures age out; sustained rate_limited means the limit is set below what the traffic produces, and captures are being missed.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 19,
+      "title": "Trigger events",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 16
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (source, result) (rate(trawl_trigger_events_total[$__rate_interval]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "legendFormat": "{{source}} {{result}}"
+        }
+      ],
+      "description": "Records reaching the worker. replayed is the alert query's deliberate overlap being suppressed by identity, and a rising replay rate against a flat accepted rate means the overlap is wider than it needs to be rather than that traffic increased. malformed is evidence Trawl could not store (FR-016).",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 20,
+      "title": "Audit ledger: policy arming and policy-created captures",
+      "type": "logs",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "${logs}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service_name=\"trawl-audit\", cluster=\"$cluster\"} | json | action=~\"capturepolicy.arm|capturepolicy.disarm|capturepolicy.create|capturepolicy.update|capturepolicy.delete|capturejob.policy_create\"",
+          "queryType": "range",
+          "datasource": {
+            "type": "loki",
+            "uid": "${logs}"
+          }
+        }
+      ],
+      "description": "Which policy asked for which capture, and who armed it. initiatedBy names the policy behind an automatic capture; the actor is the worker's own workload identity, because the act was the worker's on the policy's behalf. This is where per-policy attribution lives - it is deliberately not a metric label, since a rule identifier as a label turns one series into as many as an operator can write."
+    },
+    {
+      "id": 21,
+      "title": "Reading a policy's own state",
+      "type": "text",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 32
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [],
+      "description": "Phase, active captures and the last suppressed trigger are per-policy state, and no policy identifier is a metric label. They live on the object, where a policy that is matching and suppressing can be told apart from one that is not matching at all.",
+      "options": {
+        "mode": "markdown",
+        "content": "### Reading a policy's own state\n\nThe print columns carry phase and counts for every policy at once:\n\n```bash\nkubectl -n trawl-system get capturepolicies\n```\n\n`Phase` is `Armed`, `Disarmed`, `Degraded` or `RateLimited`. `Degraded` means\narmed but not working - the tap is gone or the event source is not delivering,\nso the absence of captures says nothing about the traffic.\n\nOne policy in full, including the conditions behind the phase:\n\n```bash\nkubectl -n trawl-system describe capturepolicy POLICY_NAME\n```\n\nThe suppression references, which are what separate a policy that is matching\nand suppressing from one that is not matching at all:\n\n```bash\nkubectl -n trawl-system get capturepolicy POLICY_NAME \\\n  -o jsonpath='{.status.lastTriggerTime}{\"\\t\"}{.status.lastCaptureRef.name}{\"\\n\"}'\n```\n\n`lastTriggerTime` moves on every matching event, including one whose capture was\nsuppressed. `lastCaptureRef` names the capture the event's packets are in - for a\nduplicate, that is the capture it collapsed onto.\n\nArming a policy is a deliberate second act, recorded in the ledger above as\n`capturepolicy.arm`:\n\n```bash\nkubectl -n trawl-system patch capturepolicy POLICY_NAME \\\n  --type=merge -p '{\"spec\":{\"armed\":true}}'\n```\n"
+      }
+    },
+    {
       "id": 3,
       "title": "Time to first packet",
       "type": "timeseries",
@@ -127,7 +362,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 8
+        "y": 40
       },
       "datasource": {
         "type": "prometheus",
@@ -169,7 +404,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 8
+        "y": 40
       },
       "datasource": {
         "type": "prometheus",
@@ -211,7 +446,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 16
+        "y": 48
       },
       "datasource": {
         "type": "prometheus",
@@ -238,7 +473,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 16
+        "y": 48
       },
       "datasource": {
         "type": "prometheus",
@@ -271,7 +506,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 16
+        "y": 48
       },
       "datasource": {
         "type": "prometheus",
@@ -304,7 +539,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 24
+        "y": 56
       },
       "datasource": {
         "type": "prometheus",
@@ -331,7 +566,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 24
+        "y": 56
       },
       "datasource": {
         "type": "prometheus",
@@ -373,7 +608,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 32
+        "y": 64
       },
       "datasource": {
         "type": "prometheus",
@@ -406,7 +641,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 32
+        "y": 64
       },
       "datasource": {
         "type": "prometheus",
@@ -434,7 +669,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 40
+        "y": 72
       },
       "datasource": {
         "type": "loki",
@@ -461,7 +696,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 48
+        "y": 80
       },
       "datasource": {
         "type": "prometheus",

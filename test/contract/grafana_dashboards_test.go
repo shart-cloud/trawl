@@ -406,3 +406,52 @@ func TestLogQLTemplatesAndDashboardsAgree(t *testing.T) {
 		}
 	}
 }
+
+func TestCaptureManagementSurfacesPolicySuppressionAndSourceHealth(t *testing.T) {
+	// A policy that is suppressing and a policy that is not matching produce the
+	// same number of captures: none. So do a policy whose source has stopped
+	// delivering and a quiet network. Each pair is only separable if the panel
+	// that separates it is on the dashboard, and each is the kind of panel that
+	// gets dropped in a layout tidy-up without anyone noticing what went with it.
+	d := loadDashboards(t)["capture-management.json"]
+	joined := strings.Join(allExprs(d), " ")
+
+	for metric, why := range map[string]string{
+		"trawl_policy_decisions_total":   "what the armed policies decided",
+		"trawl_trigger_source_connected": "whether the event sources are delivering at all",
+		"trawl_trigger_gap_total":        "coverage the worker knows it lost",
+		"trawl_trigger_lag_seconds":      "whether the worker is falling behind",
+		"trawl_trigger_events_total":     "records reaching the worker, including the ones it could not store",
+	} {
+		if !strings.Contains(joined, metric) {
+			t.Errorf("capture management does not surface %s: %s", metric, why)
+		}
+	}
+
+	// Suppression specifically, not just the decision counter in aggregate. A
+	// duplicate is the cooldown working; a sustained rate_limited is captures
+	// being missed, and they must not read as one number.
+	if !strings.Contains(joined, "rate_limited") || !strings.Contains(joined, "duplicate") {
+		t.Error("capture management does not separate the two ways a trigger is suppressed")
+	}
+}
+
+func TestCaptureManagementExplainsWherePerPolicyStateLives(t *testing.T) {
+	// No policy or rule identifier is a metric label (contracts/telemetry.md),
+	// so phase, active captures and the last suppressed trigger are not on any
+	// panel above - they are on the object. A dashboard that simply omitted them
+	// would leave an operator concluding Trawl does not report them.
+	d := loadDashboards(t)["capture-management.json"]
+
+	var content strings.Builder
+	for _, p := range d.Panels {
+		if p.Type == "text" {
+			content.WriteString(p.Options.Content)
+		}
+	}
+	for _, want := range []string{"get capturepolicies", "lastTriggerTime", "lastCaptureRef", "capturepolicy.arm"} {
+		if !strings.Contains(content.String(), want) {
+			t.Errorf("capture management does not tell an operator how to read %q", want)
+		}
+	}
+}
