@@ -1064,8 +1064,8 @@ operations, supply chain, and the complete quickstart before release.
 - [x] T120 [P] Add audit completeness and durability tests for every required mutation, policy decision, transition, download decision, retention change, and expiry action, including intent/outcome pairs, idempotent retry, conflicting keys, MinIO/Loki outages, cursor overlap, duplicate-copy collapse, replay, bounded ledger retention, and fail-closed user actions in `test/integration/audit_test.go`
 - [x] T121 [P] Add static security tests that reject off-namespace Trawl resources, wildcard RBAC, unexpected host namespaces/capabilities, service-account token leakage, floating tags, hostPath, public buckets, browser download links, and secret-bearing telemetry in `test/contract/security_manifests_test.go`
 - [x] T122 [P] Add stored `v1alpha1` fixture round-trip, additive-defaulting, older-controller rollback, CRD storage-version, and uninstall-preservation tests in `test/integration/upgrade_rollback_test.go`
-- [ ] T123 [P] Document tap/analyzer health, packet loss/duplication, malformed records, trigger gaps, audit-ledger/replay backlog, storage/retention failure, and restart recovery procedures in `docs/src/content/docs/operations/runbook.md`
-- [ ] T124 [P] Document privileges, RBAC roles, BPF/filter trust boundary, evidence classification, local download handling, audit review, and purge approval in `docs/src/content/docs/security/evidence-handling.md`
+- [x] T123 [P] Document tap/analyzer health, packet loss/duplication, malformed records, trigger gaps, audit-ledger/replay backlog, storage/retention failure, and restart recovery procedures in `docs/src/content/docs/operations/runbook.md`
+- [x] T124 [P] Document privileges, RBAC roles, BPF/filter trust boundary, evidence classification, local download handling, audit review, and purge approval in `docs/src/content/docs/security/evidence-handling.md`
 - [ ] T125 Run analyzer, controller, trigger, Loki, Hubble, MinIO, audit sink/replay, gateway, and retention failure injection while asserting durable audit or fail-closed user actions and passive unaffected monitoring in `test/e2e/failure_isolation_test.go`
 - [ ] T126 Run the 100 Mb/s 60-minute reference test plus at least 20 timed valid tap create/update trials and enforce first-observation <=15m, 95% reconciliation <=2m, packet-loss, ingestion-latency, capture-start/store, bound-overshoot, and trigger-count thresholds in `test/e2e/reference_load_test.go`
 - [ ] T127 Run exact deadline-denial and accelerated 24-hour deletion validation with upload protection and preserved metadata in `test/e2e/retention_test.go`
@@ -1151,6 +1151,26 @@ operations, supply chain, and the complete quickstart before release.
   nothing saying whether it happened. For a system whose output is evidence,
   "authorized and then silence" cannot be told apart from "authorized and then
   failed".
+
+- **T123 and T124 fill the two sidebar sections that were already configured
+  and empty.** `astro.config.mjs` autogenerates Operations and Security from
+  directories that did not exist, so the docs site had been shipping with two
+  dead nav entries.
+- **Both documents cite the system rather than describing it in general terms.**
+  The runbook is written around the metric names, condition types and phases the
+  code actually emits, and the roles table in the evidence document is read off
+  the rendered `ClusterRole` verbs. Both also record the known blind spots found
+  in this and earlier sessions rather than omitting them: the `entry too far
+  behind` gaps in the Loki copy, the `failed` policy decision that logs nothing,
+  the thresholded policy that cannot say it is counting, the retention clamp
+  asymmetry that shows as permanent GitOps drift, and the label mistake that
+  once made a populated Loki look empty. A runbook that pretends the blind spots
+  are not there costs more than one that names them.
+- **The evidence document ends with where the controls stop.** A downloaded file
+  is outside all of them, a namespace administrator bypasses the role model
+  entirely by reading the bucket credentials, Trawl classifies no content, and
+  retention bounds the artifact but not the analysis derived from it. A control
+  someone believes in and does not have is worse than one they know they lack.
 
 **Checkpoint**: All required checks pass, no critical security finding or
 unresolved source gap is hidden, and the release has reproducible evidence for the
