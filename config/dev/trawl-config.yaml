@@ -151,8 +151,14 @@ data:
 
     capture:
       # Only this service account (in systemNamespace) may create Policy-typed
-      # CaptureJobs. It must match config/manager/event-worker.yaml.
-      eventWorkerServiceAccount: event-worker
+      # CaptureJobs. It must match the name the worker is *deployed* under, not
+      # the one config/manager/event-worker.yaml is written with: config/default
+      # carries `namePrefix: trawl-`, so the serviceAccountName written there as
+      # `event-worker` reaches the cluster as `trawl-event-worker`. Naming the
+      # written form made the webhook refuse every automatic capture with
+      # "requestType Policy may only be set by the event worker", while the
+      # request really was the event worker's.
+      eventWorkerServiceAccount: trawl-event-worker
       # Subjects allowed to change a CaptureJob's retention after creation.
       retentionAdminGroups:
         - trawl:retention-admins

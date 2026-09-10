@@ -285,3 +285,101 @@ func TestDevConfigEventWorkerPathsAreMounted(t *testing.T) {
 		}
 	}
 }
+
+// Defect, found by deploying US4: every automatic capture was refused by
+// admission with "requestType Policy may only be set by the event worker",
+// while the request really was coming from the event worker.
+//
+// capture.eventWorkerServiceAccount is the identity the CaptureJob webhook
+// compares the requester against, and the reference configuration named
+// "event-worker" - which is what config/manager/event-worker.yaml says. But
+// that manifest is never applied as written: config/default carries
+// `namePrefix: trawl-`, so what reaches the cluster runs as
+// "trawl-event-worker". The configuration and the manifest agreed with each
+// other and both disagreed with the installation, so nothing before a real
+// deploy could see it. Every sibling check in this file reads the same
+// pre-kustomize manifests and would have missed it for the same reason.
+//
+// This compares the configured identity against the *transformed* name rather
+// than the written one. It models kustomize's prefix rather than invoking it,
+// which is the narrow bet that the prefix is the transform that renames this
+// object; a future overlay that renamed it some other way would need this
+// test taught about it, and would announce itself by failing here rather than
+// in a cluster.
+func TestDevConfigNamesTheEventWorkerIdentityTheOverlayDeploys(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "config", "dev", "trawl-config.yaml"))
+	if err != nil {
+		t.Skipf("dev configuration absent: %v", err)
+	}
+	var cm struct {
+		Data map[string]string `json:"data"`
+	}
+	if err := yaml.Unmarshal(raw, &cm); err != nil {
+		t.Fatalf("the dev ConfigMap is not valid YAML: %v", err)
+	}
+	cfg, err := Load([]byte(cm.Data["config.yaml"]))
+	if err != nil {
+		t.Fatalf("the dev configuration does not load: %v", err)
+	}
+
+	prefix := overlayNamePrefix(t)
+	written := workerServiceAccount(t)
+	deployed := prefix + written
+
+	if cfg.Capture.EventWorkerServiceAccount != deployed {
+		t.Errorf("capture.eventWorkerServiceAccount is %q, but config/default deploys the worker as %q "+
+			"(namePrefix %q applied to serviceAccountName %q). The CaptureJob webhook compares the "+
+			"requester against the configured name, so every policy-created capture is refused.",
+			cfg.Capture.EventWorkerServiceAccount, deployed, prefix, written)
+	}
+}
+
+// overlayNamePrefix reads the prefix config/default applies to every object.
+func overlayNamePrefix(t *testing.T) string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "..", "config", "default", "kustomization.yaml"))
+	if err != nil {
+		t.Skipf("the default overlay is absent: %v", err)
+	}
+	var k struct {
+		NamePrefix string `json:"namePrefix"`
+	}
+	if err := yaml.Unmarshal(raw, &k); err != nil {
+		t.Fatalf("config/default/kustomization.yaml is not valid YAML: %v", err)
+	}
+	return k.NamePrefix
+}
+
+// workerServiceAccount reads the serviceAccountName the worker Deployment
+// asks for, before the overlay renames it.
+func workerServiceAccount(t *testing.T) string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "..", "config", "manager", "event-worker.yaml"))
+	if err != nil {
+		t.Skipf("the event worker manifest is absent: %v", err)
+	}
+	type manifest struct {
+		Kind string `json:"kind"`
+		Spec struct {
+			Template struct {
+				Spec struct {
+					ServiceAccountName string `json:"serviceAccountName"`
+				} `json:"spec"`
+			} `json:"template"`
+		} `json:"spec"`
+	}
+	for doc := range strings.SplitSeq(string(raw), "\n---") {
+		if strings.TrimSpace(doc) == "" {
+			continue
+		}
+		var m manifest
+		if err := yaml.Unmarshal([]byte(doc), &m); err != nil {
+			t.Fatalf("the event worker manifest is not valid YAML: %v", err)
+		}
+		if m.Kind == "Deployment" && m.Spec.Template.Spec.ServiceAccountName != "" {
+			return m.Spec.Template.Spec.ServiceAccountName
+		}
+	}
+	t.Fatal("the event worker manifest declares no serviceAccountName, so it would run as default")
+	return ""
+}
