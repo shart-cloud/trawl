@@ -1070,7 +1070,7 @@ operations, supply chain, and the complete quickstart before release.
 - [ ] T126 Run the 100 Mb/s 60-minute reference test plus at least 20 timed valid tap create/update trials and enforce first-observation <=15m, 95% reconciliation <=2m, packet-loss, ingestion-latency, capture-start/store, bound-overshoot, and trigger-count thresholds in `test/e2e/reference_load_test.go`
 - [ ] T127 Run exact deadline-denial and accelerated 24-hour deletion validation with upload protection and preserved metadata in `test/e2e/retention_test.go`
 - [ ] T128 Generate SBOMs, provenance, vulnerability results, upstream source verification, rule/script hashes, and immutable image digests in `dist/supply-chain/manifest.json`
-- [ ] T129 Configure release-blocking Go, container, manifest, dependency, and secret scanning with reviewed suppressions and expiry dates in `.github/workflows/security.yml` and `security/suppressions.yaml`
+- [x] T129 Configure release-blocking Go, container, manifest, dependency, and secret scanning with reviewed suppressions and expiry dates in `.github/workflows/security.yml` and `security/suppressions.yaml`
 - [ ] T130 Regenerate CRDs, RBAC, webhooks, install bundle, examples, observation schema embedding, and dashboards and prove a clean drift check in `dist/install.yaml` and `test/contract/generated_artifacts_test.go`
 - [ ] T131 Execute every command and expected outcome plus the defined 20-attempt exact-correlation timing protocol in `specs/001-cloud-native-nsm/quickstart.md` on the representative cluster and save only sanitized durations/counts in `test/e2e/results/quickstart.md`
 - [ ] T132 Complete the constitutional, security, operational, and measurable-outcome release checklist with links to passing evidence in `docs/release/readiness.md`
@@ -1171,6 +1171,26 @@ operations, supply chain, and the complete quickstart before release.
   entirely by reading the bucket credentials, Trawl classifies no content, and
   retention bounds the artifact but not the analysis derived from it. A control
   someone believes in and does not have is worse than one they know they lack.
+
+- **T129 found that `govulncheck` had never run.** It was pinned in
+  `hack/tools.mk`, installed by `hack/verify-tools.sh`, and asserted to be the
+  right version by `make verify` - and nothing ever invoked it. A pinned scanner
+  nobody runs is a supply-chain control on paper only. It now runs in CI and in
+  a new `make security` target, and reports zero reachable vulnerabilities (one
+  in an imported package and three in required modules, none of them called).
+- **One suppression list, and its dates are enforced.** `security/suppressions.yaml`
+  is the only place a finding may be accepted, and `hack/verify-suppressions.sh`
+  fails the build on an entry that is past its `expires` date, missing a field,
+  naming a scanner the project does not run, or carrying a reason too short to
+  re-review. Trivy's ignore file is *generated* from it rather than maintained
+  beside it, so a container suppression cannot outlive its review by living
+  somewhere the checker never reads; `security/.trivyignore` is gitignored for
+  the same reason.
+- **Caveat: "release-blocking" needs a repository setting this commit cannot
+  make.** The workflow is written to fail rather than warn, but a required check
+  is required only when branch protection says so. Someone with admin on the
+  repository has to add the Security jobs to the protected-branch rules, or the
+  gate is advisory in practice.
 
 **Checkpoint**: All required checks pass, no critical security finding or
 unresolved source gap is hidden, and the release has reproducible evidence for the

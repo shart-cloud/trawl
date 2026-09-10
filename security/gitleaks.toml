@@ -1,0 +1,55 @@
+# security/gitleaks.toml — secret scanning configuration (T129).
+#
+# The default rules do the work. This file exists for the allowlist, and the
+# allowlist exists so the scan stays worth reading: a scanner that reports the
+# same handful of test fixtures on every run is a scanner people learn to skim,
+# and the one real finding goes past with them.
+#
+# Every entry here is narrow on purpose. Allowlisting a path is a decision that
+# no credential in that path will ever be real, so the paths listed are ones
+# where a real credential would be a bug on its own terms — test harnesses that
+# generate ephemeral values, and the sanitizer whose whole job is to hold
+# examples of what must never be stored.
+#
+# A credential that is genuinely committed by accident is not an allowlist
+# entry. Rotate it, then remove it. Rewriting history does not un-leak it, which
+# is why the workflow scans the whole history rather than the tip: a secret
+# removed in a later commit is still readable in the one that added it.
+
+title = "Trawl"
+
+[extend]
+useDefault = true
+
+[[rules]]
+  id = "trawl-artifact-bucket-credential"
+  description = "Artifact or audit bucket credential committed to the repository"
+  # Trawl's own credential shape, which the generic rules do not know about.
+  # These are read from a mounted Secret at runtime and must never appear in
+  # the tree — a bucket credential in git is read access to every capture the
+  # installation has ever collected.
+  regex = '''(?i)(secretAccessKey|accessKeyID)\s*[:=]\s*["']?[A-Za-z0-9/+=]{16,}["']?'''
+  tags = ["trawl", "storage"]
+  [rules.allowlist]
+    regexTarget = "match"
+    # The literal placeholders used in manifests and documentation.
+    regexes = [
+      '''(?i)(REPLACE_ME|CHANGEME|EXAMPLE|PLACEHOLDER|<[a-z-]+>)''',
+    ]
+
+[allowlist]
+  description = "Test harnesses and sanitizer fixtures"
+  paths = [
+    # Brings up a throwaway MinIO and writes its credential to a temp dir. The
+    # value is generated per run; a real one here would be the bug.
+    '''test/integration/harness/harness\.go''',
+    # Builds presigned URLs from synthetic keys to assert that the signature
+    # material never reaches a stored record.
+    '''internal/storage/presign_test\.go''',
+    # The sanitizer and its tests hold examples of exactly the strings that
+    # must never be persisted. They are there to be redacted, not used.
+    '''internal/sanitize/sanitize\.go''',
+    '''internal/sanitize/sanitize_test\.go''',
+    # Ephemeral certificates minted by the test suite at run time.
+    '''test/e2e/certs/.*''',
+  ]

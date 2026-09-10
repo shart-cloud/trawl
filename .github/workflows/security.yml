@@ -1,0 +1,175 @@
+name: Security
+
+# Release-blocking scanning (T129).
+#
+# Every job here is required rather than advisory. A scan whose failure nobody
+# has to act on trains people to ignore its colour, and this project's whole
+# argument is that a silent failure is the expensive kind.
+#
+# The suppression list is what makes "required" survivable: a finding that
+# cannot be fixed today is recorded in security/suppressions.yaml with a reason,
+# a reviewer and a date it stops being accepted. The expiry is enforced, so a
+# suppression cannot quietly become permanent.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  # Vulnerability databases change without the code changing, so a build that
+  # passed last week can be genuinely unsafe today. This is the only way that
+  # gets noticed before a release rather than during one.
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+env:
+  GOTOOLCHAIN: auto
+
+jobs:
+  suppressions:
+    name: Suppression review
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      # First, so an expired suppression is reported even when a scanner below
+      # is failing for its own reasons. It is also the cheapest job here, and
+      # the one whose failure has a deadline somebody already agreed to.
+      - name: Verify no suppression has expired
+        run: hack/verify-suppressions.sh
+
+  govulncheck:
+    name: Go vulnerabilities
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+
+      # The pinned version from hack/tools.mk, installed the same way every
+      # other tool is. govulncheck was pinned and version-verified in this
+      # repository for months without anything ever running it.
+      - name: Install pinned tools
+        run: hack/verify-tools.sh --install
+
+      # Symbol-level: it reports only vulnerabilities in code paths the build
+      # actually reaches, so a finding here is a call this binary can make
+      # rather than a package it happens to link.
+      - name: Scan
+        run: bin/govulncheck ./...
+
+  images:
+    name: Container images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        binary: [controller-manager, sensor-agent, event-worker, capture-reporter, artifact-gateway]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      # Built here rather than pulled by tag: the tag on a registry can be
+      # repointed after the review that approved it, and scanning something
+      # other than what this commit produces answers a question nobody asked.
+      - name: Build the image for this commit
+        run: |
+          set -euo pipefail
+          docker build \
+            --build-arg BINARY=${{ matrix.binary }} \
+            --build-arg VERSION=v0.0.0-scan \
+            --build-arg COMMIT="$(git rev-parse --short HEAD)" \
+            -t "trawl-scan/${{ matrix.binary }}:scan" .
+
+      # Derived from security/suppressions.yaml rather than maintained beside
+      # it, so a Trivy suppression is covered by the same expiry enforcement as
+      # every other kind and cannot outlive its review by living somewhere the
+      # checker never reads.
+      - name: Render the ignore list from the reviewed suppressions
+        run: hack/verify-suppressions.sh --emit-trivyignore > security/.trivyignore
+
+      - name: Scan
+        uses: aquasecurity/trivy-action@dc5a429b52fcf669ce959baa2c2dd26090d2a6c4 # v0.32.0
+        with:
+          image-ref: trawl-scan/${{ matrix.binary }}:scan
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+          trivyignores: security/.trivyignore
+
+  manifests:
+    name: Manifest privilege
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+
+      # Two layers on purpose. The shell script greps the source manifests;
+      # the contract tests render config/default and assert properties that
+      # only exist after kustomization - which is where an event worker once
+      # shipped naming a service account that does not exist.
+      - name: Static privilege checks
+        run: make manifest-security
+
+      - name: Rendered-manifest security contract
+        run: |
+          make kustomize
+          go test ./test/contract/ -run 'Security|Manifest|Webhook|ServiceAccount|Capability|Bucket'
+
+  dependencies:
+    name: Dependency review
+    runs-on: ubuntu-latest
+    # Only meaningful on a pull request: it compares the base and head
+    # manifests, and there is no base to compare against on a push.
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/dependency-review-action@bc41886e18ea39df68b1b1245f4184881938e050 # v4.5.0
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: never
+
+  secrets:
+    name: Secret scanning
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          # Whole history: a credential removed in a later commit is still
+          # readable in the one that added it, and is still a credential that
+          # needs rotating. Scanning only the tip finds nothing and says so
+          # confidently.
+          fetch-depth: 0
+
+      - uses: gitleaks/gitleaks-action@83373cf2f8c4db6e24b41c1a9b086bb9619e9cd3 # v2.3.7
+        env:
+          GITLEAKS_CONFIG: security/gitleaks.toml

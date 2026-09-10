@@ -126,6 +126,15 @@ docker-build-content-init: ## Build the analyzer content-init image.
 manifest-security: ## Fail on manifests that grant more than Trawl needs.
 	hack/verify-manifests.sh
 
+.PHONY: security
+security: manifest-security ## Run the release-blocking security checks that do not need a container runtime.
+# govulncheck was pinned in hack/tools.mk and version-verified for months
+# without anything ever running it. A pinned scanner nobody invokes is a
+# supply-chain control on paper only.
+	hack/verify-suppressions.sh
+	hack/verify-tools.sh --install
+	"$(LOCALBIN)/govulncheck" ./...
+
 .PHONY: docker-build-all
 docker-build-all: ## Build every Trawl binary image from the shared Dockerfile.
 	@for binary in $$(ls cmd); do \
