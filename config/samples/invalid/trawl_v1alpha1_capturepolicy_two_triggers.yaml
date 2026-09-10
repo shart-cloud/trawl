@@ -1,0 +1,34 @@
+# REJECTED: the trigger union carries a body its type does not name.
+#
+# The schema's CEL rules close the union in both directions. Without the
+# presence rule a policy can name a type and supply nothing, which arms an
+# object that can never match. Without the exclusivity rule - which is what this
+# sample violates - it can carry a second body that is silently ignored, so an
+# operator who edits the wrong one sees no error and no change in behaviour.
+#
+# Refused by the API server itself, not only by the webhook, so it holds even
+# when admission is unavailable.
+apiVersion: trawl.cloud/v1alpha1
+kind: CapturePolicy
+metadata:
+  name: two-minds
+  namespace: trawl-system
+spec:
+  tapRef:
+    name: node-eno1
+  armed: true
+  trigger:
+    type: SuricataAlert
+    suricataAlert:
+      severities: [1]
+    # Ignored at evaluation time, and therefore refused at admission time.
+    hubbleDrop:
+      reasons:
+        - POLICY_DENIED
+  capture:
+    duration: 30s
+    maxSize: 64Mi
+  retention: 7d
+  rateLimit:
+    maxCapturesPerHour: 10
+    cooldown: 5m

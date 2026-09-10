@@ -1,0 +1,46 @@
+# A denied-flow policy, left disarmed for review.
+#
+# armed is omitted, which means false. This is the state a new policy should be
+# read in: the trigger is declared, the bounds are declared, and nothing is
+# collecting yet. `kubectl patch capturepolicy denied-egress-burst --type=merge
+# -p '{"spec":{"armed":true}}'` is the act that starts collection, and the
+# ledger records it as capturepolicy.arm rather than as an ordinary update.
+#
+# A disarmed policy is still evaluated. Its status counts what it would have
+# captured, which is what tells an operator whether the threshold below is set
+# anywhere near the traffic before they arm it.
+apiVersion: trawl.cloud/v1alpha1
+kind: CapturePolicy
+metadata:
+  name: denied-egress-burst
+  namespace: trawl-system
+spec:
+  tapRef:
+    name: node-eno1
+  trigger:
+    type: HubbleDrop
+    hubbleDrop:
+      reasons:
+        - POLICY_DENIED
+      # Narrowed to one namespace. Without this the policy matches every denied
+      # flow in the cluster, which on a busy cluster is a capture storm rather
+      # than a policy.
+      sourceNamespaces:
+        - payments
+      # A rate, not an event. One denial is a network policy doing its job;
+      # twenty in a minute from one namespace is worth the packets. The window
+      # is counted on the time this worker saw each flow, not the time the
+      # producer stamped it, so an unsynchronized producer cannot distort it.
+      threshold:
+        count: 20
+        window: 1m
+  capture:
+    duration: 60s
+    maxSize: 128Mi
+    # No filterTemplate: a threshold fires on an aggregate rather than on one
+    # conversation, so there is no single five-tuple to narrow to. The duration
+    # and size bounds are what keep this proportionate.
+  retention: 7d
+  rateLimit:
+    maxCapturesPerHour: 5
+    cooldown: 10m

@@ -27,3 +27,4 @@ resources:
 # The roles an analyst, a viewer or a retention admin is bound to. Nothing here
 # grants anything until an administrator creates a binding.
 - capturejob-roles.yaml
+- capturepolicy-roles.yaml

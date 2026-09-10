@@ -1,0 +1,56 @@
+# The roles a human or a service account is bound to in order to work with
+# capture policies.
+#
+# ClusterRoles so an administrator can bind them in whichever namespaces a team
+# is responsible for; nothing here grants anything until a binding exists. The
+# namespace boundary is enforced separately and unconditionally - a policy
+# outside the installation's system namespace is refused by admission whoever
+# writes it (FR-001).
+#
+# What RBAC cannot express here is the distinction that matters most. Arming is
+# a field on the spec, so anyone who may update a policy may arm it; there is no
+# verb for "may edit but may not switch on". Two other things carry that weight
+# instead: the policy defaults to disarmed, so arming is always a deliberate
+# second act, and the audit ledger records it as capturepolicy.arm rather than
+# as an ordinary update. RBAC says who may ask; the ledger says who armed it and
+# when.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: capture-policy-admin
+  labels:
+    app.kubernetes.io/name: trawl
+rules:
+  # Create, view, update, arm, disarm and delete (FR-026).
+  - apiGroups: ["trawl.cloud"]
+    resources: ["capturepolicies"]
+    verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
+  # Seeing which taps exist, so a policy can name a real one.
+  - apiGroups: ["trawl.cloud"]
+    resources: ["networktaps"]
+    verbs: ["get", "list", "watch"]
+  # Reading what the policies have collected. Deliberately not
+  # capturejobs/download: authoring a rule that collects packets is a different
+  # act from reading the packets it collected, and someone who writes policy is
+  # not automatically entitled to the traffic. Bind capture-analyst as well
+  # where they should be.
+  - apiGroups: ["trawl.cloud"]
+    resources: ["capturejobs"]
+    verbs: ["get", "list", "watch"]
+---
+# Read policies without being able to change what is collected.
+#
+# The counterpart of capture-viewer: it answers "what is this cluster armed to
+# capture, and what has it been doing" for someone who must not be able to
+# change the answer. status carries the decision counters, so this is enough to
+# audit a policy's behaviour without any write access at all.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: capture-policy-viewer
+  labels:
+    app.kubernetes.io/name: trawl
+rules:
+  - apiGroups: ["trawl.cloud"]
+    resources: ["capturepolicies", "networktaps", "capturejobs"]
+    verbs: ["get", "list", "watch"]

@@ -702,7 +702,7 @@ and unaffected parallel policy evaluation.
 - [x] T114 [US4] Implement CapturePolicy status/condition reconciliation, monotonic decision counters, last execution/suppression references, source health, and retry isolation in `internal/policy/status.go`
 - [x] T115 [US4] Wire Loki alert polling, Hubble drop evaluation, policy cache watches, mTLS audit client, leader election, persistent cursors, metrics, and graceful handoff into `cmd/event-worker/main.go`
 - [x] T116 [US4] Grant the event worker only read/watch NetworkTap/CapturePolicy/CaptureJob, create CaptureJob, patch CapturePolicy status, cursor ConfigMap permissions, and egress to the audit sink in `config/rbac/event-worker-role.yaml` and update `config/manager/event-worker.yaml`
-- [ ] T117 [US4] Generate and review the CapturePolicy CRD/cluster-wide namespace-rejecting webhook/namespaced RBAC plus armed/disarmed Suricata and Hubble samples with no deferred trigger types in `config/crd/bases/trawl.cloud_capturepolicies.yaml` and `config/samples/`
+- [x] T117 [US4] Generate and review the CapturePolicy CRD/cluster-wide namespace-rejecting webhook/namespaced RBAC plus armed/disarmed Suricata and Hubble samples with no deferred trigger types in `config/crd/bases/trawl.cloud_capturepolicies.yaml` and `config/samples/`
 - [ ] T118 [US4] Add policy phase, decision counters, source gaps, active captures, cooldown/rate state, and suppression references to `config/grafana/dashboards/capture-management.json`
 - [ ] T119 [US4] Make unit, integration, restart, and end-to-end automatic trigger matrices pass and record sanitized count evidence in `test/e2e/automatic_capture_test.go` and `test/e2e/results/automatic-capture.md`
 
@@ -837,6 +837,32 @@ and unaffected parallel policy evaluation.
   recomputes the widest armed threshold window on each status tick while the
   stream goroutine reads it on every reconnect; the exported field was a real
   data race.
+- T117 is review-and-add rather than generate: the CRD was generated and wired
+  into `config/crd/kustomization.yaml` with T104/T105. The review confirmed
+  `scope: Namespaced`, the trigger enum closed to `SuricataAlert` and
+  `HubbleDrop` with no deferred types, and both webhook configurations carrying
+  no `namespaceSelector` or `objectSelector` - which is what makes them
+  cluster-wide, so a policy written in any namespace reaches the gate that
+  rejects it (FR-001).
+- T117 added `config/rbac/capturepolicy-roles.yaml`. **RBAC cannot separate
+  arming from editing**: armed is a field on the spec, so anyone who may update
+  a policy may arm it. Two other things carry that weight - the field defaults
+  to false so arming is always a deliberate second act, and the ledger records
+  it as `capturepolicy.arm` rather than as an ordinary update. `capture-policy-admin`
+  deliberately does not grant `capturejobs/download`: authoring a rule that
+  collects packets is a different act from reading them.
+- **Nothing validated `config/samples` before T117.** A sample that does not
+  apply is the first thing an operator copies. `test/integration/samples_test.go`
+  now applies every sample to a real API server and additionally runs the
+  CapturePolicy ones through `admission.ValidateCapturePolicySpec`, because the
+  filter template's placeholders are a webhook contract no schema rule can
+  express - a sample naming an undocumented placeholder applies cleanly in
+  envtest and is refused by the first real cluster. Mutation-checked: changing
+  the sample to `{{src.ip}}` fails the webhook test and passes the apply test.
+  `config/samples/invalid` is deliberately not swept, because half of it is
+  webhook-rejected rather than schema-rejected and a blanket assertion would
+  pass for the wrong reason; the one sample the schema itself refuses is
+  asserted by name.
 - **Test provenance for Group E.** The engine, status and worker tests were
   written before their implementations and each was mutation-checked. One did
   not discriminate: `TestARecordTheOverlapRedeliversIsNotEvaluatedTwice` passed
