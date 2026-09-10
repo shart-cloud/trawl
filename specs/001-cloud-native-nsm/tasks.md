@@ -1061,7 +1061,7 @@ same bounded, authorized execution path proven by US3.
 **Purpose**: Verify security, failure isolation, compatibility, performance,
 operations, supply chain, and the complete quickstart before release.
 
-- [ ] T120 [P] Add audit completeness and durability tests for every required mutation, policy decision, transition, download decision, retention change, and expiry action, including intent/outcome pairs, idempotent retry, conflicting keys, MinIO/Loki outages, cursor overlap, duplicate-copy collapse, replay, bounded ledger retention, and fail-closed user actions in `test/integration/audit_test.go`
+- [x] T120 [P] Add audit completeness and durability tests for every required mutation, policy decision, transition, download decision, retention change, and expiry action, including intent/outcome pairs, idempotent retry, conflicting keys, MinIO/Loki outages, cursor overlap, duplicate-copy collapse, replay, bounded ledger retention, and fail-closed user actions in `test/integration/audit_test.go`
 - [x] T121 [P] Add static security tests that reject off-namespace Trawl resources, wildcard RBAC, unexpected host namespaces/capabilities, service-account token leakage, floating tags, hostPath, public buckets, browser download links, and secret-bearing telemetry in `test/contract/security_manifests_test.go`
 - [x] T122 [P] Add stored `v1alpha1` fixture round-trip, additive-defaulting, older-controller rollback, CRD storage-version, and uninstall-preservation tests in `test/integration/upgrade_rollback_test.go`
 - [ ] T123 [P] Document tap/analyzer health, packet loss/duplication, malformed records, trigger gaps, audit-ledger/replay backlog, storage/retention failure, and restart recovery procedures in `docs/src/content/docs/operations/runbook.md`
@@ -1130,6 +1130,27 @@ operations, supply chain, and the complete quickstart before release.
   mutation proves nothing about the test; and `Armed bool json:"armed,omitempty"`
   means a typed client cannot send `armed: false` as an explicit value, so a
   disarm relies on the CRD default rather than on the field being written.
+
+- **T120 adds completeness, not mechanics.** Conditional write, verification,
+  idempotent retry, conflicting content for one key, fail-closed on an
+  unavailable ledger, write-once retention, replay, cursor overlap and backlog
+  were all covered already, in `internal/audit`'s unit tests and in
+  `audit_ledger_test.go`. Every one of those starts from a record the test
+  constructed, so all of them would keep passing if a mutating path stopped
+  committing - or never committed - one. The two new questions are whether
+  every declared action is written by some production path, and whether a
+  fallible action leaves both of its records. Both were mutation-checked:
+  removing the last two emitters of `retention.change` fails the first, and
+  dropping `decision` from `StableKeyForAdmission` fails the second on every
+  fallible action at once.
+- **Why the intent/outcome check matters more than it looks.** Decision is part
+  of the admission stable key, and that is the only thing keeping the two
+  records of one request apart. Drop it and the outcome is written to the key
+  the intent already holds, where the ledger refuses it as a content conflict -
+  so the operation completes with the ledger saying it was authorized and
+  nothing saying whether it happened. For a system whose output is evidence,
+  "authorized and then silence" cannot be told apart from "authorized and then
+  failed".
 
 **Checkpoint**: All required checks pass, no critical security finding or
 unresolved source gap is hidden, and the release has reproducible evidence for the
