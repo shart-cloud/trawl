@@ -897,6 +897,56 @@ and unaffected parallel policy evaluation.
   state - a skip describes the installation rather than the software, and a red
   build on a cluster running last month's image teaches people to ignore the
   colour.
+### What deploying US4 found (T119)
+
+The first task in this project that could not be finished from a laptop, and it
+paid for itself in the first ten minutes.
+
+- **The rollout is not a gitops PR.** Earlier handoffs said T119 needed a PR
+  against `talos-gitops` pinning new digests. Trawl is not Flux-managed:
+  `talos-gitops` carries no trawl path on any branch, Flux has no Kustomization
+  for it, and every object in `trawl-system` carries kubectl's
+  `last-applied-configuration`. The rollout is
+  `kustomize build config/default | kubectl apply -f -` from this repo.
+- **`config/default` already carried everything US4 adds.** The CapturePolicy
+  CRD, the worker's Role and RoleBinding, the `event-worker-audit-client`
+  Certificate and the worker NetworkPolicy all render from the default overlay
+  with no rewiring. The worry that they might not was unfounded.
+- **Two files the rollout does not carry.** `config/dev/trawl-config.yaml` and
+  `config/hubble/` are applied out of band - the ConfigMap because it is a
+  worked example rather than an installation, the Hubble certificate because
+  `namePrefix` would double-prefix it. Both are load-bearing. The new binaries
+  require `eventWorker.auditClient.*`, which the deployed ConfigMap did not
+  have, so both pods crash-looped on `invalid installation configuration` until
+  the ConfigMap was applied separately. A fresh install has the same hole and
+  nothing announces it.
+- **`capture.eventWorkerServiceAccount` named an identity that does not
+  exist.** See the commit; the short version is that `namePrefix: trawl-`
+  renames the worker to `trawl-event-worker` while the configuration named the
+  pre-prefix `event-worker`, so the CaptureJob webhook refused every automatic
+  capture as coming from someone other than the event worker. Every existing
+  check in `devconfig_check_test.go` pairs the configuration against the same
+  pre-kustomize manifests and so could not have caught it. The new check
+  compares against the transformed name.
+
+#### Known issue recorded and deliberately not fixed
+
+- **A thresholded drop policy cannot say it is counting.** A qualifying flow
+  held below its threshold is recorded as `OutcomeNotMatched`, which is the
+  same counter every `FORWARDED` flow in the cluster increments against a drop
+  policy. So `decisions.notMatched` is dominated by background traffic, and an
+  operator holding a thresholded policy has no way to tell "accumulating
+  toward five" from "seeing nothing at all" - the two look identical in status
+  and in the metrics derived from it. `TestADropPolicyBelowItsThresholdCapturesNothing`
+  deliberately makes no assertion about it, because any assertion available
+  today would pass with the prober never started.
+
+#### Still outstanding after T119
+
+- `config/alloy/trawl-observations.alloy` changed on this branch and the gitops
+  HelmRelease has still not had `hack/render-alloy-config.sh` run against it.
+  That is a real gitops change, unlike the deployment, and it is not T119's.
+
 ### Code review of the US4 branch
 
 Two passes: one over the branch, one over its own fixes. The second found a

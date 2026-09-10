@@ -53,10 +53,12 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	trawlv1alpha1 "trawl.cloud/trawl/api/v1alpha1"
+	"trawl.cloud/trawl/internal/config"
 	"trawl.cloud/trawl/internal/observation"
 	"trawl.cloud/trawl/internal/policy"
 	"trawl.cloud/trawl/internal/status"
@@ -728,4 +730,333 @@ func TestThePolicyCapturesCarryADeduplicationKeyTheClusterAccepts(t *testing.T) 
 	if !strings.HasPrefix(job.Spec.Trigger.Fingerprint, "sha256:") {
 		t.Errorf("trigger fingerprint = %q, want a sha256 digest", job.Spec.Trigger.Fingerprint)
 	}
+}
+
+// --- Denied flows -----------------------------------------------------------
+
+// dropReasonPolicyDenied is what Cilium reports for a flow a NetworkPolicy
+// refused.
+//
+// Read off this cluster with `hubble observe --verdict DROPPED` rather than
+// taken from the flow API's enum. The field a denied-flow policy matches is
+// the drop reason *description*, which the normalizer copies verbatim from
+// GetDropReasonDesc; the numeric code beside it (133 here) is not what any
+// policy is written against, and a spec asserting the wrong one of the two
+// would fail for a reason that has nothing to do with the policy.
+const dropReasonPolicyDenied = "POLICY_DENIED"
+
+// deniedProbeLifetime bounds how long the prober keeps offering connections.
+//
+// Longer than the trigger timeout on purpose. A prober that stopped while the
+// worker was still catching up would turn a slow cluster into a spec that
+// fails saying "no capture", when what happened is that the traffic stopped.
+const deniedProbeLifetime = 10 * time.Minute
+
+// unreachableThreshold is a drop count this probe cannot reach inside a minute.
+//
+// The prober offers roughly one connection a second, so ten thousand in sixty
+// seconds is two orders of magnitude out of reach - far enough that a spec
+// asserting "did not fire" is describing the threshold and not the timing of
+// the run.
+const unreachableThreshold = 10000
+
+// deniedNamespace creates a scratch namespace whose pods may not talk to
+// anything, and returns its name.
+//
+// This is the part of the matrix that cannot be synthesised. Suricata alerts
+// reach the worker through Loki, so a spec can push one; Hubble drops arrive
+// on a live gRPC stream from Cilium, which has no such door. The only way to
+// give the worker a denied flow is to have the cluster deny one, so these
+// specs cause real denials and read the real verdict.
+//
+// The namespace carries the policy's name so a leaked one from an interrupted
+// run is visibly paired with the policy that was watching it.
+func (a *acceptance) deniedNamespace(t *testing.T, policyName string) string {
+	t.Helper()
+	name := "denied-" + policyName
+
+	ns := &corev1.Namespace{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+			// Baseline rather than restricted: the prober is a stock image
+			// running a shell loop, and hardening it would be hardening the
+			// test fixture rather than anything under test.
+			Labels: map[string]string{
+				"pod-security.kubernetes.io/enforce": "baseline",
+				"pod-security.kubernetes.io/warn":    "baseline",
+			},
+		},
+	}
+	if err := applyObject(ns); err != nil {
+		t.Fatalf("creating the denied-flow namespace %s: %v", name, err)
+	}
+	t.Cleanup(func() {
+		// --wait=false: the spec has its evidence by now, and blocking on
+		// namespace termination would add half a minute to every drop spec.
+		if err := kubectl("delete", "namespace", name, "--ignore-not-found", "--wait=false"); err != nil {
+			t.Logf("deleting the denied-flow namespace %s: %v", name, err)
+		}
+	})
+
+	deny := &networkingv1.NetworkPolicy{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "networking.k8s.io/v1", Kind: "NetworkPolicy"},
+		ObjectMeta: metav1.ObjectMeta{Name: "deny-all-egress", Namespace: name},
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{},
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
+			// No egress rules at all, which is the denial. An empty Egress
+			// slice and an absent one mean the same thing to the API, and both
+			// mean "nothing is permitted".
+			Egress: nil,
+		},
+	}
+	if err := applyObject(deny); err != nil {
+		t.Fatalf("denying egress in %s: %v", name, err)
+	}
+	return name
+}
+
+// startProber runs a pod in ns that offers a connection a second until the
+// spec ends.
+//
+// The destination is a public address that is never reached: the datapath
+// refuses the packet before it leaves the node, which is the whole point. So
+// this depends on no external service, and the flow Hubble reports is a
+// denial rather than a failed connection.
+//
+// Called after the policy reports itself armed. The worker reads flows from a
+// live stream, so a denial that happened before the policy existed is a denial
+// no policy was watching for, and starting the traffic first would make every
+// spec here a race.
+func (a *acceptance) startProber(t *testing.T, ns string) {
+	t.Helper()
+
+	seconds := int(deniedProbeLifetime / time.Second)
+	pod := &corev1.Pod{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"},
+		ObjectMeta: metav1.ObjectMeta{Name: "prober", Namespace: ns},
+		Spec: corev1.PodSpec{
+			RestartPolicy: corev1.RestartPolicyNever,
+			Containers: []corev1.Container{{
+				Name:    "prober",
+				Image:   a.proberImage(t),
+				Command: []string{"/bin/sh"},
+				Args: []string{"-c", fmt.Sprintf(
+					"i=0; while [ $i -lt %d ]; do wget -T 2 -q -O- http://1.1.1.1/ >/dev/null 2>&1; "+
+						"i=$((i+1)); sleep 1; done", seconds)},
+			}},
+		},
+	}
+	if err := applyObject(pod); err != nil {
+		t.Fatalf("starting the prober in %s: %v", ns, err)
+	}
+
+	// Running, not merely created. A pod still pulling its image is offering
+	// no connections, and a spec that started its clock here would be timing
+	// the image pull.
+	deadline := time.Now().Add(2 * time.Minute)
+	for time.Now().Before(deadline) {
+		phase, err := kubectlOut("get", "pod", "prober", "-n", ns, "-o", "jsonpath={.status.phase}")
+		if err == nil && strings.TrimSpace(phase) == string(corev1.PodRunning) {
+			return
+		}
+		time.Sleep(pollInterval)
+	}
+	out, _ := kubectlOut("describe", "pod", "prober", "-n", ns)
+	t.Fatalf("the prober in %s never ran, so no flow was ever denied:\n%s", ns, out)
+}
+
+// proberImage is the installation's own content-init image.
+//
+// Read from the deployed ConfigMap rather than named here. It is the one image
+// in Trawl's set that carries a shell, and taking it from the installation
+// means the prober pulls something this cluster is already known to be able to
+// pull - a spec that named an image of its own would fail on a disconnected
+// cluster while saying nothing about policies.
+func (a *acceptance) proberImage(t *testing.T) string {
+	t.Helper()
+	raw, err := kubectlOut("get", "configmap", "trawl-config", "-n", a.namespace,
+		"-o", "jsonpath={.data.config\\.yaml}")
+	if err != nil {
+		t.Fatalf("reading the installation config: %v: %s", err, raw)
+	}
+	installCfg, err := config.Load([]byte(raw))
+	if err != nil {
+		t.Fatalf("parsing the installation config: %v", err)
+	}
+	if installCfg.Images.ContentInit == "" {
+		t.Skip("the installation pins no content-init image, so there is nothing to run a prober from")
+	}
+	return installCfg.Images.ContentInit
+}
+
+// dropPolicyOptions is a denied-flow policy narrowed to one namespace.
+//
+// MaxCapturesPerHour is 1 and not the signature default's 5. The prober denies
+// a connection a second from a fresh ephemeral port, so every flow is a
+// distinct identity that deduplication will not collapse; a higher ceiling
+// would let one spec schedule several real capture pods on a shared node to
+// prove something the first one already proved.
+func dropPolicyOptions(sourceNamespace string) policyOptions {
+	return policyOptions{
+		armed:        true,
+		dropReasons:  []string{dropReasonPolicyDenied},
+		dropNamespac: []string{sourceNamespace},
+		perHour:      1,
+		cooldown:     5 * time.Minute,
+	}
+}
+
+func TestAnArmedDropPolicyTurnsADeniedFlowIntoACapture(t *testing.T) {
+	// The denied-flow mirror of the signature spec, and the half of US4 that
+	// only a cluster can answer. Nothing here is synthetic: Cilium refuses a
+	// real connection, Hubble reports the refusal on the worker's live stream,
+	// and the policy the worker is holding turns it into packets.
+	//
+	// It also exercises the one path the alert specs cannot reach at all. A
+	// pushed alert arrives through Loki, so those specs prove the worker's
+	// egress to Loki; this one proves its egress to Hubble Relay and its
+	// client certificate, which is a different NetworkPolicy rule and a
+	// different secret.
+	a := requireAcceptanceCluster(t)
+	a.requirePolicySupport(t)
+
+	name := a.policyName(t)
+	ns := a.deniedNamespace(t, name)
+	a.applyPolicy(t, name, dropPolicyOptions(ns))
+	a.waitForPolicy(t, name, policyStatusTimeout, "report itself armed",
+		func(s trawlv1alpha1.CapturePolicyStatus) bool {
+			return s.Phase == trawlv1alpha1.CapturePolicyArmed
+		})
+
+	a.startProber(t, ns)
+
+	jobs := a.waitForFirstCapture(t, name)
+	job := jobs[0]
+
+	if job.Spec.RequestType != trawlv1alpha1.CaptureRequestPolicy {
+		t.Errorf("requestType = %q, want Policy", job.Spec.RequestType)
+	}
+	// The snapshot is what lets the capture explain itself later. A denied
+	// flow leaves no artifact of its own - Hubble's ring buffer is minutes
+	// deep - so if the drop context is not copied here it is gone.
+	if job.Spec.Trigger == nil || job.Spec.Trigger.Hubble == nil {
+		t.Fatalf("the capture carries no drop snapshot: %+v", job.Spec.Trigger)
+	}
+	if got := job.Spec.Trigger.Source; got != trawlv1alpha1.TriggerSourceHubbleDrop {
+		t.Errorf("snapshot source = %q, want HubbleDrop", got)
+	}
+	if got := job.Spec.Trigger.Hubble.Reason; got != dropReasonPolicyDenied {
+		t.Errorf("snapshot reason = %q, want %q", got, dropReasonPolicyDenied)
+	}
+	if got := job.Spec.Trigger.Hubble.SourceNamespace; got != ns {
+		t.Errorf("snapshot source namespace = %q, want %q - the capture names "+
+			"a workload other than the one that was denied", got, ns)
+	}
+	if job.Spec.TargetNode == "" {
+		t.Error("the capture resolved no target node, so no eligible sensor was found for the flow")
+	}
+	// And it runs. Everything above would be satisfied by a CaptureJob that
+	// was admitted and never scheduled.
+	a.waitForCapture(t, job.Name, captureCompleteTimeout, "reach a terminal phase",
+		func(s trawlv1alpha1.CaptureJobStatus) bool {
+			return s.Phase == trawlv1alpha1.CapturePhaseCompleted || s.Phase == trawlv1alpha1.CapturePhaseFailed
+		})
+
+	a.waitForPolicy(t, name, policyStatusTimeout, "count the capture it made",
+		func(s trawlv1alpha1.CapturePolicyStatus) bool {
+			return s.TotalCaptures >= 1 && s.LastCaptureRef != nil && s.LastTriggerTime != nil
+		})
+}
+
+func TestADropPolicyNarrowedToAnotherNamespaceCapturesNothing(t *testing.T) {
+	// The negative, carrying its own positive control.
+	//
+	// "Captured nothing" is the easiest assertion in this file to satisfy for
+	// the wrong reason: a worker that had lost its Hubble stream, or a prober
+	// that never denied anything, would also capture nothing and the spec
+	// would pass green while testing an outage. So two policies watch the same
+	// denials - one narrowed to the namespace doing the denying, one narrowed
+	// to a namespace that does not exist - and the narrowed one is only
+	// allowed to be quiet because the control is not.
+	a := requireAcceptanceCluster(t)
+	a.requirePolicySupport(t)
+
+	control := a.policyName(t) + "-c"
+	narrowed := a.policyName(t) + "-n"
+	ns := a.deniedNamespace(t, a.policyName(t))
+
+	a.applyPolicy(t, control, dropPolicyOptions(ns))
+	a.applyPolicy(t, narrowed, dropPolicyOptions(ns+"-elsewhere"))
+	for _, name := range []string{control, narrowed} {
+		a.waitForPolicy(t, name, policyStatusTimeout, "report itself armed",
+			func(s trawlv1alpha1.CapturePolicyStatus) bool {
+				return s.Phase == trawlv1alpha1.CapturePolicyArmed
+			})
+	}
+
+	a.startProber(t, ns)
+
+	// The control firing is what makes the assertion below meaningful.
+	a.waitForFirstCapture(t, control)
+	// And then a full quiet window on top, because the narrowed policy sees
+	// the same flows at the same time: returning the moment the control fired
+	// would assert only that the narrowed one was slower.
+	time.Sleep(quietWindow)
+
+	if jobs := a.policyCaptures(t, narrowed); len(jobs) != 0 {
+		t.Errorf("a policy narrowed to %q captured %d times on flows denied in %q",
+			ns+"-elsewhere", len(jobs), ns)
+	}
+}
+
+func TestADropPolicyBelowItsThresholdCapturesNothing(t *testing.T) {
+	// FR-029's threshold: a policy that waits for a sustained rate rather than
+	// a single flow. It is the one trigger knob with no counterpart on the
+	// signature side, and it is the knob that decides whether a denied-flow
+	// policy is usable on a cluster where something is always being denied.
+	//
+	// Same shape as the spec above and for the same reason: the control
+	// proves the denials happened, so the thresholded policy's silence is the
+	// threshold holding rather than the stream being empty.
+	a := requireAcceptanceCluster(t)
+	a.requirePolicySupport(t)
+
+	control := a.policyName(t) + "-c"
+	gated := a.policyName(t) + "-g"
+	ns := a.deniedNamespace(t, a.policyName(t))
+
+	a.applyPolicy(t, control, dropPolicyOptions(ns))
+	gatedOpts := dropPolicyOptions(ns)
+	gatedOpts.thresholdN = unreachableThreshold
+	gatedOpts.thresholdWin = time.Minute
+	a.applyPolicy(t, gated, gatedOpts)
+	for _, name := range []string{control, gated} {
+		a.waitForPolicy(t, name, policyStatusTimeout, "report itself armed",
+			func(s trawlv1alpha1.CapturePolicyStatus) bool {
+				return s.Phase == trawlv1alpha1.CapturePolicyArmed
+			})
+	}
+
+	a.startProber(t, ns)
+
+	a.waitForFirstCapture(t, control)
+	time.Sleep(quietWindow)
+
+	if jobs := a.policyCaptures(t, gated); len(jobs) != 0 {
+		t.Errorf("a policy requiring %d drops in a minute captured %d times on a prober "+
+			"offering roughly one a second", unreachableThreshold, len(jobs))
+	}
+	// There is deliberately no assertion here that the gated policy is
+	// *accumulating* toward its threshold, because status cannot express it.
+	// A below-threshold flow is recorded as OutcomeNotMatched, which is the
+	// same counter every FORWARDED flow in the cluster increments against a
+	// drop policy - so `NotMatched > 0` is satisfied by background traffic and
+	// would pass with the prober never started. Asserting it would be
+	// asserting that this cluster has network activity.
+	//
+	// That is a real gap rather than a gap in the test: an operator holding a
+	// thresholded policy cannot tell from its status whether it is counting
+	// toward its threshold or seeing nothing at all. Recorded in tasks.md.
 }
