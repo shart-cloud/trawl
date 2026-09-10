@@ -1063,7 +1063,7 @@ operations, supply chain, and the complete quickstart before release.
 
 - [ ] T120 [P] Add audit completeness and durability tests for every required mutation, policy decision, transition, download decision, retention change, and expiry action, including intent/outcome pairs, idempotent retry, conflicting keys, MinIO/Loki outages, cursor overlap, duplicate-copy collapse, replay, bounded ledger retention, and fail-closed user actions in `test/integration/audit_test.go`
 - [x] T121 [P] Add static security tests that reject off-namespace Trawl resources, wildcard RBAC, unexpected host namespaces/capabilities, service-account token leakage, floating tags, hostPath, public buckets, browser download links, and secret-bearing telemetry in `test/contract/security_manifests_test.go`
-- [ ] T122 [P] Add stored `v1alpha1` fixture round-trip, additive-defaulting, older-controller rollback, CRD storage-version, and uninstall-preservation tests in `test/integration/upgrade_rollback_test.go`
+- [x] T122 [P] Add stored `v1alpha1` fixture round-trip, additive-defaulting, older-controller rollback, CRD storage-version, and uninstall-preservation tests in `test/integration/upgrade_rollback_test.go`
 - [ ] T123 [P] Document tap/analyzer health, packet loss/duplication, malformed records, trigger gaps, audit-ledger/replay backlog, storage/retention failure, and restart recovery procedures in `docs/src/content/docs/operations/runbook.md`
 - [ ] T124 [P] Document privileges, RBAC roles, BPF/filter trust boundary, evidence classification, local download handling, audit review, and purge approval in `docs/src/content/docs/security/evidence-handling.md`
 - [ ] T125 Run analyzer, controller, trigger, Loki, Hubble, MinIO, audit sink/replay, gateway, and retention failure injection while asserting durable audit or fail-closed user actions and passive unaffected monitoring in `test/e2e/failure_isolation_test.go`
@@ -1098,6 +1098,38 @@ operations, supply chain, and the complete quickstart before release.
   `namespaceSelector`, an unbound ServiceAccount, an added `NET_ADMIN`, and an
   `mc anonymous set download` line in documentation - and each failed naming the
   defect.
+
+- **T122 found that `make undeploy` destroyed every capture record.** It
+  rendered `config/default` - which lists `../crd` - and piped the whole thing
+  to `kubectl delete`. Deleting a CustomResourceDefinition deletes every object
+  of that kind, so removing the operator also removed every CaptureJob,
+  NetworkTap and CapturePolicy: the trigger snapshot saying why a capture was
+  taken, the retention deadline, and the artifact key saying where the packets
+  are. The pcaps survive in the bucket with nothing left in the cluster that
+  knows they exist, and at the terminal it looks like a tidy uninstall.
+  `hack/undeploy-manifests.sh` now filters the CRDs out of the delete set.
+  `make uninstall` still removes them; it is no longer a side effect of
+  removing a Deployment, and its help text says what it costs.
+- **The schema-surface golden is the rollback gate.**
+  `test/integration/testdata/v1alpha1-schema-surface.json` records every
+  property path and every required path in the stored version. A property that
+  disappears is data loss on the next write, because the API server prunes what
+  the schema does not describe; a property that becomes required strands every
+  stored object that omitted it, because without CRD validation ratcheting the
+  API server then refuses every update to those objects - including the disarm.
+  Regeneration is env-gated (`TRAWL_UPDATE_SCHEMA_SURFACE=1`) and never
+  automatic: a test that rewrites its own expectations records the breakage
+  instead of catching it.
+- **`make test-integration` now passes `-count=1`.** envtest reads
+  `config/crd/bases` at runtime, so editing a CRD changes nothing Go's test
+  cache keys on. It served four consecutive stale passes during T122's mutation
+  checks while the CRD under test was deliberately broken - the exact case
+  these tests exist to catch. Two other traps in the same area, both worth
+  knowing: removing a CRD field that a CEL rule references makes the CRD refuse
+  to *install*, so the API server fails the suite before any test runs and the
+  mutation proves nothing about the test; and `Armed bool json:"armed,omitempty"`
+  means a typed client cannot send `armed: false` as an explicit value, so a
+  disarm relies on the CRD default rather than on the field being written.
 
 **Checkpoint**: All required checks pass, no critical security finding or
 unresolved source gap is hidden, and the release has reproducible evidence for the
