@@ -704,7 +704,7 @@ and unaffected parallel policy evaluation.
 - [x] T116 [US4] Grant the event worker only read/watch NetworkTap/CapturePolicy/CaptureJob, create CaptureJob, patch CapturePolicy status, cursor ConfigMap permissions, and egress to the audit sink in `config/rbac/event-worker-role.yaml` and update `config/manager/event-worker.yaml`
 - [x] T117 [US4] Generate and review the CapturePolicy CRD/cluster-wide namespace-rejecting webhook/namespaced RBAC plus armed/disarmed Suricata and Hubble samples with no deferred trigger types in `config/crd/bases/trawl.cloud_capturepolicies.yaml` and `config/samples/`
 - [x] T118 [US4] Add policy phase, decision counters, source gaps, active captures, cooldown/rate state, and suppression references to `config/grafana/dashboards/capture-management.json`
-- [ ] T119 [US4] Make unit, integration, restart, and end-to-end automatic trigger matrices pass and record sanitized count evidence in `test/e2e/automatic_capture_test.go` and `test/e2e/results/automatic-capture.md`
+- [x] T119 [US4] Make unit, integration, restart, and end-to-end automatic trigger matrices pass and record sanitized count evidence in `test/e2e/automatic_capture_test.go` and `test/e2e/results/automatic-capture.md`
 
 ### US4 implementation notes
 
@@ -890,13 +890,15 @@ and unaffected parallel policy evaluation.
   an invented one would be declined as another tap's traffic.
 - T103's denied-flow specs are **not** written against synthetic data, because
   the worker reads drops from Hubble's live gRPC stream rather than from Loki.
-  They are the outstanding half of the matrix and belong with T119, where a
-  deployed worker exists to drive them.
-- T103 currently **skips**, loudly, naming the missing CapturePolicy CRD: the
-  cluster runs `8814f68`, which predates US4. That is the intended pre-T119
-  state - a skip describes the installation rather than the software, and a red
-  build on a cluster running last month's image teaches people to ignore the
-  colour.
+  They were written under T119, against a deployed worker: a scratch namespace,
+  a deny-all-egress NetworkPolicy and a prober, reading the `POLICY_DENIED`
+  verdict Cilium actually reports.
+- T103 **no longer skips.** It skipped, loudly, naming the missing CapturePolicy
+  CRD for as long as the cluster ran `8814f68`, which predates US4 - a skip
+  describes the installation rather than the software, and a red build on a
+  cluster running last month's image teaches people to ignore the colour. T119
+  installed the CRD, and the whole matrix now runs: see
+  `test/e2e/results/automatic-capture.md`.
 ### What deploying US4 found (T119)
 
 The first task in this project that could not be finished from a laptop, and it
