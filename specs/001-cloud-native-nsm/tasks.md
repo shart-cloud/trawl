@@ -1062,7 +1062,7 @@ same bounded, authorized execution path proven by US3.
 operations, supply chain, and the complete quickstart before release.
 
 - [ ] T120 [P] Add audit completeness and durability tests for every required mutation, policy decision, transition, download decision, retention change, and expiry action, including intent/outcome pairs, idempotent retry, conflicting keys, MinIO/Loki outages, cursor overlap, duplicate-copy collapse, replay, bounded ledger retention, and fail-closed user actions in `test/integration/audit_test.go`
-- [ ] T121 [P] Add static security tests that reject off-namespace Trawl resources, wildcard RBAC, unexpected host namespaces/capabilities, service-account token leakage, floating tags, hostPath, public buckets, browser download links, and secret-bearing telemetry in `test/contract/security_manifests_test.go`
+- [x] T121 [P] Add static security tests that reject off-namespace Trawl resources, wildcard RBAC, unexpected host namespaces/capabilities, service-account token leakage, floating tags, hostPath, public buckets, browser download links, and secret-bearing telemetry in `test/contract/security_manifests_test.go`
 - [ ] T122 [P] Add stored `v1alpha1` fixture round-trip, additive-defaulting, older-controller rollback, CRD storage-version, and uninstall-preservation tests in `test/integration/upgrade_rollback_test.go`
 - [ ] T123 [P] Document tap/analyzer health, packet loss/duplication, malformed records, trigger gaps, audit-ledger/replay backlog, storage/retention failure, and restart recovery procedures in `docs/src/content/docs/operations/runbook.md`
 - [ ] T124 [P] Document privileges, RBAC roles, BPF/filter trust boundary, evidence classification, local download handling, audit review, and purge approval in `docs/src/content/docs/security/evidence-handling.md`
@@ -1074,6 +1074,30 @@ operations, supply chain, and the complete quickstart before release.
 - [ ] T130 Regenerate CRDs, RBAC, webhooks, install bundle, examples, observation schema embedding, and dashboards and prove a clean drift check in `dist/install.yaml` and `test/contract/generated_artifacts_test.go`
 - [ ] T131 Execute every command and expected outcome plus the defined 20-attempt exact-correlation timing protocol in `specs/001-cloud-native-nsm/quickstart.md` on the representative cluster and save only sanitized durations/counts in `test/e2e/results/quickstart.md`
 - [ ] T132 Complete the constitutional, security, operational, and measurable-outcome release checklist with links to passing evidence in `docs/release/readiness.md`
+
+### Phase 7 implementation notes
+
+- **T121 asserts what was not already asserted, and says where the rest lives.**
+  Seven of the nine properties the task lists were already covered before the
+  file existed - wildcard RBAC, floating tags, hostPath and host namespaces,
+  restricted Pod Security, default-deny networking, browser download links and
+  secret-bearing telemetry all have named tests in `generated_artifacts_test.go`,
+  `grafana_dashboards_test.go` and `observation_schema_test.go`. Duplicating them
+  would have produced a second thing to keep true and a second place to look, so
+  `security_manifests_test.go` opens with an index of them and adds the three
+  that nothing covered: that admission can *see* an off-namespace resource
+  (a `namespaceSelector` on the webhook configuration would make the system
+  namespace rule unreachable rather than enforced), that a ServiceAccount bound
+  to nothing refuses a token, and that nothing publishes the artifact bucket.
+  A fourth was added beside them: no container may *add* a Linux capability.
+  `TestManifestsRequestNoHostAccess` catches `privileged: true`, which is the
+  loud form; a single added capability is the quiet one.
+- **The T121 checks render `config/default` rather than reading `config/`.**
+  Directly because of T119: a check that reads the pre-kustomize files is
+  checking a workload nobody runs. All four were mutation-checked - a
+  `namespaceSelector`, an unbound ServiceAccount, an added `NET_ADMIN`, and an
+  `mc anonymous set download` line in documentation - and each failed naming the
+  defect.
 
 **Checkpoint**: All required checks pass, no critical security finding or
 unresolved source gap is hidden, and the release has reproducible evidence for the
