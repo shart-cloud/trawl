@@ -61,7 +61,11 @@ limitations under the License.
 package e2e
 
 import (
+	"fmt"
+	"io"
+	"net/http"
 	"os"
+	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
@@ -242,11 +246,15 @@ func TestReferenceLoadSC003LossStaysUnderOnePercent(t *testing.T) {
 // Read from the sensor pods rather than from the manager: nothing aggregates
 // them, and a per-node figure is what "the capture boundary" means.
 //
-// The probe port is derived per tap, not fixed - the sensor runs on the host
-// network and :9100 is node_exporter's, so a fixed port loses that race on any
-// cluster scraping node metrics. It is read off the pod's own arguments rather
-// than recomputed here, because a spec that recomputed it would keep passing
-// against a sensor listening somewhere else.
+// Fetched over a port-forward rather than by exec'ing a client inside the pod.
+// The sensor-agent image is distroless and has no shell and no wget, so the
+// obvious `kubectl exec ... wget` fails with "executable file not found" - which
+// is the image doing exactly what a minimal runtime image should.
+//
+// The probe port is derived per tap rather than fixed, because the sensor runs
+// on the host network and :9100 is node_exporter's. It is read off the pod's own
+// arguments rather than recomputed, because a spec that recomputed it would keep
+// passing against a sensor listening somewhere else.
 func (a *acceptance) sensorCounters(t *testing.T) (packets, drops int64) {
 	t.Helper()
 
@@ -261,7 +269,7 @@ func (a *acceptance) sensorCounters(t *testing.T) (packets, drops int64) {
 		t.Fatal("no sensor pods, so there are no capture-boundary counters to read")
 	}
 
-	for _, pod := range names {
+	for i, pod := range names {
 		args, err := kubectlOut("get", "pod", pod, "-n", a.namespace,
 			"-o", "jsonpath={.spec.containers[?(@.name=='sensor-agent')].args}")
 		if err != nil {
@@ -272,15 +280,45 @@ func (a *acceptance) sensorCounters(t *testing.T) (packets, drops int64) {
 			t.Fatalf("%s declares no --probe-addr, so this spec cannot find its metrics: %s", pod, args)
 		}
 
-		body, err := kubectlOut("exec", "-n", a.namespace, pod, "-c", "sensor-agent", "--",
-			"wget", "-qO-", "http://127.0.0.1:"+port+"/metrics")
-		if err != nil {
-			t.Skipf("the sensor's metrics endpoint is not reachable from inside its pod: %v: %s", err, body)
-		}
+		body := a.scrapeSensor(t, pod, port, 32000+i)
 		packets += metricValue(t, body, "trawl_sensor_packets_total")
 		drops += metricValue(t, body, "trawl_sensor_kernel_drops_total")
 	}
 	return packets, drops
+}
+
+// scrapeSensor port-forwards one sensor's probe port and returns its metrics.
+func (a *acceptance) scrapeSensor(t *testing.T, pod, port string, localPort int) string {
+	t.Helper()
+
+	//nolint:gosec // G204: the pod name and port come from the cluster this
+	// spec is already talking to, not from evidence or the environment.
+	cmd := exec.Command("kubectl", "port-forward", "-n", a.namespace,
+		"pod/"+pod, fmt.Sprintf("%d:%s", localPort, port))
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("forwarding %s's probe port: %v", pod, err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
+
+	url := fmt.Sprintf("http://127.0.0.1:%d/metrics", localPort)
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		//nolint:gosec,noctx // G107: a loopback URL this function just built.
+		resp, err := http.Get(url)
+		if err == nil {
+			body, readErr := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if readErr == nil && resp.StatusCode == http.StatusOK {
+				return string(body)
+			}
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	t.Fatalf("%s did not serve metrics on %s within 30s", pod, url)
+	return ""
 }
 
 // probeAddrPort pulls the port out of the sensor's --probe-addr argument.

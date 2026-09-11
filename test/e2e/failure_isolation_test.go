@@ -250,7 +250,6 @@ func stripForApply(np *networkingv1.NetworkPolicy) {
 	np.Generation = 0
 	np.ManagedFields = nil
 	np.CreationTimestamp = metav1.Time{}
-	np.SelfLink = ""
 	delete(np.Annotations, "kubectl.kubernetes.io/last-applied-configuration")
 }
 
