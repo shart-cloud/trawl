@@ -982,11 +982,29 @@ func (r *CaptureJobReconciler) auditExpiry(ctx context.Context, job *trawlv1alph
 	if r.Audit == nil {
 		return admission.ErrAuditUnavailable
 	}
+	// The message is not fixed, because the same code path runs in two
+	// situations that mean opposite things to somebody reading the ledger
+	// afterwards.
+	//
+	// Normal expiry deliberately keeps the artifact *record* while deleting the
+	// bytes - that is what lets an investigation say what was collected after
+	// it is gone - so `job.Status.Artifact` is still set once a capture has
+	// expired. Deleting the CaptureJob then re-enters here, and a fixed message
+	// would write "deleted before its retention deadline" into a write-once
+	// ledger about an artifact that expired exactly on schedule. An auditor
+	// reconstructing what happened to that evidence would read it as an early
+	// purge, which is the one thing the ledger exists to be able to deny.
+	message := "the capture was deleted before its retention deadline; its artifact goes with it"
+	if job.Status.Phase == trawlv1alpha1.CapturePhaseExpired {
+		message = "the capture record was deleted after its artifact had already expired; " +
+			"the artifact was not destroyed by this deletion"
+	}
+
 	return r.commit(ctx, audit.Record{
 		Action:      audit.ActionArtifactExpire,
 		Decision:    decision,
 		Reason:      "CaptureJobDeleted",
-		Message:     "the capture was deleted before its retention deadline; its artifact goes with it",
+		Message:     message,
 		Actor:       r.actor(),
 		Resource:    resourceFor(job),
 		StableKey:   audit.StableKeyForAutomatic(audit.ActionArtifactExpire, string(job.UID), step),
