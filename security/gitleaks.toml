@@ -38,18 +38,39 @@ useDefault = true
     ]
 
 [allowlist]
-  description = "Test harnesses and sanitizer fixtures"
+  description = "Known-synthetic fixtures, allowlisted by value rather than by path"
+
+  # Scoped to the exact strings, never to whole files. A path allowlist says
+  # "no credential in this file will ever be real", which is a promise nobody
+  # can keep - and it was demonstrably wrong here: with these files
+  # path-allowlisted, a planted AWS key and a planted api_key in a SOURCES.lock
+  # both went undetected on a mutation check. Allowlisting the value means any
+  # *other* secret in the same file is still found.
+  regexTarget = "match"
+  regexes = [
+    # Hand-constructed JWTs with the shape of a service-account token and none
+    # of the substance: the payloads decode to {"sub":"analyst"} and the
+    # signature segments are base64 of the literal words
+    # "signature-secret-part" and "sig-analyst-secret". They exist to prove the
+    # sanitizer redacts a token that looks real, so a two-segment stand-in
+    # would test nothing - which is exactly why a scanner flags them.
+    '''eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9\.eyJzdWIiOiJhbmFseXN0In0\.c2ln[A-Za-z0-9_-]+''',
+
+    # Published GPG signing-key fingerprints. A fingerprint is public by
+    # design - it is how a reader verifies a release tarball was signed by the
+    # project - and images/*/SOURCES.lock prints it beside the gpg output it
+    # came from. Publishing it is the point.
+    '''signing_key_fingerprint:\s*[A-F0-9]{40}''',
+
+    # The literal placeholders used in manifests and documentation.
+    '''(?i)(REPLACE_ME|CHANGEME|EXAMPLE_ONLY|PLACEHOLDER)''',
+  ]
+
   paths = [
-    # Brings up a throwaway MinIO and writes its credential to a temp dir. The
-    # value is generated per run; a real one here would be the bug.
-    '''test/integration/harness/harness\.go''',
-    # Builds presigned URLs from synthetic keys to assert that the signature
-    # material never reaches a stored record.
-    '''internal/storage/presign_test\.go''',
-    # The sanitizer and its tests hold examples of exactly the strings that
-    # must never be persisted. They are there to be redacted, not used.
+    # The one remaining path allowlist, and the only one that earns it: the
+    # sanitizer exists to hold examples of the strings that must never be
+    # persisted, so its fixtures are a catalogue of credential shapes on
+    # purpose. Scanning it reports the catalogue, not a leak.
     '''internal/sanitize/sanitize\.go''',
     '''internal/sanitize/sanitize_test\.go''',
-    # Ephemeral certificates minted by the test suite at run time.
-    '''test/e2e/certs/.*''',
   ]

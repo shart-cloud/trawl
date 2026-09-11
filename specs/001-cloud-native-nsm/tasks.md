@@ -1293,6 +1293,34 @@ operations, supply chain, and the complete quickstart before release.
   because a kill mid-run leaves the installation refusing every mutation until
   somebody notices.
 
+- **T129's first real run showed three of five jobs did not work.** Opening the
+  PR was the only way to find out - the Security workflow triggers on
+  `pull_request` and `push: main`, so a branch push never exercises it, and the
+  task had been marked done on the strength of five jobs nobody had run. All
+  three failures were environmental rather than findings: `gitleaks-action`
+  refuses to run for a GitHub organisation without a paid licence,
+  `dependency-review-action` needs the repository's dependency graph enabled,
+  and `trivy-action`'s install script exited 1 after resolving the version it
+  wanted. Every scanner is now a pinned, checksum-verified binary installed in
+  the job, which is how `hack/tools.mk` already treats every other tool; the
+  only remaining third-party actions are `actions/checkout` and
+  `actions/setup-go`.
+- **The secret scan found four things and all four were false positives**, which
+  is the answer worth having recorded: two hand-built JWTs whose signature
+  segments decode to the literal words "signature-secret-part" and
+  "sig-analyst-secret", and two GPG signing-key fingerprints, which are public
+  by design - a fingerprint is how a reader verifies a release signature.
+- **The first allowlist for those blinded the scanner, and a mutation check
+  caught it.** Allowlisting by *path* says "no credential in this file will ever
+  be real", which is a promise nobody can keep: with the two test files
+  path-allowlisted, a planted AWS key and a planted `api_key` both went
+  undetected. The allowlist is scoped to the exact synthetic *values* now, so
+  any other secret in the same files is still found - verified by planting a
+  non-canonical AWS key and a GitHub PAT, both of which are caught.
+  (Note for anyone repeating this: `AKIAIOSFODNN7EXAMPLE` is AWS's own
+  documentation key and gitleaks allowlists it internally, so it is useless as
+  a mutation.)
+
 **Checkpoint**: All required checks pass, no critical security finding or
 unresolved source gap is hidden, and the release has reproducible evidence for the
 active specification.

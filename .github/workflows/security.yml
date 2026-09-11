@@ -103,15 +103,37 @@ jobs:
       - name: Render the ignore list from the reviewed suppressions
         run: hack/verify-suppressions.sh --emit-trivyignore > security/.trivyignore
 
+      # The Trivy binary, pinned and checksum-verified, rather than
+      # trivy-action. The action's install script fetches the release through
+      # the GitHub API at job time and exited 1 on the first run of this
+      # workflow having found the version it wanted - an environmental failure
+      # in a tool whose whole job is to tell us about environmental problems.
+      #
+      # Pinning it the way hack/tools.mk pins everything else removes that
+      # class: no API call, no version resolution, and a checksum that says the
+      # bytes are the ones somebody reviewed.
+      - name: Install Trivy
+        env:
+          TRIVY_VERSION: 0.74.0
+          TRIVY_SHA256: 2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a
+        run: |
+          set -euo pipefail
+          url="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl -sSfL "$url" -o trivy.tar.gz
+          echo "${TRIVY_SHA256}  trivy.tar.gz" | sha256sum -c -
+          tar -xzf trivy.tar.gz trivy
+          ./trivy --version
+
       - name: Scan
-        uses: aquasecurity/trivy-action@dc5a429b52fcf669ce959baa2c2dd26090d2a6c4 # v0.32.0
-        with:
-          image-ref: trawl-scan/${{ matrix.binary }}:scan
-          format: table
-          exit-code: "1"
-          ignore-unfixed: true
-          severity: HIGH,CRITICAL
-          trivyignores: security/.trivyignore
+        run: |
+          set -euo pipefail
+          ./trivy image \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --ignorefile security/.trivyignore \
+            --exit-code 1 \
+            --format table \
+            "trawl-scan/${{ matrix.binary }}:scan"
 
   manifests:
     name: Manifest privilege
@@ -139,21 +161,51 @@ jobs:
           go test ./test/contract/ -run 'Security|Manifest|Webhook|ServiceAccount|Capability|Bucket'
 
   dependencies:
-    name: Dependency review
+    name: Dependency vulnerabilities
     runs-on: ubuntu-latest
-    # Only meaningful on a pull request: it compares the base and head
-    # manifests, and there is no base to compare against on a push.
-    if: github.event_name == 'pull_request'
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: actions/dependency-review-action@bc41886e18ea39df68b1b1245f4184881938e050 # v4.5.0
-        with:
-          fail-on-severity: high
-          comment-summary-in-pr: never
+
+      # osv-scanner rather than dependency-review-action. The latter needs the
+      # repository's dependency graph enabled and fails outright without it -
+      # a gate that depends on a settings toggle somebody has to remember is a
+      # gate that is off by default.
+      #
+      # It also complements govulncheck rather than duplicating it. govulncheck
+      # is reachability-based and reports only what this build can actually
+      # call, which is the right bar for deciding whether to act. This reports
+      # every known advisory against a pinned dependency, reachable or not,
+      # which is the right bar for deciding whether to *upgrade* - and it is
+      # the one that notices a newly added dependency arriving with a known
+      # problem.
+      # Pinned binary rather than the action, for the reason the Trivy step
+      # above gives: every third-party scanning action tried on the first run of
+      # this workflow failed for an environmental reason rather than a finding.
+      #
+      # On the checksum's strength, stated plainly because this repository
+      # distinguishes them elsewhere (images/*/SOURCES.lock): osv-scanner
+      # publishes no checksums file, so this digest was recorded from a
+      # download rather than verified against an upstream signature. It pins the
+      # artifact so it cannot change underneath us, which is what stops a
+      # re-cut release altering the gate; it is not evidence of who published
+      # it. Upgrade to a signature check if upstream starts publishing one.
+      - name: Install osv-scanner
+        env:
+          OSV_VERSION: 2.5.1
+          OSV_SHA256: f9f25499a2c8cc367b3af45df2ea7eeca7fbccceab9c35079968f4b3652194be
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://github.com/google/osv-scanner/releases/download/v${OSV_VERSION}/osv-scanner_linux_amd64" -o osv-scanner
+          echo "${OSV_SHA256}  osv-scanner" | sha256sum -c -
+          chmod +x osv-scanner
+          ./osv-scanner --version
+
+      - name: Scan the module dependencies
+        run: ./osv-scanner scan source --lockfile=go.mod
 
   secrets:
     name: Secret scanning
@@ -170,6 +222,25 @@ jobs:
           # confidently.
           fetch-depth: 0
 
-      - uses: gitleaks/gitleaks-action@83373cf2f8c4db6e24b41c1a9b086bb9619e9cd3 # v2.3.7
+      # The gitleaks *binary*, not gitleaks-action. The action refuses to run
+      # for a GitHub organization without a paid licence key - it exits before
+      # scanning anything, so the job fails without ever having looked. The
+      # scanner itself is MIT-licensed and has no such restriction.
+      #
+      # Pinned by version and checksum for the same reason every other upstream
+      # source in this repository is: a release tag can be re-cut, and a secret
+      # scanner fetched over an unverified path is a poor thing to trust.
+      - name: Install gitleaks
         env:
-          GITLEAKS_CONFIG: security/gitleaks.toml
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          set -euo pipefail
+          url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL "$url" -o gitleaks.tar.gz
+          echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks.tar.gz gitleaks
+          ./gitleaks version
+
+      - name: Scan the whole history
+        run: ./gitleaks git . --config security/gitleaks.toml --redact --verbose --exit-code 1
