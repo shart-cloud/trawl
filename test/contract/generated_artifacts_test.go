@@ -242,6 +242,7 @@ func TestADRsExistForIrreversibleDecisions(t *testing.T) {
 		"0003-artifact-storage-and-gateway.md",
 		"0004-capability-minimized-capture.md",
 		"0005-analyzer-content-management.md",
+		"0006-strict-installation-configuration.md",
 	}
 	for _, name := range required {
 		path := filepath.Join(adrDir, name)

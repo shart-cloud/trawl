@@ -1265,13 +1265,16 @@ operations, supply chain, and the complete quickstart before release.
   and the symptom appears at the next restart rather than at apply time. Roll
   every config-parsing component when the schema changes, not only the ones
   whose code changed, and apply the ConfigMap with or after the images.
-- **Open design question, deliberately not decided here.** Strict decoding is
-  defensible - it catches an operator's typo instead of silently ignoring it -
-  but it makes a purely additive config change a self-inflicted outage for any
-  component that lags a rollout. Tolerating unknown fields with a warning would
-  trade typo detection for rolling-upgrade safety. That is a constitution-level
-  call about fail-closed behaviour and belongs to the maintainer, not to this
-  task.
+- **Settled: decoding stays strict.** Recorded as ADR-0006. Tolerating unknown
+  fields would trade a loud failure for a silent one - an operator who writes
+  `suricta: true` would get a component that starts cleanly and does something
+  other than what they configured, and for a system whose output is evidence a
+  sensor quietly running an unchosen setting is worse than one that refuses to
+  start. The rolling-upgrade hazard is answered operationally instead: a config
+  schema change requires rolling every component that parses the config, not
+  only the ones whose code changed, and the ConfigMap is applied with or after
+  the images. The ADR is explicit that nothing enforces that ordering
+  automatically, and why a static check cannot.
 
 - **A killed failure-injection run leaves the fault in place.** `t.Cleanup`
   covers a failed assertion, a panic and a timeout; it does not cover SIGKILL,
