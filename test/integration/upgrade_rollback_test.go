@@ -42,7 +42,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -167,8 +167,8 @@ func currentSurface(t *testing.T) map[string]schemaSurface {
 			}
 			var props, required []string
 			walkSchema("", v.Schema.OpenAPIV3Schema, &props, &required)
-			sort.Strings(props)
-			sort.Strings(required)
+			slices.Sort(props)
+			slices.Sort(required)
 			out[crd.Name] = schemaSurface{Properties: props, Required: required}
 		}
 	}
@@ -207,7 +207,7 @@ func TestTheStoredSchemaSurfaceOnlyGrows(t *testing.T) {
 		if encErr != nil {
 			t.Fatalf("encoding the schema surface: %v", encErr)
 		}
-		if mkErr := os.MkdirAll(filepath.Dir(schemaSurfaceGolden), 0o755); mkErr != nil {
+		if mkErr := os.MkdirAll(filepath.Dir(schemaSurfaceGolden), 0o750); mkErr != nil {
 			t.Fatalf("creating the golden directory: %v", mkErr)
 		}
 		if wErr := os.WriteFile(schemaSurfaceGolden, append(encoded, '\n'), 0o600); wErr != nil {
@@ -219,7 +219,8 @@ func TestTheStoredSchemaSurfaceOnlyGrows(t *testing.T) {
 
 	raw, err := os.ReadFile(schemaSurfaceGolden)
 	if err != nil {
-		t.Fatalf("reading %s: %v\nhint: regenerate with `TRAWL_UPDATE_SCHEMA_SURFACE=1 go test ./test/integration/ -run TestTheStoredSchemaSurfaceOnlyGrows`",
+		t.Fatalf("reading %s: %v\nhint: regenerate with TRAWL_UPDATE_SCHEMA_SURFACE=1 "+
+			"go test ./test/integration/ -run TestTheStoredSchemaSurfaceOnlyGrows",
 			schemaSurfaceGolden, err)
 	}
 	var golden map[string]schemaSurface
@@ -389,8 +390,6 @@ func TestDisarmingAPolicyIsAvailableAtEveryAcceptedBound(t *testing.T) {
 	// adding another.
 	//
 	// So: build a policy at each boundary the schema allows, and disarm it.
-	ctx := context.Background()
-
 	corners := []struct {
 		name   string
 		mutate func(*trawlv1alpha1.CapturePolicySpec)
@@ -420,6 +419,7 @@ func TestDisarmingAPolicyIsAvailableAtEveryAcceptedBound(t *testing.T) {
 
 	for _, corner := range corners {
 		t.Run(corner.name, func(t *testing.T) {
+			ctx := t.Context()
 			ns := NewNamespace(t)
 			policy := newPolicy(t, ns, "corner", corner.mutate)
 			policy.Spec.Armed = true
@@ -538,7 +538,7 @@ func TestUndeployingDoesNotTakeTheCustomResourceDefinitionsWithIt(t *testing.T) 
 	}
 
 	var crds, workloads int
-	for _, doc := range strings.Split(string(out), "\n---\n") {
+	for doc := range strings.SplitSeq(string(out), "\n---\n") {
 		if strings.TrimSpace(doc) == "" {
 			continue
 		}

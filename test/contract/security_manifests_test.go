@@ -58,7 +58,7 @@ import (
 // manifestDocs splits a rendered stream into its documents, skipping blanks.
 func manifestDocs(rendered string) []string {
 	var out []string
-	for _, doc := range strings.Split(rendered, "\n---\n") {
+	for doc := range strings.SplitSeq(rendered, "\n---\n") {
 		if strings.TrimSpace(doc) != "" {
 			out = append(out, doc)
 		}

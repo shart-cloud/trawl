@@ -569,7 +569,8 @@ func TestTheInstallBundleCarriesACRDForEveryAPIKind(t *testing.T) {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), "_types.go") {
 			continue
 		}
-		body, readErr := os.ReadFile(filepath.Join(root, "api", "v1alpha1", e.Name())) //nolint:gosec // G304: a repository path.
+		//nolint:gosec // G304: a repository path.
+		body, readErr := os.ReadFile(filepath.Join(root, "api", "v1alpha1", e.Name()))
 		if readErr != nil {
 			t.Fatalf("reading %s: %v", e.Name(), readErr)
 		}
@@ -592,7 +593,7 @@ func TestTheInstallBundleCarriesACRDForEveryAPIKind(t *testing.T) {
 
 	rendered := renderDefault(t)
 	shipped := map[string]bool{}
-	for _, doc := range strings.Split(rendered, "\n---\n") {
+	for doc := range strings.SplitSeq(rendered, "\n---\n") {
 		if strings.TrimSpace(doc) == "" {
 			continue
 		}
@@ -636,7 +637,8 @@ func TestEveryConfiguredWebhookIsWiredIntoTheManager(t *testing.T) {
 	// intact, and breaks the cluster.
 	root := repoRoot(t)
 
-	main, err := os.ReadFile(filepath.Join(root, "cmd", "controller-manager", "main.go")) //nolint:gosec // G304: a repository path.
+	//nolint:gosec // G304: a repository path.
+	main, err := os.ReadFile(filepath.Join(root, "cmd", "controller-manager", "main.go"))
 	if err != nil {
 		t.Fatalf("reading the manager entrypoint: %v", err)
 	}
@@ -647,7 +649,7 @@ func TestEveryConfiguredWebhookIsWiredIntoTheManager(t *testing.T) {
 
 	rendered := renderDefault(t)
 	configured := map[string]bool{}
-	for _, doc := range strings.Split(rendered, "\n---\n") {
+	for doc := range strings.SplitSeq(rendered, "\n---\n") {
 		if strings.TrimSpace(doc) == "" {
 			continue
 		}
