@@ -1086,7 +1086,7 @@ operations, supply chain, and the complete quickstart before release.
 - [x] T124 [P] Document privileges, RBAC roles, BPF/filter trust boundary, evidence classification, local download handling, audit review, and purge approval in `docs/src/content/docs/security/evidence-handling.md`
 - [ ] T125 Run analyzer, controller, trigger, Loki, Hubble, MinIO, audit sink/replay, gateway, and retention failure injection while asserting durable audit or fail-closed user actions and passive unaffected monitoring in `test/e2e/failure_isolation_test.go`
 - [ ] T126 Run the 100 Mb/s 60-minute reference test plus at least 20 timed valid tap create/update trials and enforce first-observation <=15m, 95% reconciliation <=2m, packet-loss, ingestion-latency, capture-start/store, bound-overshoot, and trigger-count thresholds in `test/e2e/reference_load_test.go`
-- [ ] T127 Run exact deadline-denial and accelerated 24-hour deletion validation with upload protection and preserved metadata in `test/e2e/retention_test.go`
+- [~] T127 Run exact deadline-denial and accelerated 24-hour deletion validation with upload protection and preserved metadata in `test/e2e/retention_test.go`
 - [x] T128 Generate SBOMs, provenance, vulnerability results, upstream source verification, rule/script hashes, and immutable image digests in `dist/supply-chain/manifest.json`
 - [x] T129 Configure release-blocking Go, container, manifest, dependency, and secret scanning with reviewed suppressions and expiry dates in `.github/workflows/security.yml` and `security/suppressions.yaml`
 - [x] T130 Regenerate CRDs, RBAC, webhooks, install bundle, examples, observation schema embedding, and dashboards and prove a clean drift check in `dist/install.yaml` and `test/contract/generated_artifacts_test.go`
@@ -1341,6 +1341,35 @@ operations, supply chain, and the complete quickstart before release.
   (Note for anyone repeating this: `AKIAIOSFODNN7EXAMPLE` is AWS's own
   documentation key and gitleaks allowlists it internally, so it is useless as
   a mutation.)
+
+- **T127 was mostly already built, and unrun.** `TestAnExpiredCaptureIsDeletedAndRefused`
+  covers the exact deadline, deletion from the bucket, the HTTP 410 refusal,
+  preserved metadata and the ledger record; `TestShorteningRetentionMovesTheDeadlineFromCompletion`
+  covers a shortened deadline being measured from completion rather than from
+  now. The latter passes today, in 24s.
+- **The gap was the join between them.** The shortening spec asserts the
+  deadline *field* moves and stops there. Nothing asserted that a shortened
+  deadline is then enforced - a controller that recorded the new date and swept
+  on the old one would satisfy every existing assertion while keeping evidence
+  a day longer than the retention admin asked for, which is a retention policy
+  that silently does not hold. `test/e2e/retention_test.go` closes that, and
+  doing so is also the only honest way to validate a 24h period without
+  waiting 24h: the CRD floor is 1h and there is no clock hook, so the
+  acceleration is a real operator action rather than a test seam.
+- **"Upload protection" is deliberately left at integration level.**
+  `TestRetentionLeavesAnUnfinishedCaptureAlone` asserts it deterministically. A
+  cluster version would have to catch the sweeper inside an upload window
+  measured in seconds, and a flaky spec asserting a safety property is worse
+  than a reliable one somewhere else.
+- **Five e2e specs skip on an unmet *local* prerequisite**, and skips print
+  nothing without `-v`. `requireReachableObjectStore` needs
+  `minio.trawl-system.svc.cluster.local` to resolve to loopback in `/etc/hosts`
+  so a presigned URL can be followed - the signature covers host and port, so
+  no other port will do. Without it, the download path, the controller-restart
+  spec, the audit-outage spec and both expiry specs skip and the run reports
+  success. Same family as the `kustomize` silent skip, but not fixable by a
+  dependency: it is a host-level change the person running the suite has to
+  make.
 
 **Checkpoint**: All required checks pass, no critical security finding or
 unresolved source gap is hidden, and the release has reproducible evidence for the
