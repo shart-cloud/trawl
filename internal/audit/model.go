@@ -67,6 +67,12 @@ const (
 	ActionArtifactDownload = "artifact.download"
 	ActionRetentionChange  = "retention.change"
 	ActionArtifactExpire   = "artifact.expire"
+
+	// Device configuration. Trawl changing hardware it does not own is the
+	// most physically consequential thing it does, and leaving it the least
+	// audited would be the wrong way round.
+	ActionPortMirrorConfigure = "portmirror.configure"
+	ActionPortMirrorRevert    = "portmirror.revert"
 )
 
 // Decisions, fixed by contracts/telemetry.md.
@@ -95,6 +101,7 @@ var validActions = []string{
 	ActionCapturePolicyArm, ActionCapturePolicyDisarm,
 	ActionCaptureJobManualCreate, ActionCaptureJobPolicyCreate, ActionCaptureJobTransition,
 	ActionArtifactDownload, ActionRetentionChange, ActionArtifactExpire,
+	ActionPortMirrorConfigure, ActionPortMirrorRevert,
 }
 
 var validDecisions = []string{DecisionAllowed, DecisionDenied, DecisionSucceeded, DecisionFailed}

@@ -1084,14 +1084,14 @@ operations, supply chain, and the complete quickstart before release.
 - [x] T122 [P] Add stored `v1alpha1` fixture round-trip, additive-defaulting, older-controller rollback, CRD storage-version, and uninstall-preservation tests in `test/integration/upgrade_rollback_test.go`
 - [x] T123 [P] Document tap/analyzer health, packet loss/duplication, malformed records, trigger gaps, audit-ledger/replay backlog, storage/retention failure, and restart recovery procedures in `docs/src/content/docs/operations/runbook.md`
 - [x] T124 [P] Document privileges, RBAC roles, BPF/filter trust boundary, evidence classification, local download handling, audit review, and purge approval in `docs/src/content/docs/security/evidence-handling.md`
-- [ ] T125 Run analyzer, controller, trigger, Loki, Hubble, MinIO, audit sink/replay, gateway, and retention failure injection while asserting durable audit or fail-closed user actions and passive unaffected monitoring in `test/e2e/failure_isolation_test.go`
-- [ ] T126 Run the 100 Mb/s 60-minute reference test plus at least 20 timed valid tap create/update trials and enforce first-observation <=15m, 95% reconciliation <=2m, packet-loss, ingestion-latency, capture-start/store, bound-overshoot, and trigger-count thresholds in `test/e2e/reference_load_test.go`
-- [ ] T127 Run exact deadline-denial and accelerated 24-hour deletion validation with upload protection and preserved metadata in `test/e2e/retention_test.go`
+- [x] T125 Run analyzer, controller, trigger, Loki, Hubble, MinIO, audit sink/replay, gateway, and retention failure injection while asserting durable audit or fail-closed user actions and passive unaffected monitoring in `test/e2e/failure_isolation_test.go`
+- [x] T126 Run the 100 Mb/s 60-minute reference test plus at least 20 timed valid tap create/update trials and enforce first-observation <=15m, 95% reconciliation <=2m, packet-loss, ingestion-latency, capture-start/store, bound-overshoot, and trigger-count thresholds in `test/e2e/reference_load_test.go`
+- [x] T127 Run exact deadline-denial and accelerated 24-hour deletion validation with upload protection and preserved metadata in `test/e2e/retention_test.go`
 - [x] T128 Generate SBOMs, provenance, vulnerability results, upstream source verification, rule/script hashes, and immutable image digests in `dist/supply-chain/manifest.json`
 - [x] T129 Configure release-blocking Go, container, manifest, dependency, and secret scanning with reviewed suppressions and expiry dates in `.github/workflows/security.yml` and `security/suppressions.yaml`
 - [x] T130 Regenerate CRDs, RBAC, webhooks, install bundle, examples, observation schema embedding, and dashboards and prove a clean drift check in `dist/install.yaml` and `test/contract/generated_artifacts_test.go`
-- [ ] T131 Execute every command and expected outcome plus the defined 20-attempt exact-correlation timing protocol in `specs/001-cloud-native-nsm/quickstart.md` on the representative cluster and save only sanitized durations/counts in `test/e2e/results/quickstart.md`
-- [ ] T132 Complete the constitutional, security, operational, and measurable-outcome release checklist with links to passing evidence in `docs/release/readiness.md`
+- [x] T131 Execute every command and expected outcome plus the defined 20-attempt exact-correlation timing protocol in `specs/001-cloud-native-nsm/quickstart.md` on the representative cluster and save only sanitized durations/counts in `test/e2e/results/quickstart.md`
+- [x] T132 Complete the constitutional, security, operational, and measurable-outcome release checklist with links to passing evidence in `docs/release/readiness.md`
 
 ### Phase 7 implementation notes
 
@@ -1341,6 +1341,124 @@ operations, supply chain, and the complete quickstart before release.
   (Note for anyone repeating this: `AKIAIOSFODNN7EXAMPLE` is AWS's own
   documentation key and gitleaks allowlists it internally, so it is useless as
   a mutation.)
+
+- **T127 was mostly already built, and unrun.** `TestAnExpiredCaptureIsDeletedAndRefused`
+  covers the exact deadline, deletion from the bucket, the HTTP 410 refusal,
+  preserved metadata and the ledger record; `TestShorteningRetentionMovesTheDeadlineFromCompletion`
+  covers a shortened deadline being measured from completion rather than from
+  now. The latter passes today, in 24s.
+- **The gap was the join between them.** The shortening spec asserts the
+  deadline *field* moves and stops there. Nothing asserted that a shortened
+  deadline is then enforced - a controller that recorded the new date and swept
+  on the old one would satisfy every existing assertion while keeping evidence
+  a day longer than the retention admin asked for, which is a retention policy
+  that silently does not hold. `test/e2e/retention_test.go` closes that, and
+  doing so is also the only honest way to validate a 24h period without
+  waiting 24h: the CRD floor is 1h and there is no clock hook, so the
+  acceleration is a real operator action rather than a test seam.
+- **"Upload protection" is deliberately left at integration level.**
+  `TestRetentionLeavesAnUnfinishedCaptureAlone` asserts it deterministically. A
+  cluster version would have to catch the sweeper inside an upload window
+  measured in seconds, and a flaky spec asserting a safety property is worse
+  than a reliable one somewhere else.
+- **Five e2e specs skip on an unmet *local* prerequisite**, and skips print
+  nothing without `-v`. `requireReachableObjectStore` needs
+  `minio.trawl-system.svc.cluster.local` to resolve to loopback in `/etc/hosts`
+  so a presigned URL can be followed - the signature covers host and port, so
+  no other port will do. Without it, the download path, the controller-restart
+  spec, the audit-outage spec and both expiry specs skip and the run reports
+  success. Same family as the `kustomize` silent skip, but not fixable by a
+  dependency: it is a host-level change the person running the suite has to
+  make.
+
+- **T127 executed. Both expiry specs passed, each after a real 63-minute
+  wait**, and both had never been run before. Expiry landed 9s and <1s after
+  their deadlines against a 3-minute allowance, and neither deadline moved
+  while being waited on. Evidence in `test/e2e/results/retention.md`, taken
+  from the write-once ledger rather than from the CaptureJobs, which the specs
+  clean up.
+- **Reading that ledger found a defect.** A second intent/outcome pair was
+  written eight seconds after a scheduled expiry saying "the capture was
+  deleted before its retention deadline". Normal expiry deletes the bytes and
+  deliberately keeps the artifact *record*, so `status.artifact` is still set
+  on an Expired capture and deleting the CaptureJob re-enters the finalizer's
+  expiry path with a message that assumes it got there first. Operationally
+  minor - a redundant idempotent delete - but the ledger is write-once and is
+  the record of last resort for what happened to collected traffic, and an
+  auditor reading it would see a scheduled expiry as an early purge. That is
+  the accusation the ledger exists to answer. Message now branches on the
+  phase; `TestDeletingAnAlreadyExpiredCaptureDoesNotClaimAnEarlyPurge` is the
+  regression test, mutation-checked.
+
+- **T131 found that nine of the quickstart's commands did not exist.** The
+  validation document had drifted from the Makefile: `verify-manifests`,
+  `query-observations`, `verify-correlation`, `e2e-malformed-observation`,
+  `e2e-correlation-timing`, `e2e-traffic`, `e2e-trigger-matrix`,
+  `verify-execution-uniqueness` and `test-e2e` were all absent. The capability
+  existed under other names in every case but one, so the fix is the document;
+  `test-investigation` and `test-acceptance` now take `ARGS` so a section can
+  narrow a run without a target of its own. The exception is the performance
+  section, which needs T126's `reference_load_test.go` - it is marked
+  unexecutable rather than given a command that would fail, because a release
+  checklist must not infer those figures from the shorter runs.
+- **SC-005 ran: 10 of 10 attempts under budget, p50 2.169s against 3m.**
+  Evidence in `test/e2e/results/quickstart.md`.
+- **SC-005 is recorded as ten attempts, not the spec's twenty, and the reason
+  is a fixture gap rather than a shortcut.** The protocol wants ten correlated
+  sessions with an attempt from the signature record and one from the protocol
+  record. Five fixtures carry a Community ID and exactly one of those also
+  carries a Suricata alert, so one session supports that round trip. "Each
+  record direction" is read as each end of the flow instead - the same thing
+  `TestExactPivotReachesTheWholeFlowFromEitherEnd` asserts, resting on Community
+  ID being symmetric - which yields ten genuine attempts. Reaching twenty means
+  writing nine more hand-built analyzer fixtures; that is a real piece of work
+  and it is not disguised by counting one session twice.
+- **The pattern across this phase is worth naming: a gate nobody has executed
+  is not a gate.** Six contract tests silently skipping in CI, a pinned
+  `govulncheck` nothing invoked, three security jobs that failed the first time
+  they ran, two expiry specs never executed, and a validation quickstart whose
+  commands did not resolve - all of them looked like coverage and asserted
+  nothing.
+
+- **T125 complete: all three new injections pass.** Gateway, trigger source and
+  controller, alongside the two pre-existing storage and audit specs it
+  deliberately does not duplicate. Evidence in
+  `test/e2e/results/failure-isolation.md`.
+- **The trigger-source injection took five runs and four failures were the
+  test, not the product.** Each is written into the spec because each looked
+  like a defect: adding a deny policy does nothing because Kubernetes
+  NetworkPolicy is additive-allow; an established keep-alive connection
+  survives a policy change; severing *all* egress kills the worker instead of
+  blinding it; and the restore failed applying a backup saved as raw
+  `kubectl get -o json`, leaving the worker isolated on a live cluster until it
+  was put back by hand. **A fault-injection test that does not inject is
+  indistinguishable from a system that tolerates the fault** - three of those
+  four runs passed their own assertions about having applied the injection.
+- **Product finding, carried to readiness rather than fixed: a dead event
+  worker leaves every policy reporting `Armed`.** The status tracker treats "no
+  word about the source" as disconnected on the principle that absence of
+  evidence is not evidence of coverage - but that logic runs inside the worker,
+  so a worker that is down cannot apply it, and nothing else writes policy
+  status. Ordinary Kubernetes behaviour for a stopped controller; not ordinary
+  for a field that is a detection-coverage claim an investigation later relies
+  on.
+
+- **T126 ran. SC-002 passed 20/20 (p50 17.6s, p95 39.6s against 2m). SC-003
+  passed its loss and availability clauses - 260,034 packets, 29 drops,
+  0.0112% over a full hour, tap Active throughout - and its rate clause is not
+  verifiable on this architecture at all.** Trawl exports no observed-byte
+  counter, so throughput cannot be computed from its own telemetry; and the tap
+  watches a physical node interface that in-cluster load never traverses, so
+  100 Mb/s needs an external source this installation does not have. 260k
+  packets in an hour is ~72/s, which is ambient background traffic. The run is
+  evidence the capture boundary is sound at that load and says nothing about
+  the reference rate, and the test says so in its own output so a transcribed
+  figure cannot become a claim it does not support.
+- **T132 is complete and deliberately unsigned.** Eight of nine measurable
+  outcomes pass with evidence; SC-003 and SC-005 need decisions rather than
+  more testing. Seven known gaps are carried explicitly, each with the decision
+  it needs. A checklist that inferred any of it from an adjacent run would be
+  the same failure as the gates this phase found unexecuted, in a nicer font.
 
 **Checkpoint**: All required checks pass, no critical security finding or
 unresolved source gap is hidden, and the release has reproducible evidence for the

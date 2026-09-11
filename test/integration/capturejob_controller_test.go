@@ -91,6 +91,19 @@ func (c *fakeCommitter) count(action string, job *trawlv1alpha1.CaptureJob, step
 	return n
 }
 
+// messagesFor returns the audit messages recorded for one action.
+func (c *fakeCommitter) messagesFor(action string) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []string
+	for _, r := range c.records {
+		if r.Action == action {
+			out = append(out, r.Message)
+		}
+	}
+	return out
+}
+
 // transitions counts how often the transition into phase was audited.
 func transitions(h *captureHarness, job *trawlv1alpha1.CaptureJob, phase trawlv1alpha1.CapturePhase) int {
 	return h.audit.count(audit.ActionCaptureJobTransition, job, capture.TransitionStep(phase))
@@ -827,5 +840,71 @@ func TestACaptureStoredWithABadSpecFailsInsteadOfRunning(t *testing.T) {
 	}
 	if c := condOf(after, status.TypeAccepted); c == nil || c.Reason != status.ReasonInvalidSpec {
 		t.Errorf("Accepted = %+v, want reason InvalidSpec", c)
+	}
+}
+
+func TestDeletingAnAlreadyExpiredCaptureDoesNotClaimAnEarlyPurge(t *testing.T) {
+	// Found while collecting T127's evidence, in the ledger rather than in a
+	// test: expiring a capture and then deleting it wrote
+	//
+	//   "the capture was deleted before its retention deadline;
+	//    its artifact goes with it"
+	//
+	// eight seconds after that capture had expired exactly on schedule.
+	//
+	// The cause is a feature working as intended. Normal expiry deletes the
+	// bytes and deliberately keeps the artifact *record*, which is what lets an
+	// investigation say what was collected after it is gone - so
+	// `status.artifact` is still set on an Expired capture, and deleting the
+	// CaptureJob re-enters the finalizer's expiry path with a message that
+	// assumes it got there first.
+	//
+	// The consequence is small and the wrong shape to leave alone. The ledger
+	// is write-once and is the record of last resort for what happened to
+	// evidence; an auditor reconstructing this artifact's history would read a
+	// scheduled expiry as an early purge, which is precisely the accusation the
+	// ledger exists to be able to answer.
+	ns := NewNamespace(t)
+
+	// Driven to Completed through the real path, so the finalizer is present
+	// and status.artifact is set the way it genuinely is - building the object
+	// by hand produced a capture with no finalizer, which Kubernetes removed on
+	// delete before the controller ever saw it.
+	h, job, runner := startedCapture(t, ns, "expired-then-deleted")
+	storeArtifact(t, h.store, job, 0)
+	finishRunner(t, runner, batchv1.JobComplete, "")
+	reconcileCapture(t, h.r, job)
+	job = reloadCapture(t, job)
+	if job.Status.Phase != trawlv1alpha1.CapturePhaseCompleted {
+		t.Fatalf("phase = %q, want Completed before it is expired", job.Status.Phase)
+	}
+	if job.Status.Artifact == nil {
+		t.Fatal("a completed capture has no artifact record, so this test cannot reproduce the state")
+	}
+
+	// The state a capture is really in after its retention ran: the bytes are
+	// gone and the record of them deliberately is not.
+	job.Status.Phase = trawlv1alpha1.CapturePhaseExpired
+	if err := Client().Status().Update(t.Context(), job); err != nil {
+		t.Fatalf("marking the capture expired: %v", err)
+	}
+
+	if err := Client().Delete(t.Context(), job); err != nil {
+		t.Fatalf("deleting the expired capture: %v", err)
+	}
+	// Twice: the first pass clears dependents, the second runs the expiry path.
+	reconcileCapture(t, h.r, job)
+	reconcileCapture(t, h.r, job)
+
+	messages := h.audit.messagesFor(audit.ActionArtifactExpire)
+	if len(messages) == 0 {
+		t.Fatal("deleting the record of an expired capture was not audited at all, so nothing " +
+			"records that the evidence metadata was destroyed")
+	}
+	for _, m := range messages {
+		if strings.Contains(m, "before its retention deadline") {
+			t.Errorf("the ledger says %q about a capture that had already expired; a scheduled "+
+				"expiry is recorded as an early purge", m)
+		}
 	}
 }

@@ -28,3 +28,4 @@ resources:
 # grants anything until an administrator creates a binding.
 - capturejob-roles.yaml
 - capturepolicy-roles.yaml
+- portmirror-roles.yaml

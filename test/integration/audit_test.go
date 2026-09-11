@@ -76,6 +76,8 @@ var requiredActions = []struct {
 	{"ActionArtifactDownload", audit.ActionArtifactDownload, true},
 	{"ActionRetentionChange", audit.ActionRetentionChange, true},
 	{"ActionArtifactExpire", audit.ActionArtifactExpire, true},
+	{"ActionPortMirrorConfigure", audit.ActionPortMirrorConfigure, true},
+	{"ActionPortMirrorRevert", audit.ActionPortMirrorRevert, true},
 }
 
 func TestEveryRequiredActionIsWrittenBySomeCodePath(t *testing.T) {

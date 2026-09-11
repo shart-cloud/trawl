@@ -68,7 +68,7 @@ kubectl -n trawl-system rollout status deployment/trawl-artifact-gateway --timeo
 Verify that no release workload uses a floating tag or blanket privilege:
 
 ```bash
-make verify-manifests
+make manifest-security
 kubectl -n trawl-system get pods
 kubectl get crd networktaps.trawl.cloud capturepolicies.trawl.cloud capturejobs.trawl.cloud
 ```
@@ -113,7 +113,10 @@ Generate the repository's synthetic DNS, HTTP, TLS, and IDS-signature traffic fr
 the approved traffic generator:
 
 ```bash
-make e2e-traffic TAP=north-south-mirror PROFILE=baseline
+# The traffic generator is driven by the acceptance spec that measures
+# first-observation latency; it schedules the synthetic DNS, HTTP, TLS and
+# signature workload on the tapped node and waits for records to arrive.
+make test-acceptance ARGS='-run TestAFirstStructuredObservationArrivesWithinFifteenMinutes' 
 ```
 
 Expected within the acceptance windows:
@@ -140,8 +143,15 @@ Open the provisioned **Trawl Overview** and **Alert Investigation** dashboards.
 For CLI validation, query the Loki endpoint through the repository test helper:
 
 ```bash
-make query-observations TAP=north-south-mirror TYPE=signature SINCE=15m
-make verify-correlation TAP=north-south-mirror SINCE=15m
+# The investigation suite pushes deterministic fixtures, queries them back
+# through Loki, and asserts the exact and fallback pivots. -run narrows it to
+# the correlation specs; drop it to check every claim in this section.
+make test-investigation ARGS='-run "Pivot|Overview|Subtype"'
+
+# Or query Loki directly. Select on the contract labels only: `namespace` and
+# `pod` are the high-cardinality labels the telemetry contract forbids, so a
+# query using them matches nothing and looks like an outage.
+logcli query '{service_name="trawl-observation", source_kind="Suricata"} | observation_type = "signature"' --since=15m
 ```
 
 Expected:
@@ -158,7 +168,7 @@ Expected:
 Malformed isolation:
 
 ```bash
-make e2e-malformed-observation TAP=north-south-mirror
+go test ./test/contract/ -run 'Schema|Malformed|Normalize' 
 ```
 
 Expected: the malformed count increases, no raw malformed record is logged, and a
@@ -170,7 +180,7 @@ record. Start timing when the source record opens and stop when the exact-match
 counterpart is displayed:
 
 ```bash
-make e2e-correlation-timing ATTEMPTS=20 SESSIONS=10
+make test-investigation ARGS='-run TestSC005ExactCorrelationTiming -v' 
 ```
 
 Expected: at least 18 of 20 attempts complete in under three minutes. Save only the
@@ -201,7 +211,7 @@ kubectl -n trawl-system get capturejob manual-tls -o yaml
 Generate matching and non-matching fixture traffic while it runs:
 
 ```bash
-make e2e-traffic TAP=north-south-mirror PROFILE=capture-filter
+make test-acceptance ARGS='-run "Capture.*Filter|FilterValid"' 
 ```
 
 Expected: lifecycle proceeds `Pending → Capturing → Storing → Completed`; actual
@@ -308,7 +318,7 @@ kubectl -n trawl-system get capturepolicy
 Run matching, non-matching, duplicate, and rate-limit traffic fixtures:
 
 ```bash
-make e2e-trigger-matrix TAP=north-south-mirror
+make test-acceptance ARGS='-run "Policy|Drop"' 
 ```
 
 Expected:
@@ -328,7 +338,7 @@ kubectl -n trawl-system rollout restart deployment/trawl-controller-manager
 kubectl -n trawl-system rollout restart deployment/trawl-event-worker
 kubectl -n trawl-system rollout status deployment/trawl-controller-manager --timeout=2m
 kubectl -n trawl-system rollout status deployment/trawl-event-worker --timeout=2m
-make verify-execution-uniqueness
+make test-acceptance ARGS='-run "Restart|Uniqueness"' 
 ```
 
 Expected: existing taps keep observing, every in-flight capture converges to one
@@ -340,7 +350,7 @@ Run the accelerated retention test, which uses the test-only fake clock and stor
 namespace and cannot be enabled in release manifests:
 
 ```bash
-make test-e2e TEST=retention
+TRAWL_E2E_EXPIRY=1 make test-acceptance ARGS='-run "Retention|Expired"' 
 ```
 
 Expected: download is denied exactly at the retention deadline, upload-in-progress
@@ -350,7 +360,7 @@ limit, and non-sensitive execution/audit metadata remains.
 Run component and dependency failure injection:
 
 ```bash
-make test-e2e TEST=failure-isolation
+TRAWL_E2E_FAILURE_INJECTION=1 make test-acceptance ARGS='-run Outage' 
 ```
 
 Expected: analyzer, Hubble, Loki, MinIO, audit sink/replay, gateway, and controller
@@ -363,8 +373,13 @@ monitoring never modifies or interrupts the test traffic path.
 
 Run only on the approved representative cluster and isolated traffic source:
 
+> **Not yet implemented.** `test/e2e/reference_load_test.go` is T126 and does not
+> exist, so this section cannot be executed. The command below is what it will
+> be; until then the section's expectations are unverified and a release
+> checklist must say so rather than infer them from the shorter runs.
+
 ```bash
-make test-e2e TEST=reference-load RATE=100mbit DURATION=60m
+TRAWL_E2E_REFERENCE_LOAD=1 make test-acceptance ARGS='-run ReferenceLoad'
 ```
 
 Expected:

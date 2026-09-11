@@ -76,7 +76,7 @@ test-investigation: ## Run the end-to-end investigation test against a deployed 
 # -count=1 because Go's test cache keys on the build and the environment, and
 # neither changes when the cluster does. A cached pass here reports on a cluster
 # state that may be hours gone.
-	go test -tags=investigation -count=1 ./test/e2e/ -v -timeout 15m
+	go test -tags=investigation -count=1 ./test/e2e/ -v -timeout 15m $(ARGS)
 
 .PHONY: test-acceptance
 test-acceptance: ## Run the NetworkTap cluster acceptance suite against a deployed Trawl (T034).
@@ -86,7 +86,7 @@ test-acceptance: ## Run the NetworkTap cluster acceptance suite against a deploy
 # tap observes. Set TRAWL_E2E_LEDGER_OUTAGE=1 to include the fail-closed spec,
 # which stops the audit ledger and so refuses mutations installation-wide for as
 # long as it runs.
-	go test -tags=acceptance -count=1 ./test/e2e/ -v -timeout 45m
+	go test -tags=acceptance -count=1 ./test/e2e/ -v -timeout 45m $(ARGS)
 
 .PHONY: verify-tools
 verify-tools: ## Verify build tools match the versions pinned in hack/tools.mk.

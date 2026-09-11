@@ -43,6 +43,8 @@ import (
 	"trawl.cloud/trawl/internal/audit"
 	"trawl.cloud/trawl/internal/config"
 	"trawl.cloud/trawl/internal/controller"
+	"trawl.cloud/trawl/internal/fabric"
+	"trawl.cloud/trawl/internal/fabric/mikrotik"
 	"trawl.cloud/trawl/internal/sanitize"
 	"trawl.cloud/trawl/internal/storage"
 	"trawl.cloud/trawl/internal/telemetry"
@@ -305,6 +307,25 @@ func main() {
 		Metrics: trawlMetrics,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to set up the retention controller")
+		os.Exit(1)
+	}
+
+	// Port mirroring is the only controller that writes to hardware outside the
+	// cluster, and the only one whose provider registry is assembled here
+	// rather than discovered. Registration is explicit so that "which binaries
+	// can reconfigure a switch" has an answer you can read.
+	mirrorProviders, err := fabric.NewRegistry(mikrotik.New())
+	if err != nil {
+		setupLog.Error(err, "Failed to build the device provider registry")
+		os.Exit(1)
+	}
+	if err := (&controller.PortMirrorReconciler{
+		Client:          mgr.GetClient(),
+		Providers:       mirrorProviders,
+		Audit:           auditSink,
+		SystemNamespace: installCfg.SystemNamespace,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to set up the PortMirror controller")
 		os.Exit(1)
 	}
 

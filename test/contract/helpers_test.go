@@ -44,6 +44,7 @@ func auditActions() []string {
 		audit.ActionCaptureJobManualCreate, audit.ActionCaptureJobPolicyCreate,
 		audit.ActionCaptureJobTransition,
 		audit.ActionArtifactDownload, audit.ActionRetentionChange, audit.ActionArtifactExpire,
+		audit.ActionPortMirrorConfigure, audit.ActionPortMirrorRevert,
 	}
 }
 
@@ -54,6 +55,7 @@ func conditionTypes() []string {
 		status.TypeAnalyzersHealthy, status.TypePacketsObserved,
 		status.TypeTapResolved, status.TypeSourceConnected, status.TypeWithinRateLimit,
 		status.TypeReady,
+		status.TypeDeviceReachable, status.TypeMirrorConfigured,
 		status.TypeTargetReady, status.TypeFilterValid, status.TypeCaptureStarted,
 		status.TypeArtifactVerified, status.TypeDownloadable, status.TypeRetentionEnforced,
 	}

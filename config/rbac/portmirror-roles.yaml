@@ -1,0 +1,54 @@
+# The roles for configuring traffic mirroring on network devices.
+#
+# These are separate from every capture and policy role on purpose, and the
+# separation is the single most important control this feature has.
+#
+# A PortMirror makes Trawl write to hardware outside the cluster. The device
+# credential it uses cannot be narrowed to "may only set a mirror" - RouterOS
+# group policies are coarse, and a user that can set mirror-target can usually
+# also add a firewall rule or shut a port. So the credential Trawl holds is
+# more capable than what Trawl does with it, and the place that gap can
+# actually be controlled is here: who may create a PortMirror at all.
+#
+# Hence a capture analyst, who may request captures and read packets, gets
+# nothing from these roles. Granting port-mirror-admin is a separate,
+# deliberate act, and an installation that never binds it has a Trawl that
+# cannot reconfigure anything however its device credential is scoped.
+#
+# What RBAC cannot express, as with capture policies: anyone who may update a
+# PortMirror may repoint it at different ports. The audit ledger carries that
+# weight instead - every device change is recorded as portmirror.configure or
+# portmirror.revert with the identity behind it, including refusals.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: port-mirror-admin
+  labels:
+    app.kubernetes.io/name: trawl
+rules:
+  # Create, view, update and delete device mirroring.
+  - apiGroups: ["trawl.cloud"]
+    resources: ["portmirrors"]
+    verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
+  # Seeing which taps exist, so a mirror can be pointed at a port a tap is
+  # actually watching. Read-only: configuring a mirror is not a reason to be
+  # able to change what observes it.
+  - apiGroups: ["trawl.cloud"]
+    resources: ["networktaps"]
+    verbs: ["get", "list", "watch"]
+---
+# Seeing what mirroring exists without being able to change it.
+#
+# Worth having as its own role: "which switch ports is Trawl copying, and to
+# where" is a question a security reviewer should be able to answer without
+# holding the ability to alter the answer.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: port-mirror-viewer
+  labels:
+    app.kubernetes.io/name: trawl
+rules:
+  - apiGroups: ["trawl.cloud"]
+    resources: ["portmirrors", "networktaps"]
+    verbs: ["get", "list", "watch"]
