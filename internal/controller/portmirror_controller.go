@@ -68,7 +68,8 @@ type PortMirrorReconciler struct {
 	// SystemNamespace is the only namespace PortMirrors are honoured in.
 	SystemNamespace string
 
-	// Actor identifies this controller in the ledger.
+	// Actor identifies this controller in the ledger. Optional; defaults to
+	// the manager's own workload identity.
 	Actor func() audit.Actor
 }
 
@@ -307,7 +308,7 @@ func (r *PortMirrorReconciler) auditDevice(
 	if r.Audit == nil {
 		return errors.New("no audit committer, so a device change cannot be recorded")
 	}
-	actor := audit.Actor{}
+	actor := r.defaultActor()
 	if r.Actor != nil {
 		actor = r.Actor()
 	}
@@ -328,6 +329,18 @@ func (r *PortMirrorReconciler) auditDevice(
 			fmt.Sprintf("%s/%d", decision, mirror.Generation)),
 	})
 	return err
+}
+
+// defaultActor is the manager's own identity.
+//
+// The *deployed* name, with the namePrefix the overlay applies. Naming the
+// pre-prefix "controller-manager" here would put an identity in the ledger
+// that does not exist, which is exactly the defect T119 found in the event
+// worker's configuration.
+func (r *PortMirrorReconciler) defaultActor() audit.Actor {
+	return audit.Actor{
+		Username: "system:serviceaccount:" + r.SystemNamespace + ":trawl-controller-manager",
+	}
 }
 
 // fail records an error on the resource and requeues.
