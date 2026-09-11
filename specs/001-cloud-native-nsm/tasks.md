@@ -1250,6 +1250,29 @@ operations, supply chain, and the complete quickstart before release.
   `kustomize`, and `renderDefault` fails rather than skips when `CI` is set, so
   the class cannot recur quietly if that dependency is ever dropped again.
 
+- **T125's first injection found a latent production defect, which is the
+  argument for the whole task.** The artifact gateway had been broken for a day
+  and nothing showed it. Three binaries parse the installation ConfigMap -
+  controller manager, event worker, artifact gateway - and `config.Load` uses
+  `yaml.UnmarshalStrict`, so an unrecognised field is a hard startup error.
+  T119 added `eventWorker` to the ConfigMap and rolled only the two components
+  whose *code* had changed; the gateway's had not, so it stayed on its pre-US4
+  image and was broken from that moment. A running pod never re-reads its
+  config, so the breakage was invisible until something restarted it - which
+  the gateway-outage spec did, days later and for unrelated reasons.
+- **The general rule, now in the runbook:** adding a field to the ConfigMap is a
+  breaking change for every component not yet running an image that knows it,
+  and the symptom appears at the next restart rather than at apply time. Roll
+  every config-parsing component when the schema changes, not only the ones
+  whose code changed, and apply the ConfigMap with or after the images.
+- **Open design question, deliberately not decided here.** Strict decoding is
+  defensible - it catches an operator's typo instead of silently ignoring it -
+  but it makes a purely additive config change a self-inflicted outage for any
+  component that lags a rollout. Tolerating unknown fields with a warning would
+  trade typo detection for rolling-upgrade safety. That is a constitution-level
+  call about fail-closed behaviour and belongs to the maintainer, not to this
+  task.
+
 **Checkpoint**: All required checks pass, no critical security finding or
 unresolved source gap is hidden, and the release has reproducible evidence for the
 active specification.

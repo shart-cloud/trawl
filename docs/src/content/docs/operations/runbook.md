@@ -291,6 +291,59 @@ installation ceiling, not what the file says.
 
 ---
 
+## A component crash-loops on `unknown field` after a config change
+
+**Signal:** a pod that was running fine restarts and then crash-loops with
+`invalid installation configuration: ... unknown field "<name>"`.
+
+**This is the most dangerous shape of failure in this document, because the
+delay between cause and symptom can be weeks.**
+
+Three binaries parse the installation ConfigMap — the controller manager, the
+event worker and the artifact gateway — and they parse it **strictly**: a field
+they do not recognise is a hard error, not a warning. That is deliberate, and it
+is what catches an operator's typo instead of silently ignoring it.
+
+The consequence is that **adding a field to the ConfigMap is a breaking change
+for every component not yet running an image that knows it.** And the breakage
+does not appear at apply time, because a running pod never re-reads its config.
+It appears at the *next restart* of that component — a node drain, an eviction,
+a scale event, an unrelated rollout — which may be long after the change and
+will look unrelated to it.
+
+This has already happened once here: `eventWorker` was added to the ConfigMap
+while rolling out the two components whose code had changed. The artifact
+gateway's code had not changed, so it was left on its previous image, and it was
+broken from that moment. Nothing showed it until a failure-injection test
+restarted it days later.
+
+**Recover:**
+
+```bash
+# Which field, and which component?
+kubectl logs deploy/<component> -n trawl-system --tail=5
+
+# Roll that component to a build that knows the field.
+kubectl set image deploy/trawl-artifact-gateway -n trawl-system \
+  artifact-gateway=ghcr.io/shart-cloud/trawl/artifact-gateway@sha256:<digest>
+kubectl rollout status deploy/trawl-artifact-gateway -n trawl-system
+```
+
+**Prevent:** when a release changes the config schema, roll **every** component
+that parses the config, not only the ones whose own code changed. Apply the
+ConfigMap with or after the images, never before. If you are unsure whether a
+component is current, restart it deliberately during the maintenance window —
+a crash-loop you caused on purpose at 10am is a great deal cheaper than the same
+crash-loop during an unrelated eviction at 3am.
+
+**Check for the latent version of this at any time** by confirming all three
+config-parsing components are running images from the same build:
+
+```bash
+kubectl get deploy -n trawl-system \
+  -o custom-columns=NAME:.metadata.name,IMAGE:.spec.template.spec.containers[0].image
+```
+
 ## Restart and recovery
 
 Trawl is built so that a restart costs continuity, never evidence. What each
