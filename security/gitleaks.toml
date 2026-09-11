@@ -1,0 +1,76 @@
+# security/gitleaks.toml — secret scanning configuration (T129).
+#
+# The default rules do the work. This file exists for the allowlist, and the
+# allowlist exists so the scan stays worth reading: a scanner that reports the
+# same handful of test fixtures on every run is a scanner people learn to skim,
+# and the one real finding goes past with them.
+#
+# Every entry here is narrow on purpose. Allowlisting a path is a decision that
+# no credential in that path will ever be real, so the paths listed are ones
+# where a real credential would be a bug on its own terms — test harnesses that
+# generate ephemeral values, and the sanitizer whose whole job is to hold
+# examples of what must never be stored.
+#
+# A credential that is genuinely committed by accident is not an allowlist
+# entry. Rotate it, then remove it. Rewriting history does not un-leak it, which
+# is why the workflow scans the whole history rather than the tip: a secret
+# removed in a later commit is still readable in the one that added it.
+
+title = "Trawl"
+
+[extend]
+useDefault = true
+
+[[rules]]
+  id = "trawl-artifact-bucket-credential"
+  description = "Artifact or audit bucket credential committed to the repository"
+  # Trawl's own credential shape, which the generic rules do not know about.
+  # These are read from a mounted Secret at runtime and must never appear in
+  # the tree — a bucket credential in git is read access to every capture the
+  # installation has ever collected.
+  regex = '''(?i)(secretAccessKey|accessKeyID)\s*[:=]\s*["']?[A-Za-z0-9/+=]{16,}["']?'''
+  tags = ["trawl", "storage"]
+  [rules.allowlist]
+    regexTarget = "match"
+    # The literal placeholders used in manifests and documentation.
+    regexes = [
+      '''(?i)(REPLACE_ME|CHANGEME|EXAMPLE|PLACEHOLDER|<[a-z-]+>)''',
+    ]
+
+[allowlist]
+  description = "Known-synthetic fixtures, allowlisted by value rather than by path"
+
+  # Scoped to the exact strings, never to whole files. A path allowlist says
+  # "no credential in this file will ever be real", which is a promise nobody
+  # can keep - and it was demonstrably wrong here: with these files
+  # path-allowlisted, a planted AWS key and a planted api_key in a SOURCES.lock
+  # both went undetected on a mutation check. Allowlisting the value means any
+  # *other* secret in the same file is still found.
+  regexTarget = "match"
+  regexes = [
+    # Hand-constructed JWTs with the shape of a service-account token and none
+    # of the substance: the payloads decode to {"sub":"analyst"} and the
+    # signature segments are base64 of the literal words
+    # "signature-secret-part" and "sig-analyst-secret". They exist to prove the
+    # sanitizer redacts a token that looks real, so a two-segment stand-in
+    # would test nothing - which is exactly why a scanner flags them.
+    '''eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9\.eyJzdWIiOiJhbmFseXN0In0\.c2ln[A-Za-z0-9_-]+''',
+
+    # Published GPG signing-key fingerprints. A fingerprint is public by
+    # design - it is how a reader verifies a release tarball was signed by the
+    # project - and images/*/SOURCES.lock prints it beside the gpg output it
+    # came from. Publishing it is the point.
+    '''signing_key_fingerprint:\s*[A-F0-9]{40}''',
+
+    # The literal placeholders used in manifests and documentation.
+    '''(?i)(REPLACE_ME|CHANGEME|EXAMPLE_ONLY|PLACEHOLDER)''',
+  ]
+
+  paths = [
+    # The one remaining path allowlist, and the only one that earns it: the
+    # sanitizer exists to hold examples of the strings that must never be
+    # persisted, so its fixtures are a catalogue of credential shapes on
+    # purpose. Scanning it reports the catalogue, not a leak.
+    '''internal/sanitize/sanitize\.go''',
+    '''internal/sanitize/sanitize_test\.go''',
+  ]

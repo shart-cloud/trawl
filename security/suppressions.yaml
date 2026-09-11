@@ -1,0 +1,32 @@
+# security/suppressions.yaml — findings this project has reviewed and decided
+# not to act on yet, each with a date it stops being accepted.
+#
+# The point of this file is that suppressing a finding is a decision somebody
+# made, on a date, with a reason, and that the decision expires. A suppression
+# list without expiry dates becomes a list of things nobody has looked at since
+# whoever added them left, and it grows monotonically because removing an entry
+# is work and leaving it is not.
+#
+# `hack/verify-suppressions.sh` fails the build when an entry is past its
+# `expires` date. That is the whole mechanism: an expired suppression breaks the
+# build, so the choice is to fix the finding or to re-review it and write a new
+# date with a new reason. Neither is silent.
+#
+# Rules for an entry:
+#
+#   id        the scanner's identifier, exactly as it reports it
+#             (CVE-2025-1234, GO-2025-1234, a gitleaks rule id, a Trivy id)
+#   scanner   which tool reports it: govulncheck | trivy | gitleaks | manifest
+#   reason    why it is not being fixed *now*. "Not exploitable" is not a
+#             reason; say which call path is absent, or which control makes it
+#             unreachable, so the next reader can check whether that is still
+#             true.
+#   expires   YYYY-MM-DD. Keep it short. Ninety days is a long time for a
+#             security finding, and a year means nobody intends to look again.
+#   reviewer  who made the call.
+#   added     YYYY-MM-DD, so an entry that has been renewed repeatedly is
+#             visible as such.
+#
+# An empty list is the healthy state, and it is the state this file is in.
+
+suppressions: []

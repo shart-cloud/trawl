@@ -1061,19 +1061,265 @@ same bounded, authorized execution path proven by US3.
 **Purpose**: Verify security, failure isolation, compatibility, performance,
 operations, supply chain, and the complete quickstart before release.
 
-- [ ] T120 [P] Add audit completeness and durability tests for every required mutation, policy decision, transition, download decision, retention change, and expiry action, including intent/outcome pairs, idempotent retry, conflicting keys, MinIO/Loki outages, cursor overlap, duplicate-copy collapse, replay, bounded ledger retention, and fail-closed user actions in `test/integration/audit_test.go`
-- [ ] T121 [P] Add static security tests that reject off-namespace Trawl resources, wildcard RBAC, unexpected host namespaces/capabilities, service-account token leakage, floating tags, hostPath, public buckets, browser download links, and secret-bearing telemetry in `test/contract/security_manifests_test.go`
-- [ ] T122 [P] Add stored `v1alpha1` fixture round-trip, additive-defaulting, older-controller rollback, CRD storage-version, and uninstall-preservation tests in `test/integration/upgrade_rollback_test.go`
-- [ ] T123 [P] Document tap/analyzer health, packet loss/duplication, malformed records, trigger gaps, audit-ledger/replay backlog, storage/retention failure, and restart recovery procedures in `docs/src/content/docs/operations/runbook.md`
-- [ ] T124 [P] Document privileges, RBAC roles, BPF/filter trust boundary, evidence classification, local download handling, audit review, and purge approval in `docs/src/content/docs/security/evidence-handling.md`
+- [x] T120 [P] Add audit completeness and durability tests for every required mutation, policy decision, transition, download decision, retention change, and expiry action, including intent/outcome pairs, idempotent retry, conflicting keys, MinIO/Loki outages, cursor overlap, duplicate-copy collapse, replay, bounded ledger retention, and fail-closed user actions in `test/integration/audit_test.go`
+- [x] T121 [P] Add static security tests that reject off-namespace Trawl resources, wildcard RBAC, unexpected host namespaces/capabilities, service-account token leakage, floating tags, hostPath, public buckets, browser download links, and secret-bearing telemetry in `test/contract/security_manifests_test.go`
+- [x] T122 [P] Add stored `v1alpha1` fixture round-trip, additive-defaulting, older-controller rollback, CRD storage-version, and uninstall-preservation tests in `test/integration/upgrade_rollback_test.go`
+- [x] T123 [P] Document tap/analyzer health, packet loss/duplication, malformed records, trigger gaps, audit-ledger/replay backlog, storage/retention failure, and restart recovery procedures in `docs/src/content/docs/operations/runbook.md`
+- [x] T124 [P] Document privileges, RBAC roles, BPF/filter trust boundary, evidence classification, local download handling, audit review, and purge approval in `docs/src/content/docs/security/evidence-handling.md`
 - [ ] T125 Run analyzer, controller, trigger, Loki, Hubble, MinIO, audit sink/replay, gateway, and retention failure injection while asserting durable audit or fail-closed user actions and passive unaffected monitoring in `test/e2e/failure_isolation_test.go`
 - [ ] T126 Run the 100 Mb/s 60-minute reference test plus at least 20 timed valid tap create/update trials and enforce first-observation <=15m, 95% reconciliation <=2m, packet-loss, ingestion-latency, capture-start/store, bound-overshoot, and trigger-count thresholds in `test/e2e/reference_load_test.go`
 - [ ] T127 Run exact deadline-denial and accelerated 24-hour deletion validation with upload protection and preserved metadata in `test/e2e/retention_test.go`
-- [ ] T128 Generate SBOMs, provenance, vulnerability results, upstream source verification, rule/script hashes, and immutable image digests in `dist/supply-chain/manifest.json`
-- [ ] T129 Configure release-blocking Go, container, manifest, dependency, and secret scanning with reviewed suppressions and expiry dates in `.github/workflows/security.yml` and `security/suppressions.yaml`
-- [ ] T130 Regenerate CRDs, RBAC, webhooks, install bundle, examples, observation schema embedding, and dashboards and prove a clean drift check in `dist/install.yaml` and `test/contract/generated_artifacts_test.go`
+- [x] T128 Generate SBOMs, provenance, vulnerability results, upstream source verification, rule/script hashes, and immutable image digests in `dist/supply-chain/manifest.json`
+- [x] T129 Configure release-blocking Go, container, manifest, dependency, and secret scanning with reviewed suppressions and expiry dates in `.github/workflows/security.yml` and `security/suppressions.yaml`
+- [x] T130 Regenerate CRDs, RBAC, webhooks, install bundle, examples, observation schema embedding, and dashboards and prove a clean drift check in `dist/install.yaml` and `test/contract/generated_artifacts_test.go`
 - [ ] T131 Execute every command and expected outcome plus the defined 20-attempt exact-correlation timing protocol in `specs/001-cloud-native-nsm/quickstart.md` on the representative cluster and save only sanitized durations/counts in `test/e2e/results/quickstart.md`
 - [ ] T132 Complete the constitutional, security, operational, and measurable-outcome release checklist with links to passing evidence in `docs/release/readiness.md`
+
+### Phase 7 implementation notes
+
+- **T121 asserts what was not already asserted, and says where the rest lives.**
+  Seven of the nine properties the task lists were already covered before the
+  file existed - wildcard RBAC, floating tags, hostPath and host namespaces,
+  restricted Pod Security, default-deny networking, browser download links and
+  secret-bearing telemetry all have named tests in `generated_artifacts_test.go`,
+  `grafana_dashboards_test.go` and `observation_schema_test.go`. Duplicating them
+  would have produced a second thing to keep true and a second place to look, so
+  `security_manifests_test.go` opens with an index of them and adds the three
+  that nothing covered: that admission can *see* an off-namespace resource
+  (a `namespaceSelector` on the webhook configuration would make the system
+  namespace rule unreachable rather than enforced), that a ServiceAccount bound
+  to nothing refuses a token, and that nothing publishes the artifact bucket.
+  A fourth was added beside them: no container may *add* a Linux capability.
+  `TestManifestsRequestNoHostAccess` catches `privileged: true`, which is the
+  loud form; a single added capability is the quiet one.
+- **The T121 checks render `config/default` rather than reading `config/`.**
+  Directly because of T119: a check that reads the pre-kustomize files is
+  checking a workload nobody runs. All four were mutation-checked - a
+  `namespaceSelector`, an unbound ServiceAccount, an added `NET_ADMIN`, and an
+  anonymous bucket grant written into documentation - and each failed naming the
+  defect. (The grant is described rather than quoted here on purpose: the check
+  scans `specs/` and `docs/` too, so spelling the command out in prose about the
+  check makes the check fail on its own description. That is the scanner working,
+  not a false positive worth loosening it for - a copyable grant in
+  documentation is exactly what it is meant to catch.)
+
+- **T122 found that `make undeploy` destroyed every capture record.** It
+  rendered `config/default` - which lists `../crd` - and piped the whole thing
+  to `kubectl delete`. Deleting a CustomResourceDefinition deletes every object
+  of that kind, so removing the operator also removed every CaptureJob,
+  NetworkTap and CapturePolicy: the trigger snapshot saying why a capture was
+  taken, the retention deadline, and the artifact key saying where the packets
+  are. The pcaps survive in the bucket with nothing left in the cluster that
+  knows they exist, and at the terminal it looks like a tidy uninstall.
+  `hack/undeploy-manifests.sh` now filters the CRDs out of the delete set.
+  `make uninstall` still removes them; it is no longer a side effect of
+  removing a Deployment, and its help text says what it costs.
+- **The schema-surface golden is the rollback gate.**
+  `test/integration/testdata/v1alpha1-schema-surface.json` records every
+  property path and every required path in the stored version. A property that
+  disappears is data loss on the next write, because the API server prunes what
+  the schema does not describe; a property that becomes required strands every
+  stored object that omitted it, because without CRD validation ratcheting the
+  API server then refuses every update to those objects - including the disarm.
+  Regeneration is env-gated (`TRAWL_UPDATE_SCHEMA_SURFACE=1`) and never
+  automatic: a test that rewrites its own expectations records the breakage
+  instead of catching it.
+- **`make test-integration` now passes `-count=1`.** envtest reads
+  `config/crd/bases` at runtime, so editing a CRD changes nothing Go's test
+  cache keys on. It served four consecutive stale passes during T122's mutation
+  checks while the CRD under test was deliberately broken - the exact case
+  these tests exist to catch. Two other traps in the same area, both worth
+  knowing: removing a CRD field that a CEL rule references makes the CRD refuse
+  to *install*, so the API server fails the suite before any test runs and the
+  mutation proves nothing about the test; and `Armed bool json:"armed,omitempty"`
+  means a typed client cannot send `armed: false` as an explicit value, so a
+  disarm relies on the CRD default rather than on the field being written.
+
+- **T120 adds completeness, not mechanics.** Conditional write, verification,
+  idempotent retry, conflicting content for one key, fail-closed on an
+  unavailable ledger, write-once retention, replay, cursor overlap and backlog
+  were all covered already, in `internal/audit`'s unit tests and in
+  `audit_ledger_test.go`. Every one of those starts from a record the test
+  constructed, so all of them would keep passing if a mutating path stopped
+  committing - or never committed - one. The two new questions are whether
+  every declared action is written by some production path, and whether a
+  fallible action leaves both of its records. Both were mutation-checked:
+  removing the last two emitters of `retention.change` fails the first, and
+  dropping `decision` from `StableKeyForAdmission` fails the second on every
+  fallible action at once.
+- **Why the intent/outcome check matters more than it looks.** Decision is part
+  of the admission stable key, and that is the only thing keeping the two
+  records of one request apart. Drop it and the outcome is written to the key
+  the intent already holds, where the ledger refuses it as a content conflict -
+  so the operation completes with the ledger saying it was authorized and
+  nothing saying whether it happened. For a system whose output is evidence,
+  "authorized and then silence" cannot be told apart from "authorized and then
+  failed".
+
+- **T123 and T124 fill the two sidebar sections that were already configured
+  and empty.** `astro.config.mjs` autogenerates Operations and Security from
+  directories that did not exist, so the docs site had been shipping with two
+  dead nav entries.
+- **Both documents cite the system rather than describing it in general terms.**
+  The runbook is written around the metric names, condition types and phases the
+  code actually emits, and the roles table in the evidence document is read off
+  the rendered `ClusterRole` verbs. Both also record the known blind spots found
+  in this and earlier sessions rather than omitting them: the `entry too far
+  behind` gaps in the Loki copy, the `failed` policy decision that logs nothing,
+  the thresholded policy that cannot say it is counting, the retention clamp
+  asymmetry that shows as permanent GitOps drift, and the label mistake that
+  once made a populated Loki look empty. A runbook that pretends the blind spots
+  are not there costs more than one that names them.
+- **The evidence document ends with where the controls stop.** A downloaded file
+  is outside all of them, a namespace administrator bypasses the role model
+  entirely by reading the bucket credentials, Trawl classifies no content, and
+  retention bounds the artifact but not the analysis derived from it. A control
+  someone believes in and does not have is worse than one they know they lack.
+
+- **T129 found that `govulncheck` had never run.** It was pinned in
+  `hack/tools.mk`, installed by `hack/verify-tools.sh`, and asserted to be the
+  right version by `make verify` - and nothing ever invoked it. A pinned scanner
+  nobody runs is a supply-chain control on paper only. It now runs in CI and in
+  a new `make security` target, and reports zero reachable vulnerabilities (one
+  in an imported package and three in required modules, none of them called).
+- **One suppression list, and its dates are enforced.** `security/suppressions.yaml`
+  is the only place a finding may be accepted, and `hack/verify-suppressions.sh`
+  fails the build on an entry that is past its `expires` date, missing a field,
+  naming a scanner the project does not run, or carrying a reason too short to
+  re-review. Trivy's ignore file is *generated* from it rather than maintained
+  beside it, so a container suppression cannot outlive its review by living
+  somewhere the checker never reads; `security/.trivyignore` is gitignored for
+  the same reason.
+- **Caveat: "release-blocking" needs a repository setting this commit cannot
+  make.** The workflow is written to fail rather than warn, but a required check
+  is required only when branch protection says so. Someone with admin on the
+  repository has to add the Security jobs to the protected-branch rules, or the
+  gate is advisory in practice.
+
+- **T130's value is bundle completeness, not regeneration.** `make verify`
+  already proved no drift and `dist/` is gitignored, so "regenerate and check"
+  asserts almost nothing on its own. The two new contract tests ask the
+  question that has actually bitten this repository twice: is the generated
+  artifact *shipped*? A CRD reaches the installer only if someone listed it in
+  `config/crd/kustomization.yaml`; controller-gen writes the file either way and
+  envtest reads `config/crd/bases` directly, so a forgotten entry leaves every
+  test passing while the installer ships without the type. The audit Service and
+  the artifact gateway were both written-but-never-applied for exactly this
+  reason, as `config/default/kustomization.yaml`'s own comments record.
+- **The webhook check is the more dangerous half.** A configured path the
+  manager does not register is worse than a missing one, because `failurePolicy`
+  is `Fail`: the API server calls a path nothing serves and refuses every create
+  and update of that kind installation-wide, naming a webhook rather than the
+  real fault. Comparing markers to manifests would be circular - controller-gen
+  generates one from the other - so the check compares the configuration against
+  the manager's registration calls instead.
+- **A mutation check caught a loose assertion in one of these tests.** The
+  webhook check first matched the handler name as a bare substring, which a
+  rename satisfies; it is anchored on the construction now, and the mutation was
+  redone as an outright deletion of the registration block.
+
+- **T128's governing rule: a section that could not be produced is recorded as
+  absent with a reason, never omitted.** A manifest missing its SBOM section
+  looks exactly like one whose SBOMs were never generated, and the second is the
+  case somebody needs to know about. `dist/` is gitignored, so what is committed
+  is the generator, the CI job that runs it where the images exist, and two
+  contract tests - one asserting every required section is present with either
+  content or a stated reason, one asserting the sources are pinned.
+- **The generator found one real gap and one of its own making.** `cbindgen` is
+  pinned by version with no checksum; that is now named in the manifest's
+  warning rather than sitting in a list of things that look equally pinned.
+  (crates.io makes a published version immutable, so it is weaker than the
+  others rather than unsafe.) The generator also *reported* the capture-runner's
+  wireshark pin as unpinned, which was wrong - it pins each Debian package under
+  a nested `packages:` block and the check only read the top level. Fixed before
+  committing: a manifest that cries wolf is read with the same attention as one
+  that stays silent.
+- **Zeek and Suricata are required to carry a detached signature, not merely a
+  checksum.** They are compiled from upstream source and parse hostile input, so
+  "the bytes did not change" is a weaker claim than the one that matters, which
+  is who published them. Mutation-checked by deleting Zeek's signing key
+  fingerprint.
+
+- **Six contract tests had never run in CI.** `make test` did not depend on the
+  `kustomize` target, so on a clean checkout `bin/kustomize` was absent and
+  every test calling `renderDefault` took its `t.Skip`. `go test` prints nothing
+  for a skip without `-v`, so the job was green and silent - including for
+  `TestNetworkPolicyIngressPortsAreDeclaredContainerPorts`, which predates this
+  phase, and for all four of T121's security gates. A silent skip is worse than
+  a failure because it looks like coverage. `make test` now depends on
+  `kustomize`, and `renderDefault` fails rather than skips when `CI` is set, so
+  the class cannot recur quietly if that dependency is ever dropped again.
+
+- **T125's first injection found a latent production defect, which is the
+  argument for the whole task.** The artifact gateway had been broken for a day
+  and nothing showed it. Three binaries parse the installation ConfigMap -
+  controller manager, event worker, artifact gateway - and `config.Load` uses
+  `yaml.UnmarshalStrict`, so an unrecognised field is a hard startup error.
+  T119 added `eventWorker` to the ConfigMap and rolled only the two components
+  whose *code* had changed; the gateway's had not, so it stayed on its pre-US4
+  image and was broken from that moment. A running pod never re-reads its
+  config, so the breakage was invisible until something restarted it - which
+  the gateway-outage spec did, days later and for unrelated reasons.
+- **The general rule, now in the runbook:** adding a field to the ConfigMap is a
+  breaking change for every component not yet running an image that knows it,
+  and the symptom appears at the next restart rather than at apply time. Roll
+  every config-parsing component when the schema changes, not only the ones
+  whose code changed, and apply the ConfigMap with or after the images.
+- **Open design question, deliberately not decided here.** Strict decoding is
+  defensible - it catches an operator's typo instead of silently ignoring it -
+  but it makes a purely additive config change a self-inflicted outage for any
+  component that lags a rollout. Tolerating unknown fields with a warning would
+  trade typo detection for rolling-upgrade safety. That is a constitution-level
+  call about fail-closed behaviour and belongs to the maintainer, not to this
+  task.
+
+- **A killed failure-injection run leaves the fault in place.** `t.Cleanup`
+  covers a failed assertion, a panic and a timeout; it does not cover SIGKILL,
+  which runs no deferred code. For these specs what is left behind is not a
+  stray object but an injected fault - a NetworkPolicy severing the worker's
+  egress, or a Deployment scaled to zero - and an installation can sit in that
+  state indefinitely looking like a component that failed on its own. Two
+  mitigations: the injectors now clear a leftover of their own before applying,
+  so a subsequent run self-heals rather than reporting the previous run's
+  damage as its own finding; and `hack/e2e-cleanup.sh` is the one command for a
+  human after a killed run.
+- **T125 is partially executed.** The gateway injection passed and proved its
+  property - a capture requested during a gateway outage still reached
+  Completed, so losing the read path does not lose the evidence. The trigger
+  source and controller injections are written, compile, gate correctly and are
+  not yet executed: the development machine was under memory pressure from
+  unrelated work and the harness watchdog killed the runs twice. The controller
+  injection in particular should not be run unattended on a shared cluster,
+  because a kill mid-run leaves the installation refusing every mutation until
+  somebody notices.
+
+- **T129's first real run showed three of five jobs did not work.** Opening the
+  PR was the only way to find out - the Security workflow triggers on
+  `pull_request` and `push: main`, so a branch push never exercises it, and the
+  task had been marked done on the strength of five jobs nobody had run. All
+  three failures were environmental rather than findings: `gitleaks-action`
+  refuses to run for a GitHub organisation without a paid licence,
+  `dependency-review-action` needs the repository's dependency graph enabled,
+  and `trivy-action`'s install script exited 1 after resolving the version it
+  wanted. Every scanner is now a pinned, checksum-verified binary installed in
+  the job, which is how `hack/tools.mk` already treats every other tool; the
+  only remaining third-party actions are `actions/checkout` and
+  `actions/setup-go`.
+- **The secret scan found four things and all four were false positives**, which
+  is the answer worth having recorded: two hand-built JWTs whose signature
+  segments decode to the literal words "signature-secret-part" and
+  "sig-analyst-secret", and two GPG signing-key fingerprints, which are public
+  by design - a fingerprint is how a reader verifies a release signature.
+- **The first allowlist for those blinded the scanner, and a mutation check
+  caught it.** Allowlisting by *path* says "no credential in this file will ever
+  be real", which is a promise nobody can keep: with the two test files
+  path-allowlisted, a planted AWS key and a planted `api_key` both went
+  undetected. The allowlist is scoped to the exact synthetic *values* now, so
+  any other secret in the same files is still found - verified by planting a
+  non-canonical AWS key and a GitHub PAT, both of which are caught.
+  (Note for anyone repeating this: `AKIAIOSFODNN7EXAMPLE` is AWS's own
+  documentation key and gitleaks allowlists it internally, so it is useless as
+  a mutation.)
 
 **Checkpoint**: All required checks pass, no critical security finding or
 unresolved source gap is hidden, and the release has reproducible evidence for the

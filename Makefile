@@ -60,7 +60,12 @@ vet: ## Run go vet against code.
 	go vet ./...
 
 .PHONY: test
-test: manifests generate fmt vet setup-envtest ## Run tests.
+test: manifests generate fmt vet setup-envtest kustomize ## Run tests.
+# kustomize is a dependency because several contract tests render
+# config/default, and without the binary they call t.Skip. `go test` prints
+# nothing for a skip, so on a clean checkout - which is every CI run - the job
+# went green while the rendered-manifest security checks never executed. A
+# silent skip is worse than a failure: it looks like coverage.
 	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
 .PHONY: test-investigation
@@ -92,9 +97,19 @@ verify: verify-tools fmt vet ## Verify tool pins and fail on generated-artifact 
 	hack/verify-drift.sh
 
 .PHONY: test-integration
-test-integration: manifests generate fmt vet setup-envtest ## Run integration tests that need real service containers.
+test-integration: manifests generate fmt vet setup-envtest kustomize ## Run integration tests that need real service containers.
+# kustomize for the same reason `test` needs it: TestUndeployingDoesNotTakeThe
+# CustomResourceDefinitionsWithIt runs hack/undeploy-manifests.sh, which renders
+# config/default. Adding it to `test` and not here was the same oversight twice
+# in one session.
+# -count=1 for the same reason test-acceptance uses it, and the reason is not
+# obvious here: envtest reads config/crd/bases at *runtime*, so editing a CRD
+# changes nothing the Go test cache keys on. A cached pass then reports on a
+# schema that is no longer installed. This was not theoretical - it served four
+# consecutive stale passes while a CRD under test was being deliberately broken,
+# which is precisely the case these tests exist to catch.
 	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" \
-		go test ./test/integration/... -timeout 20m
+		go test -count=1 ./test/integration/... -timeout 20m
 
 .PHONY: test-race
 test-race: manifests generate fmt vet ## Run unit tests under the race detector.
@@ -119,6 +134,23 @@ docker-build-content-init: ## Build the analyzer content-init image.
 .PHONY: manifest-security
 manifest-security: ## Fail on manifests that grant more than Trawl needs.
 	hack/verify-manifests.sh
+
+.PHONY: supply-chain
+supply-chain: ## Assemble dist/supply-chain/manifest.json for this build.
+# Sections that cannot be produced here - SBOMs need syft and built images,
+# provenance needs a CI run - are recorded as unavailable with a reason rather
+# than omitted. A manifest missing a section looks exactly like one whose
+# section was never generated.
+	OUT_DIR=dist/supply-chain hack/supply-chain-manifest.sh
+
+.PHONY: security
+security: manifest-security ## Run the release-blocking security checks that do not need a container runtime.
+# govulncheck was pinned in hack/tools.mk and version-verified for months
+# without anything ever running it. A pinned scanner nobody invokes is a
+# supply-chain control on paper only.
+	hack/verify-suppressions.sh
+	hack/verify-tools.sh --install
+	"$(LOCALBIN)/govulncheck" ./...
 
 .PHONY: docker-build-all
 docker-build-all: ## Build every Trawl binary image from the shared Dockerfile.
@@ -222,7 +254,7 @@ install: manifests kustomize ## Install CRDs into the K8s cluster specified in ~
 	if [ -n "$$out" ]; then echo "$$out" | "$(KUBECTL)" apply -f -; else echo "No CRDs to install; skipping."; fi
 
 .PHONY: uninstall
-uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
+uninstall: manifests kustomize ## Uninstall CRDs. DESTRUCTIVE: deleting a CRD deletes every NetworkTap, CaptureJob and CapturePolicy in the cluster, including the records that say where collected evidence is stored. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	@out="$$( "$(KUSTOMIZE)" build config/crd 2>/dev/null || true )"; \
 	if [ -n "$$out" ]; then echo "$$out" | "$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f -; else echo "No CRDs to delete; skipping."; fi
 
@@ -232,8 +264,16 @@ deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in
 	"$(KUSTOMIZE)" build config/default | "$(KUBECTL)" apply -f -
 
 .PHONY: undeploy
-undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
-	"$(KUSTOMIZE)" build config/default | "$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f -
+undeploy: kustomize ## Undeploy the controller, leaving the CRDs and every stored capture record intact. Call with ignore-not-found=true to ignore resource not found errors during deletion.
+# Deliberately not `build config/default | kubectl delete`. That renders the
+# CRDs too, and deleting a CRD deletes every object of that kind - so the tidy
+# uninstall silently takes every CaptureJob with it: the trigger snapshot, the
+# retention deadline, and the artifact key that says where the packets are. The
+# pcap survives in the bucket with nothing left that knows it exists.
+#
+# `make uninstall` still removes the CRDs. It is just no longer something that
+# happens to you while you are removing a Deployment.
+	KUSTOMIZE="$(KUSTOMIZE)" hack/undeploy-manifests.sh | "$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f -
 
 ##@ Dependencies
 

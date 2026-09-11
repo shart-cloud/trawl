@@ -519,6 +519,17 @@ func renderDefault(t *testing.T) string {
 	root := repoRoot(t)
 	kustomize := filepath.Join(root, "bin", "kustomize")
 	if _, err := os.Stat(kustomize); err != nil {
+		// A skip is right for a developer who has not built the tool yet, and
+		// wrong for CI. `go test` prints nothing for a skip, so a clean
+		// checkout without this binary turned six rendered-manifest checks -
+		// including every one of the security gates - into a silent no-op
+		// behind a green job. `make test` now depends on the kustomize target;
+		// this refuses to let the failure recur quietly if that dependency is
+		// ever dropped.
+		if os.Getenv("CI") != "" {
+			t.Fatalf("bin/kustomize is absent in CI, so every rendered-manifest check would skip "+
+				"silently and the job would pass having asserted nothing: %v", err)
+		}
 		t.Skipf("bin/kustomize absent, run `make kustomize`: %v", err)
 	}
 
@@ -534,4 +545,178 @@ func renderDefault(t *testing.T) string {
 		t.Fatalf("kustomize build config/default: %v", err)
 	}
 	return string(out)
+}
+
+// --- T130: the install bundle is complete ------------------------------------
+
+func TestTheInstallBundleCarriesACRDForEveryAPIKind(t *testing.T) {
+	// A type gets its CRD into the bundle only if someone remembered to list
+	// the generated file in config/crd/kustomization.yaml. controller-gen
+	// writes the file either way, so a forgotten entry looks exactly like a
+	// finished job: the type compiles, its tests pass against envtest (which
+	// reads config/crd/bases directly), and the installer silently ships
+	// without it. The first thing anyone notices is `no matches for kind` on a
+	// real cluster.
+	//
+	// This repository has already shipped two objects that were written and
+	// never applied - the audit Service and the artifact gateway, both recorded
+	// in config/default/kustomization.yaml's comments - so the class is not
+	// hypothetical here.
+	root := repoRoot(t)
+
+	// The kinds are read from the API package rather than listed, so a new type
+	// is covered the day it is added rather than the day someone remembers this
+	// test.
+	entries, err := os.ReadDir(filepath.Join(root, "api", "v1alpha1"))
+	if err != nil {
+		t.Fatalf("reading the API package: %v", err)
+	}
+
+	rootMarker := regexp.MustCompile(`\+kubebuilder:object:root=true`)
+	typeDecl := regexp.MustCompile(`(?m)^type ([A-Z][A-Za-z0-9]*) struct`)
+
+	var kinds []string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), "_types.go") {
+			continue
+		}
+		//nolint:gosec // G304: a repository path.
+		body, readErr := os.ReadFile(filepath.Join(root, "api", "v1alpha1", e.Name()))
+		if readErr != nil {
+			t.Fatalf("reading %s: %v", e.Name(), readErr)
+		}
+		text := string(body)
+		for _, loc := range rootMarker.FindAllStringIndex(text, -1) {
+			// The first type declared after the marker is the one it marks.
+			if m := typeDecl.FindStringSubmatch(text[loc[1]:]); m != nil {
+				kind := m[1]
+				// List types are root objects too and have no CRD of their own.
+				if strings.HasSuffix(kind, "List") {
+					continue
+				}
+				kinds = append(kinds, kind)
+			}
+		}
+	}
+	if len(kinds) == 0 {
+		t.Fatal("no root API kinds were found, so this check asserts nothing")
+	}
+
+	rendered := renderDefault(t)
+	shipped := map[string]bool{}
+	for doc := range strings.SplitSeq(rendered, "\n---\n") {
+		if strings.TrimSpace(doc) == "" {
+			continue
+		}
+		var crd struct {
+			Kind string `json:"kind"`
+			Spec struct {
+				Names struct {
+					Kind string `json:"kind"`
+				} `json:"names"`
+			} `json:"spec"`
+		}
+		if err := yaml.Unmarshal([]byte(doc), &crd); err != nil {
+			continue
+		}
+		if crd.Kind == "CustomResourceDefinition" {
+			shipped[crd.Spec.Names.Kind] = true
+		}
+	}
+
+	for _, kind := range kinds {
+		if !shipped[kind] {
+			t.Errorf("%s is a root API kind and the install bundle carries no CRD for it. "+
+				"controller-gen writes config/crd/bases either way and envtest reads that directory "+
+				"directly, so every test still passes; the installer just ships without the type and a "+
+				"real cluster answers `no matches for kind %s`.", kind, kind)
+		}
+	}
+}
+
+func TestEveryConfiguredWebhookIsWiredIntoTheManager(t *testing.T) {
+	// A webhook configuration that names a path the binary does not serve is
+	// worse than one that is missing, because failurePolicy is Fail: the API
+	// server calls the path, gets nothing, and refuses the request. Every
+	// create and update of that kind then fails installation-wide, and the
+	// error names a webhook rather than the thing actually wrong.
+	//
+	// controller-gen generates the configuration from markers on the webhook
+	// types, so comparing the two would be circular. What is not circular is
+	// whether the manager ever *registers* the webhook: deleting a
+	// SetupWithManager call leaves the markers, the manifests and the tests
+	// intact, and breaks the cluster.
+	root := repoRoot(t)
+
+	//nolint:gosec // G304: a repository path.
+	main, err := os.ReadFile(filepath.Join(root, "cmd", "controller-manager", "main.go"))
+	if err != nil {
+		t.Fatalf("reading the manager entrypoint: %v", err)
+	}
+	wiring := string(main)
+
+	// Path shape is /<mutate|validate>-<group with dots as dashes>-<version>-<lowercase kind>.
+	pathKind := regexp.MustCompile(`^/(?:mutate|validate)-trawl-cloud-v1alpha1-([a-z0-9]+)$`)
+
+	rendered := renderDefault(t)
+	configured := map[string]bool{}
+	for doc := range strings.SplitSeq(rendered, "\n---\n") {
+		if strings.TrimSpace(doc) == "" {
+			continue
+		}
+		var cfg struct {
+			Kind     string `json:"kind"`
+			Webhooks []struct {
+				Name         string `json:"name"`
+				ClientConfig struct {
+					Service struct {
+						Path string `json:"path"`
+					} `json:"service"`
+				} `json:"clientConfig"`
+			} `json:"webhooks"`
+		}
+		if err := yaml.Unmarshal([]byte(doc), &cfg); err != nil {
+			continue
+		}
+		if cfg.Kind != "ValidatingWebhookConfiguration" && cfg.Kind != "MutatingWebhookConfiguration" {
+			continue
+		}
+		for _, w := range cfg.Webhooks {
+			configured[w.ClientConfig.Service.Path] = true
+		}
+	}
+	if len(configured) == 0 {
+		t.Fatal("the rendered install configures no webhook paths, so this check asserts nothing")
+	}
+
+	for path := range configured {
+		m := pathKind.FindStringSubmatch(path)
+		if m == nil {
+			t.Errorf("webhook path %q does not match the generated shape; this check cannot tell "+
+				"which kind serves it", path)
+			continue
+		}
+		// networktap -> NetworkTapWebhook, capturejob -> CaptureJobWebhook.
+		var setup string
+		switch m[1] {
+		case "networktap":
+			setup = "NetworkTapWebhook"
+		case "capturejob":
+			setup = "CaptureJobWebhook"
+		case "capturepolicy":
+			setup = "CapturePolicyWebhook"
+		default:
+			t.Errorf("webhook path %q names kind %q, which this check does not know about; teach it "+
+				"rather than deleting the case, or a new webhook ships unwired", path, m[1])
+			continue
+		}
+		// Anchored on the construction rather than the bare name: a substring
+		// match is satisfied by any identifier that merely starts with it,
+		// which is exactly what a rename produces.
+		if !strings.Contains(wiring, "admission."+setup+"{") {
+			t.Errorf("the install configures %s but cmd/controller-manager never registers %s. "+
+				"failurePolicy is Fail, so the API server calls a path nothing serves and refuses "+
+				"every create and update of that kind.", path, setup)
+		}
+	}
 }
