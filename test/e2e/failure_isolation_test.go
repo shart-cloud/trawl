@@ -81,6 +81,13 @@ func requireFailureInjection(t *testing.T, what string) {
 func (a *acceptance) scaleDeployment(t *testing.T, name string) func() {
 	t.Helper()
 
+	// Note what this cannot protect against: SIGKILL runs no deferred code, so
+	// a run killed outright leaves the Deployment at zero. For the controller
+	// manager that means the installation refuses every mutation until somebody
+	// notices, and it looks exactly like a component that crashed on its own.
+	// hack/e2e-cleanup.sh reports it; there is no way to make the test itself
+	// survive being killed.
+
 	replicas, err := kubectlOut("get", "deployment", name, "-n", a.namespace,
 		"-o", "jsonpath={.spec.replicas}")
 	if err != nil {
@@ -138,6 +145,17 @@ spec:
   policyTypes: [Egress]
   egress: []
 `, name, a.namespace)
+
+	// Remove any leftover of the same name before applying. A killed run -
+	// SIGKILL runs no deferred code, so t.Cleanup does not save this - leaves
+	// the worker isolated indefinitely, and the next run would otherwise start
+	// against an installation that was already broken and report the outage it
+	// found as the outage it caused. hack/e2e-cleanup.sh is the same job for a
+	// human.
+	if out, err := kubectlOut("delete", "networkpolicy", name, "-n", a.namespace,
+		"--ignore-not-found"); err != nil {
+		t.Fatalf("clearing a leftover isolation policy: %v: %s", err, out)
+	}
 
 	path := filepath.Join(t.TempDir(), "deny-worker-egress.yaml")
 	if err := os.WriteFile(path, []byte(manifest), 0o600); err != nil {

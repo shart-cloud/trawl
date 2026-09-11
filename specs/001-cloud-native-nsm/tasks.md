@@ -1273,6 +1273,26 @@ operations, supply chain, and the complete quickstart before release.
   call about fail-closed behaviour and belongs to the maintainer, not to this
   task.
 
+- **A killed failure-injection run leaves the fault in place.** `t.Cleanup`
+  covers a failed assertion, a panic and a timeout; it does not cover SIGKILL,
+  which runs no deferred code. For these specs what is left behind is not a
+  stray object but an injected fault - a NetworkPolicy severing the worker's
+  egress, or a Deployment scaled to zero - and an installation can sit in that
+  state indefinitely looking like a component that failed on its own. Two
+  mitigations: the injectors now clear a leftover of their own before applying,
+  so a subsequent run self-heals rather than reporting the previous run's
+  damage as its own finding; and `hack/e2e-cleanup.sh` is the one command for a
+  human after a killed run.
+- **T125 is partially executed.** The gateway injection passed and proved its
+  property - a capture requested during a gateway outage still reached
+  Completed, so losing the read path does not lose the evidence. The trigger
+  source and controller injections are written, compile, gate correctly and are
+  not yet executed: the development machine was under memory pressure from
+  unrelated work and the harness watchdog killed the runs twice. The controller
+  injection in particular should not be run unattended on a shared cluster,
+  because a kill mid-run leaves the installation refusing every mutation until
+  somebody notices.
+
 **Checkpoint**: All required checks pass, no critical security finding or
 unresolved source gap is hidden, and the release has reproducible evidence for the
 active specification.
