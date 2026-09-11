@@ -1,8 +1,9 @@
 # Trawl release readiness
 
-**Status: not ready.** Two of nine measurable outcomes are unverified and one
-gate cannot be executed on this installation. Everything else passes with
-evidence linked below.
+**Status: not ready.** Eight of nine measurable outcomes pass with evidence.
+SC-003 passes on its loss and availability clauses and its rate clause cannot
+be verified on this architecture at all; SC-005 passes on a smaller sample than
+specified. Both need a decision rather than more testing.
 
 Assembled 2026-09-11 against `admin@talos-cluster` (single node `talos-node`,
 Kubernetes v1.35.5, Cilium/Hubble 1.18.11), on the build merged as `96ec4f1`.
@@ -20,8 +21,8 @@ nicer font.
 | | Criterion | Status | Evidence |
 |---|---|---|---|
 | SC-001 | First structured record within 15 minutes | **pass** | `TestAFirstStructuredObservationArrivesWithinFifteenMinutes` |
-| SC-002 | 95% of tap create/update actionable within 2 minutes | **see below** | `test/e2e/results/reference-load.md` |
-| SC-003 | 60 min at 100 Mb/s, <1% capture-boundary loss | **NOT VERIFIED** | see "What cannot be verified here" |
+| SC-002 | 95% of tap create/update actionable within 2 minutes | **pass** (20/20, p95 39.6s) | `test/e2e/results/reference-load.md` |
+| SC-003 | 60 min at 100 Mb/s, <1% capture-boundary loss | **partial** — loss 0.0112% over 60 min, rate unverified | `test/e2e/results/reference-load.md` |
 | SC-004 | 95% of observations searchable within 30s | **pass** | `test/e2e/results/sc-004-searchability.md` |
 | SC-005 | Exact correlation under 3 minutes | **pass, reduced sample** | `test/e2e/results/quickstart.md` |
 | SC-006 | 95% of captures start <10s, downloadable <60s | **pass** | `test/e2e/results/manual-capture.md` |
@@ -57,13 +58,22 @@ work around:
    the external isolated traffic source the quickstart calls for and this
    installation does not have.
 
-The *loss* and *availability* clauses are measured at whatever rate the
-interface carries. A run that measured loss at ambient rate and declared SC-003
-met would retire the criterion without exercising it.
+The *loss* and *availability* clauses were measured and passed: **260,034
+packets, 29 drops, 0.0112% loss over a full hour**, with the tap Active
+throughout. But that is roughly 72 packets per second - ordinary background
+traffic, nowhere near the reference rate. It is evidence that the capture
+boundary is sound at ambient load and says nothing about 100 Mb/s. A run
+reporting 0.0112% and declaring SC-003 met would retire the criterion without
+exercising it.
 
-**Release decision required:** provision an external traffic source and add a
-byte counter to the telemetry contract, or amend SC-003 to something this
-architecture can measure.
+**Release decision required**, and there are two workable answers:
+
+- provision an external traffic source on the tapped segment *and* add an
+  observed-byte counter to the telemetry contract, so the rate becomes both
+  generatable and measurable; or
+- amend SC-003 to a criterion this architecture can measure - a
+  packets-per-second floor with the same loss ceiling would test the same
+  property of the capture path without requiring a bit-rate Trawl cannot see.
 
 ---
 
@@ -138,7 +148,14 @@ and each is a decision someone should make knowingly.
    one.** The same input gets two answers, and in GitOps the clamp shows as
    permanent drift with no signal that evidence is being deleted early.
 
-6. **Alloy drops entries with `entry too far behind`.** The Loki copy has gaps,
+6. **`PortMirror` has no admission webhook.** The other three kinds refuse an
+   off-namespace resource at admission; this one relies on the controller
+   declining to act on one. A `PortMirror` in `default` is accepted by the API
+   server and then ignored, which is weaker than the refusal the others give.
+   The switch-configuring feature is new (ADR-0007) and this is its sharpest
+   loose end.
+
+7. **Alloy drops entries with `entry too far behind`.** The Loki copy has gaps,
    so exact observation counts must not be asserted from it. Cause still
    unexplained.
 
@@ -149,7 +166,6 @@ and each is a decision someone should make knowingly.
 Not signed. Blocking items:
 
 - [ ] SC-003 — provision an external traffic source and a byte counter, or amend the criterion
-- [ ] SC-002 — see `test/e2e/results/reference-load.md` once the run completes
 - [ ] SC-005 — accept the ten-attempt sample or fund the fixtures
 
 Non-blocking but worth a decision before release:
