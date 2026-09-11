@@ -97,7 +97,11 @@ verify: verify-tools fmt vet ## Verify tool pins and fail on generated-artifact 
 	hack/verify-drift.sh
 
 .PHONY: test-integration
-test-integration: manifests generate fmt vet setup-envtest ## Run integration tests that need real service containers.
+test-integration: manifests generate fmt vet setup-envtest kustomize ## Run integration tests that need real service containers.
+# kustomize for the same reason `test` needs it: TestUndeployingDoesNotTakeThe
+# CustomResourceDefinitionsWithIt runs hack/undeploy-manifests.sh, which renders
+# config/default. Adding it to `test` and not here was the same oversight twice
+# in one session.
 # -count=1 for the same reason test-acceptance uses it, and the reason is not
 # obvious here: envtest reads config/crd/bases at *runtime*, so editing a CRD
 # changes nothing the Go test cache keys on. A cached pass then reports on a
