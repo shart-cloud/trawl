@@ -74,6 +74,7 @@ Required actions:
 - `capturejob.transition`
 - `artifact.download`
 - `retention.change`, `artifact.expire`
+- `portmirror.configure`, `portmirror.revert`
 
 Admission logs the authenticated actor for API mutations. Controllers and workers
 use their workload identity for automatic actions while preserving the initiating
@@ -205,6 +206,16 @@ bytes. Messages describe remediation but do not embed raw dependency responses.
 - `ArtifactVerified`
 - `Downloadable`
 - `RetentionEnforced`
+
+### PortMirror
+
+- `DeviceReachable`
+- `MirrorConfigured`
+
+`MirrorConfigured` is True only when the device was read back and reports the
+mirror this resource asks for. It is never set from a successful write: a
+switch that accepted a command and then rolled back on reboot, or that somebody
+edited by hand afterwards, must show as drifted rather than as configured.
 
 Status is stale whenever `status.observedGeneration != metadata.generation`.
 Dashboards must surface stale status rather than treating it as current truth.

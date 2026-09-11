@@ -73,6 +73,7 @@ rules:
   resources:
   - capturejobs
   - networktaps
+  - portmirrors
   verbs:
   - get
   - list
@@ -84,6 +85,7 @@ rules:
   resources:
   - capturejobs/finalizers
   - networktaps/finalizers
+  - portmirrors/finalizers
   verbs:
   - update
 - apiGroups:
@@ -91,6 +93,7 @@ rules:
   resources:
   - capturejobs/status
   - networktaps/status
+  - portmirrors/status
   verbs:
   - get
   - patch
