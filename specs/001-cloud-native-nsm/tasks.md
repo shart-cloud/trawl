@@ -943,11 +943,29 @@ paid for itself in the first ten minutes.
   deliberately makes no assertion about it, because any assertion available
   today would pass with the prober never started.
 
-#### Still outstanding after T119
+#### The Alloy render: not outstanding, and the note that said so was stale
 
-- `config/alloy/trawl-observations.alloy` changed on this branch and the gitops
-  HelmRelease has still not had `hack/render-alloy-config.sh` run against it.
-  That is a real gitops change, unlike the deployment, and it is not T119's.
+Earlier handoffs carried "the gitops HelmRelease still needs
+`hack/render-alloy-config.sh` run against it" as an open item. **It is already
+done on `talos-gitops` `main`**, and was when the note was written. Verified by
+rendering against `origin/main` in a throwaway worktree:
+`TRAWL_GITOPS=<worktree> hack/render-alloy-config.sh --check` reports a match.
+
+Two traps found while checking, worth recording because both would have caused
+real damage:
+
+- **Check against `origin/main`, never against whatever branch the gitops
+  checkout happens to be on.** That checkout was on a feature branch whose
+  `alloy.yaml` is 114 lines where `main`'s is 421 - it simply predates the
+  render. Rendering against it and opening a PR would have reverted the entire
+  generated region.
+- **`main` already carries a drop rule, and it is more carefully scoped than
+  the obvious one.** It drops `trawl-system/(sensor-agent|event-worker)` and
+  deliberately *not* the controller manager, because the manager's ordinary
+  container logs are what an operator reads when Trawl itself is the thing
+  misbehaving - the audit pipeline takes the audit records from the same
+  stream, and both copies are wanted. Adding `manager` to that regex would have
+  silently removed the logs you need during an incident.
 
 ### Code review of the US4 branch
 
