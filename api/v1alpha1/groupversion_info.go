@@ -54,6 +54,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&CaptureJobList{},
 		&CapturePolicy{},
 		&CapturePolicyList{},
+		&PortMirror{},
+		&PortMirrorList{},
 	)
 	metav1.AddToGroupVersion(scheme, GroupVersion)
 	return nil
