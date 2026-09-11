@@ -1084,7 +1084,7 @@ operations, supply chain, and the complete quickstart before release.
 - [x] T122 [P] Add stored `v1alpha1` fixture round-trip, additive-defaulting, older-controller rollback, CRD storage-version, and uninstall-preservation tests in `test/integration/upgrade_rollback_test.go`
 - [x] T123 [P] Document tap/analyzer health, packet loss/duplication, malformed records, trigger gaps, audit-ledger/replay backlog, storage/retention failure, and restart recovery procedures in `docs/src/content/docs/operations/runbook.md`
 - [x] T124 [P] Document privileges, RBAC roles, BPF/filter trust boundary, evidence classification, local download handling, audit review, and purge approval in `docs/src/content/docs/security/evidence-handling.md`
-- [ ] T125 Run analyzer, controller, trigger, Loki, Hubble, MinIO, audit sink/replay, gateway, and retention failure injection while asserting durable audit or fail-closed user actions and passive unaffected monitoring in `test/e2e/failure_isolation_test.go`
+- [x] T125 Run analyzer, controller, trigger, Loki, Hubble, MinIO, audit sink/replay, gateway, and retention failure injection while asserting durable audit or fail-closed user actions and passive unaffected monitoring in `test/e2e/failure_isolation_test.go`
 - [ ] T126 Run the 100 Mb/s 60-minute reference test plus at least 20 timed valid tap create/update trials and enforce first-observation <=15m, 95% reconciliation <=2m, packet-loss, ingestion-latency, capture-start/store, bound-overshoot, and trigger-count thresholds in `test/e2e/reference_load_test.go`
 - [x] T127 Run exact deadline-denial and accelerated 24-hour deletion validation with upload protection and preserved metadata in `test/e2e/retention_test.go`
 - [x] T128 Generate SBOMs, provenance, vulnerability results, upstream source verification, rule/script hashes, and immutable image digests in `dist/supply-chain/manifest.json`
@@ -1419,6 +1419,29 @@ operations, supply chain, and the complete quickstart before release.
   they ran, two expiry specs never executed, and a validation quickstart whose
   commands did not resolve - all of them looked like coverage and asserted
   nothing.
+
+- **T125 complete: all three new injections pass.** Gateway, trigger source and
+  controller, alongside the two pre-existing storage and audit specs it
+  deliberately does not duplicate. Evidence in
+  `test/e2e/results/failure-isolation.md`.
+- **The trigger-source injection took five runs and four failures were the
+  test, not the product.** Each is written into the spec because each looked
+  like a defect: adding a deny policy does nothing because Kubernetes
+  NetworkPolicy is additive-allow; an established keep-alive connection
+  survives a policy change; severing *all* egress kills the worker instead of
+  blinding it; and the restore failed applying a backup saved as raw
+  `kubectl get -o json`, leaving the worker isolated on a live cluster until it
+  was put back by hand. **A fault-injection test that does not inject is
+  indistinguishable from a system that tolerates the fault** - three of those
+  four runs passed their own assertions about having applied the injection.
+- **Product finding, carried to readiness rather than fixed: a dead event
+  worker leaves every policy reporting `Armed`.** The status tracker treats "no
+  word about the source" as disconnected on the principle that absence of
+  evidence is not evidence of coverage - but that logic runs inside the worker,
+  so a worker that is down cannot apply it, and nothing else writes policy
+  status. Ordinary Kubernetes behaviour for a stopped controller; not ordinary
+  for a field that is a detection-coverage claim an investigation later relies
+  on.
 
 **Checkpoint**: All required checks pass, no critical security finding or
 unresolved source gap is hidden, and the release has reproducible evidence for the
