@@ -519,6 +519,17 @@ func renderDefault(t *testing.T) string {
 	root := repoRoot(t)
 	kustomize := filepath.Join(root, "bin", "kustomize")
 	if _, err := os.Stat(kustomize); err != nil {
+		// A skip is right for a developer who has not built the tool yet, and
+		// wrong for CI. `go test` prints nothing for a skip, so a clean
+		// checkout without this binary turned six rendered-manifest checks -
+		// including every one of the security gates - into a silent no-op
+		// behind a green job. `make test` now depends on the kustomize target;
+		// this refuses to let the failure recur quietly if that dependency is
+		// ever dropped.
+		if os.Getenv("CI") != "" {
+			t.Fatalf("bin/kustomize is absent in CI, so every rendered-manifest check would skip "+
+				"silently and the job would pass having asserted nothing: %v", err)
+		}
 		t.Skipf("bin/kustomize absent, run `make kustomize`: %v", err)
 	}
 

@@ -1240,6 +1240,16 @@ operations, supply chain, and the complete quickstart before release.
   is who published them. Mutation-checked by deleting Zeek's signing key
   fingerprint.
 
+- **Six contract tests had never run in CI.** `make test` did not depend on the
+  `kustomize` target, so on a clean checkout `bin/kustomize` was absent and
+  every test calling `renderDefault` took its `t.Skip`. `go test` prints nothing
+  for a skip without `-v`, so the job was green and silent - including for
+  `TestNetworkPolicyIngressPortsAreDeclaredContainerPorts`, which predates this
+  phase, and for all four of T121's security gates. A silent skip is worse than
+  a failure because it looks like coverage. `make test` now depends on
+  `kustomize`, and `renderDefault` fails rather than skips when `CI` is set, so
+  the class cannot recur quietly if that dependency is ever dropped again.
+
 **Checkpoint**: All required checks pass, no critical security finding or
 unresolved source gap is hidden, and the release has reproducible evidence for the
 active specification.

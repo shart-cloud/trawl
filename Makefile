@@ -60,7 +60,12 @@ vet: ## Run go vet against code.
 	go vet ./...
 
 .PHONY: test
-test: manifests generate fmt vet setup-envtest ## Run tests.
+test: manifests generate fmt vet setup-envtest kustomize ## Run tests.
+# kustomize is a dependency because several contract tests render
+# config/default, and without the binary they call t.Skip. `go test` prints
+# nothing for a skip, so on a clean checkout - which is every CI run - the job
+# went green while the rendered-manifest security checks never executed. A
+# silent skip is worse than a failure: it looks like coverage.
 	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
 .PHONY: test-investigation
