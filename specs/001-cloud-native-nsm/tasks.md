@@ -1069,7 +1069,7 @@ operations, supply chain, and the complete quickstart before release.
 - [ ] T125 Run analyzer, controller, trigger, Loki, Hubble, MinIO, audit sink/replay, gateway, and retention failure injection while asserting durable audit or fail-closed user actions and passive unaffected monitoring in `test/e2e/failure_isolation_test.go`
 - [ ] T126 Run the 100 Mb/s 60-minute reference test plus at least 20 timed valid tap create/update trials and enforce first-observation <=15m, 95% reconciliation <=2m, packet-loss, ingestion-latency, capture-start/store, bound-overshoot, and trigger-count thresholds in `test/e2e/reference_load_test.go`
 - [ ] T127 Run exact deadline-denial and accelerated 24-hour deletion validation with upload protection and preserved metadata in `test/e2e/retention_test.go`
-- [ ] T128 Generate SBOMs, provenance, vulnerability results, upstream source verification, rule/script hashes, and immutable image digests in `dist/supply-chain/manifest.json`
+- [x] T128 Generate SBOMs, provenance, vulnerability results, upstream source verification, rule/script hashes, and immutable image digests in `dist/supply-chain/manifest.json`
 - [x] T129 Configure release-blocking Go, container, manifest, dependency, and secret scanning with reviewed suppressions and expiry dates in `.github/workflows/security.yml` and `security/suppressions.yaml`
 - [x] T130 Regenerate CRDs, RBAC, webhooks, install bundle, examples, observation schema embedding, and dashboards and prove a clean drift check in `dist/install.yaml` and `test/contract/generated_artifacts_test.go`
 - [ ] T131 Execute every command and expected outcome plus the defined 20-attempt exact-correlation timing protocol in `specs/001-cloud-native-nsm/quickstart.md` on the representative cluster and save only sanitized durations/counts in `test/e2e/results/quickstart.md`
@@ -1217,6 +1217,28 @@ operations, supply chain, and the complete quickstart before release.
   webhook check first matched the handler name as a bare substring, which a
   rename satisfies; it is anchored on the construction now, and the mutation was
   redone as an outright deletion of the registration block.
+
+- **T128's governing rule: a section that could not be produced is recorded as
+  absent with a reason, never omitted.** A manifest missing its SBOM section
+  looks exactly like one whose SBOMs were never generated, and the second is the
+  case somebody needs to know about. `dist/` is gitignored, so what is committed
+  is the generator, the CI job that runs it where the images exist, and two
+  contract tests - one asserting every required section is present with either
+  content or a stated reason, one asserting the sources are pinned.
+- **The generator found one real gap and one of its own making.** `cbindgen` is
+  pinned by version with no checksum; that is now named in the manifest's
+  warning rather than sitting in a list of things that look equally pinned.
+  (crates.io makes a published version immutable, so it is weaker than the
+  others rather than unsafe.) The generator also *reported* the capture-runner's
+  wireshark pin as unpinned, which was wrong - it pins each Debian package under
+  a nested `packages:` block and the check only read the top level. Fixed before
+  committing: a manifest that cries wolf is read with the same attention as one
+  that stays silent.
+- **Zeek and Suricata are required to carry a detached signature, not merely a
+  checksum.** They are compiled from upstream source and parse hostile input, so
+  "the bytes did not change" is a weaker claim than the one that matters, which
+  is who published them. Mutation-checked by deleting Zeek's signing key
+  fingerprint.
 
 **Checkpoint**: All required checks pass, no critical security finding or
 unresolved source gap is hidden, and the release has reproducible evidence for the

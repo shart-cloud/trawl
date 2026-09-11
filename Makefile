@@ -126,6 +126,14 @@ docker-build-content-init: ## Build the analyzer content-init image.
 manifest-security: ## Fail on manifests that grant more than Trawl needs.
 	hack/verify-manifests.sh
 
+.PHONY: supply-chain
+supply-chain: ## Assemble dist/supply-chain/manifest.json for this build.
+# Sections that cannot be produced here - SBOMs need syft and built images,
+# provenance needs a CI run - are recorded as unavailable with a reason rather
+# than omitted. A manifest missing a section looks exactly like one whose
+# section was never generated.
+	OUT_DIR=dist/supply-chain hack/supply-chain-manifest.sh
+
 .PHONY: security
 security: manifest-security ## Run the release-blocking security checks that do not need a container runtime.
 # govulncheck was pinned in hack/tools.mk and version-verified for months
