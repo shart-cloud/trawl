@@ -46,6 +46,7 @@ limitations under the License.
 package e2e
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -54,6 +55,7 @@ import (
 	"testing"
 	"time"
 
+	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	trawlv1alpha1 "trawl.cloud/trawl/api/v1alpha1"
@@ -121,61 +123,152 @@ func (a *acceptance) scaleDeployment(t *testing.T, name string) func() {
 	return restore
 }
 
-// isolateWorkerEgress applies a NetworkPolicy that denies the event worker all
-// egress, and returns a restore function.
+// isolateWorkerEgress takes away the event worker's two event sources, and
+// returns a restore.
 //
-// Chosen over stopping Loki or Hubble Relay because both live outside the
-// installation namespace and are shared with everything else on the cluster.
-// Severing the worker's own egress produces the same observable condition - the
-// worker cannot reach its event source - without taking a dependency away from
-// unrelated workloads.
+// It removes the Loki and Hubble Relay rules from the worker's own
+// NetworkPolicy and leaves everything else - DNS, the API server, the audit
+// sink - in place. Three failed attempts are behind that sentence and each one
+// is worth not repeating:
+//
+//  1. **Adding a deny does nothing.** Kubernetes NetworkPolicy is
+//     additive-allow: policies union, and one granting nothing grants nothing.
+//     An `egress: []` policy alongside the shipped trawl-event-worker policy
+//     changed the union not at all, and the run was very nearly filed as a
+//     product defect.
+//
+//  2. **An established connection survives a policy change.** Cilium governs
+//     new connections and the worker's Loki client uses HTTP keep-alive, so it
+//     kept polling down a connection that predated the change. The worker has
+//     to be restarted for the policy to mean anything.
+//
+//  3. **Severing *all* egress kills the worker instead of blinding it.** With
+//     no route to the API server it never becomes ready, so nothing evaluates
+//     policies and nothing writes their status - which is a different fault
+//     with a different symptom, and not the one this spec is about.
+//
+// Removing the two source rules is what produces the fault the spec names: a
+// worker that is up, reconciling, writing status, and unable to see events.
 func (a *acceptance) isolateWorkerEgress(t *testing.T) func() {
 	t.Helper()
 
-	const name = "trawl-e2e-deny-worker-egress"
-	manifest := fmt.Sprintf(`apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/component: event-worker
-  policyTypes: [Egress]
-  egress: []
-`, name, a.namespace)
+	const policy = "trawl-event-worker"
 
-	// Remove any leftover of the same name before applying. A killed run -
-	// SIGKILL runs no deferred code, so t.Cleanup does not save this - leaves
-	// the worker isolated indefinitely, and the next run would otherwise start
-	// against an installation that was already broken and report the outage it
-	// found as the outage it caused. hack/e2e-cleanup.sh is the same job for a
-	// human.
-	if out, err := kubectlOut("delete", "networkpolicy", name, "-n", a.namespace,
-		"--ignore-not-found"); err != nil {
-		t.Fatalf("clearing a leftover isolation policy: %v: %s", err, out)
+	// The ports of the two event sources. Matched by port rather than by
+	// selector because the selectors name namespaces that differ per
+	// installation, while these two port numbers are what the worker's own
+	// configuration dials.
+	const (
+		hubbleRelayPort = 4245
+		lokiPort        = 3100
+	)
+
+	saved, err := kubectlOut("get", "networkpolicy", policy, "-n", a.namespace, "-o", "json")
+	if err != nil {
+		t.Fatalf("reading the worker's NetworkPolicy: %v: %s", err, saved)
 	}
 
-	path := filepath.Join(t.TempDir(), "deny-worker-egress.yaml")
-	if err := os.WriteFile(path, []byte(manifest), 0o600); err != nil {
-		t.Fatalf("writing the isolation policy: %v", err)
+	var np networkingv1.NetworkPolicy
+	if err := json.Unmarshal([]byte(saved), &np); err != nil {
+		t.Fatalf("decoding the worker's NetworkPolicy: %v", err)
 	}
-	if err := kubectl("apply", "-f", path); err != nil {
-		t.Fatalf("isolating the event worker: %v", err)
+
+	// The backup is written *cleaned*, not as kubectl returned it. A raw
+	// `kubectl get -o json` carries resourceVersion, uid and status, and
+	// applying that after the object has been modified fails on the stale
+	// resourceVersion - which is exactly how the first surgical run ended: the
+	// injection worked, the assertions passed, and the restore then refused,
+	// leaving the worker isolated on a live cluster until it was put back by
+	// hand. A restore that can fail on a detail of its own serialisation is
+	// not a restore.
+	original := np.DeepCopy()
+	stripForApply(original)
+	encoded, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("encoding the worker's NetworkPolicy for backup: %v", err)
 	}
+	backup := filepath.Join(t.TempDir(), "event-worker-netpol.json")
+	if err := os.WriteFile(backup, encoded, 0o600); err != nil {
+		t.Fatalf("saving the worker's NetworkPolicy: %v", err)
+	}
+
+	var kept []networkingv1.NetworkPolicyEgressRule
+	var removed int
+	for _, rule := range np.Spec.Egress {
+		isSource := false
+		for _, port := range rule.Ports {
+			if port.Port == nil {
+				continue
+			}
+			switch port.Port.IntValue() {
+			case hubbleRelayPort, lokiPort:
+				isSource = true
+			}
+		}
+		if isSource {
+			removed++
+			continue
+		}
+		kept = append(kept, rule)
+	}
+	if removed == 0 {
+		t.Fatalf("the worker's NetworkPolicy allows neither port %d nor %d, so this spec cannot "+
+			"take its event sources away; the installation's egress rules have changed shape",
+			hubbleRelayPort, lokiPort)
+	}
+	np.Spec.Egress = kept
+
+	stripForApply(&np)
+	if err := applyObject(&np); err != nil {
+		t.Fatalf("removing the worker's event-source egress: %v", err)
+	}
+	t.Logf("removed %d egress rule(s) reaching Loki or Hubble Relay; %d kept", removed, len(kept))
+
+	// The policy governs new connections, so the worker has to dial again.
+	a.restartWorker(t, "isolating")
 
 	var once sync.Once
 	restore := func() {
 		once.Do(func() {
-			if out, err := kubectlOut("delete", "networkpolicy", name, "-n", a.namespace,
-				"--ignore-not-found"); err != nil {
-				t.Fatalf("restoring the event worker's egress: %v: %s", err, out)
+			// Re-applied from the copy taken above rather than from config/, so
+			// a customised installation is put back as it was found.
+			if err := kubectl("apply", "-f", backup); err != nil {
+				t.Fatalf("restoring the worker's NetworkPolicy from %s: %v", backup, err)
 			}
+			a.restartWorker(t, "restoring")
 		})
 	}
 	t.Cleanup(restore)
 	return restore
+}
+
+// stripForApply removes the server-set fields that make a fetched object
+// unusable as an apply input.
+func stripForApply(np *networkingv1.NetworkPolicy) {
+	np.ResourceVersion = ""
+	np.UID = ""
+	np.Generation = 0
+	np.ManagedFields = nil
+	np.CreationTimestamp = metav1.Time{}
+	np.SelfLink = ""
+	delete(np.Annotations, "kubectl.kubernetes.io/last-applied-configuration")
+}
+
+// restartWorker rolls the event worker and waits for it to come back.
+func (a *acceptance) restartWorker(t *testing.T, why string) {
+	t.Helper()
+	if out, err := kubectlOut("rollout", "restart", "deployment/trawl-event-worker",
+		"-n", a.namespace); err != nil {
+		t.Fatalf("%s: restarting the event worker: %v: %s", why, err, out)
+	}
+	if out, err := kubectlOut("rollout", "status", "deployment/trawl-event-worker",
+		"-n", a.namespace, "--timeout=3m"); err != nil {
+		// Not fatal while isolating: a worker that cannot reach the API server
+		// may legitimately fail its readiness probe under the very policy this
+		// is injecting, and that is the condition under test rather than a
+		// failure of the harness.
+		t.Logf("%s: the event worker did not report ready within 3m: %v: %s", why, err, out)
+	}
 }
 
 // --- Specs ------------------------------------------------------------------

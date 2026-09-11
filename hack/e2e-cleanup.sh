@@ -22,8 +22,24 @@ KUBECTL="${KUBECTL:-kubectl}"
 
 echo "e2e-cleanup: checking ${NAMESPACE} for injected faults"
 
-# 1. Isolation policies. Named with the trawl-e2e- prefix so nothing an
-#    operator created can match.
+# 1. A missing allow policy. The trigger-source injection severs the worker's
+#    egress by *deleting* its NetworkPolicy, because Kubernetes policy is
+#    additive-allow and a deny cannot be injected by adding one. A killed run
+#    therefore leaves the worker isolated indefinitely, which looks exactly like
+#    an event source that has failed on its own - and it is the one leftover
+#    here that silently degrades detection rather than just leaving litter.
+for np in trawl-event-worker trawl-controller-manager trawl-artifact-gateway; do
+  if ! "${KUBECTL}" get networkpolicy "${np}" -n "${NAMESPACE}" >/dev/null 2>&1; then
+    echo "e2e-cleanup: WARNING - NetworkPolicy ${np} is missing from ${NAMESPACE}."
+    echo "e2e-cleanup: a killed injection run removes it and the namespace default-deny then"
+    echo "e2e-cleanup: severs that component. Restore it with:"
+    echo "    bin/kustomize build config/default | \\"
+    echo "      ${KUBECTL} apply -f - --prune=false"
+  fi
+done
+
+# Isolation policies from older runs, which added a deny rather than removing an
+# allow. Kept because a cluster may still be carrying one.
 for np in $("${KUBECTL}" get networkpolicy -n "${NAMESPACE}" \
     -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null | grep '^trawl-e2e-' || true); do
   echo "e2e-cleanup: removing leftover isolation policy ${np}"
