@@ -1,40 +1,64 @@
 ---
-title: Welcome to Starlight
-description: Get started building your docs site with Starlight.
-template: splash # Remove or comment out this line to display the site sidebar on this page.
+title: Trawl
+# Starlight appends the site title to every page title. Without an explicit
+# override the landing page renders as "Trawl | Trawl".
+head:
+  - tag: title
+    content: Trawl — network security monitoring for Kubernetes
+description: A Kubernetes-native network security monitoring operator — Zeek, Suricata, and event-driven packet capture, orchestrated by CRDs.
+template: splash
 hero:
-  tagline: Congrats on setting up a new Starlight project!
+  tagline: Network security monitoring for Kubernetes. Zeek, Suricata, and event-driven packet capture, orchestrated declaratively — and every capture accounted for.
   image:
-    file: ../../assets/houston.webp
+    file: ../../assets/trawl-logo.svg
+    alt: A trawler dragging a net through teal water, fish funnelling into the cod end.
   actions:
-    - text: Example Guide
-      link: /guides/example/
+    - text: Read the runbook
+      link: /operations/runbook/
       icon: right-arrow
-    - text: Read the Starlight docs
-      link: https://starlight.astro.build
-      icon: external
+    - text: Architecture decisions
+      link: /adr/0001-normalized-observation-envelope/
+      icon: document
       variant: minimal
 ---
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
-## Next steps
+Trawl runs Zeek and Suricata as first-class Kubernetes citizens on immutable
+infrastructure — no SSH, no package manager, every tool in a pod. Sensors watch
+traffic continuously; packet capture is short-lived, triggered by what the
+sensors see, and bounded by design rather than by convention.
 
-<CardGrid stagger>
-	<Card title="Update content" icon="pencil">
-		Edit `src/content/docs/index.mdx` to see this page change.
+<CardGrid>
+	<Card title="Evidence, not telemetry" icon="approve-check">
+		A packet capture is the most sensitive artifact a network tool produces.
+		Captures land in a private bucket, are retrieved only through a
+		Kubernetes-authorized gateway, and are recorded in a write-once audit
+		ledger. See [evidence handling](/security/evidence-handling/).
 	</Card>
-	<Card title="Change page layout" icon="document">
-		Delete `template: splash` in `src/content/docs/index.mdx` to display a
-		sidebar on this page.
+	<Card title="Capture is deliberate" icon="warning">
+		Capture runs in node-pinned Jobs with two Linux capabilities, no API
+		token, and an unprivileged reporter sidecar — so the component holding
+		raw traffic is the one that can do least.
 	</Card>
-	<Card title="Add new content" icon="add-document">
-		Add Markdown or MDX files to `src/content/docs` to create new pages.
+	<Card title="One envelope, both sensors" icon="list-format">
+		Suricata EVE JSON and Zeek JSON describe the same traffic differently.
+		A sidecar normalizes both into one versioned envelope, so correlation
+		and pivoting happen in a single Grafana view.
 	</Card>
-	<Card title="Configure your site" icon="setting">
-		Edit your `sidebar` and other config in `astro.config.mjs`.
-	</Card>
-	<Card title="Read the docs" icon="open-book">
-		Learn more in [the Starlight Docs](https://starlight.astro.build/).
+	<Card title="Restart-safe triggers" icon="seti:clock">
+		Persistent cursors, direction-neutral flow keys, and cooldown buckets
+		make automatic capture exactly-once within a window — a restart does
+		not replay yesterday's alerts as today's captures.
 	</Card>
 </CardGrid>
+
+## Where to start
+
+- **Operating an installation** — the [runbook](/operations/runbook/) is the
+  on-call document, organized by the signal that brings you to it.
+- **Handling captured traffic** — [evidence handling](/security/evidence-handling/)
+  covers who can see captures, what Trawl trusts, and how evidence is reviewed
+  and destroyed.
+- **Understanding a design choice** — the ADRs record what was decided, when,
+  and what it cost.
