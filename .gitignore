@@ -69,3 +69,7 @@ images/capture-runner/trawl-capture-runner
 # Never edit directly: a Trivy suppression written here would escape the
 # expiry enforcement that makes the suppression list a review process.
 security/.trivyignore
+
+# Local agent and tooling state, not project configuration
+.claude/
+.threat-model-state/

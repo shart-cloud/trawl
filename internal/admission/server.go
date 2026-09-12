@@ -50,7 +50,7 @@ type AuditCommitter = audit.Committer
 // Trawl resource mutation.
 //
 // It is shared by the per-kind webhooks so the two rules cannot drift apart
-// between NetworkTap, CapturePolicy, and CaptureJob.
+// between NetworkTap, CapturePolicy, CaptureJob, and PortMirror.
 type Gate struct {
 	// SystemNamespace is the only namespace in which Trawl resources are
 	// accepted.
@@ -158,6 +158,15 @@ func ActionFor(kind string, op admissionv1.Operation) (string, error) {
 			return audit.ActionCapturePolicyUpdate, nil
 		case admissionv1.Delete:
 			return audit.ActionCapturePolicyDelete, nil
+		}
+	case "PortMirror":
+		switch op {
+		case admissionv1.Create:
+			return audit.ActionPortMirrorCreate, nil
+		case admissionv1.Update:
+			return audit.ActionPortMirrorUpdate, nil
+		case admissionv1.Delete:
+			return audit.ActionPortMirrorDelete, nil
 		}
 	case KindCaptureJob:
 		// Create is Manual by default; the CaptureJob webhook substitutes the

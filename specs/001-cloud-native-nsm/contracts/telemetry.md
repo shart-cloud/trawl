@@ -74,6 +74,7 @@ Required actions:
 - `capturejob.transition`
 - `artifact.download`
 - `retention.change`, `artifact.expire`
+- `portmirror.create`, `portmirror.update`, `portmirror.delete`
 - `portmirror.configure`, `portmirror.revert`
 
 Admission logs the authenticated actor for API mutations. Controllers and workers

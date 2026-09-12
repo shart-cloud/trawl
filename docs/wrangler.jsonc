@@ -1,0 +1,23 @@
+{
+	"$schema": "./node_modules/wrangler/config-schema.json",
+	"name": "trawl-docs",
+	"compatibility_date": "2026-09-10",
+
+	// Attached as a Custom Domain rather than a route pattern: Cloudflare then
+	// manages the DNS record and the certificate for the apex, and the Worker
+	// is reachable at the domain without a zone-level route competing with it.
+	"routes": [{ "pattern": "trawl.cloud", "custom_domain": true }],
+
+	// A static-assets-only Worker: no `main`, so there is no server-side code to
+	// review, profile, or get wrong. Starlight's output is fully static.
+	"assets": {
+		"directory": "./dist",
+		// Starlight emits 404.html; without this a bad path returns the index
+		// page with a 200, which hides broken links instead of reporting them.
+		"not_found_handling": "404-page"
+	},
+
+	"observability": {
+		"enabled": true
+	}
+}

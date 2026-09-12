@@ -348,6 +348,10 @@ func main() {
 		setupLog.Error(err, "Failed to set up the CapturePolicy webhook")
 		os.Exit(1)
 	}
+	if err := (&admission.PortMirrorWebhook{Gate: gate}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to set up the PortMirror webhook")
+		os.Exit(1)
+	}
 
 	// Everything that is not this process commits audit records through this
 	// listener, because ledger credentials live here and nowhere else

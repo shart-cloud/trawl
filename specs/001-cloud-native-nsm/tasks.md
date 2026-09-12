@@ -1460,6 +1460,52 @@ operations, supply chain, and the complete quickstart before release.
   it needs. A checklist that inferred any of it from an adjacent run would be
   the same failure as the gates this phase found unexecuted, in a nicer font.
 
+### Closing readiness gap 6: the PortMirror admission webhook
+
+Not a numbered task. T132 recorded seven gaps and this was the only one that was
+a defect rather than a decision, so it was fixed rather than carried.
+
+- **`PortMirror` was the one kind the CRD contract was untrue of.**
+  `contracts/crd-api.md` opens by saying all resources "are accepted only in the
+  installation-configured system namespace" and that "the validating webhook
+  rejects off-namespace resources". PortMirror had no webhook, and the
+  controller declining to reconcile an off-namespace mirror was standing in for
+  one. The difference is not academic: the API server accepted the object, so it
+  existed, and `kubectl get portmirror -A` showed a mirror that read as
+  configuration in effect on a switch.
+
+- **No mutating counterpart, deliberately.** The type's only default,
+  `direction: Both`, is structural, so the API server applies it while decoding.
+  A mutating webhook would have had nothing to do and would have added a second
+  `failurePolicy: Fail` call to every create.
+
+- **`provider` and `deviceRef` are immutable, and that is the find.** Revert
+  resolves `deviceRef` at deletion time, so repointing a live PortMirror from
+  switch A to switch B configures B and makes the eventual delete revert B,
+  while A goes on copying traffic to a port with nothing in the cluster
+  recording that it does. That is exactly the leftover the finalizer exists to
+  prevent, reachable by `kubectl edit` rather than by a crash, and on hardware
+  where no `kubectl get` will ever show it.
+
+- **Three defects found while writing it**, each small and each a status lie:
+  the reconciler never re-validated a stored spec before configuring hardware,
+  though the NetworkTap and CaptureJob reconcilers both do; an off-namespace
+  mirror reported `Accepted` as the reason it had been refused; and any failure
+  before the device was contacted - invalid spec, wrong namespace, missing
+  credential - reported `DeviceReachable=False` about a device that had never
+  been asked anything, which sends an operator to the switch for a problem in
+  the spec.
+
+- **A device-contention gap is recorded, not fixed.** Nothing stops two
+  PortMirrors naming the same `deviceRef`. A RouterOS switch has one global
+  `mirror-target`, so each would observe the other's configuration as drift and
+  rewrite it every resync - flapping indefinitely, filling the device's own log
+  and the audit ledger. The NetworkTap probe-port conflict is the precedent for
+  how this should be handled: the controller detects the overlap and reports
+  `ProbePortConflict` on whichever resource has the younger claim, rather than
+  admission rejecting it. Doing the same here needs a conflict reason and an
+  incumbent rule, which is its own change.
+
 **Checkpoint**: All required checks pass, no critical security finding or
 unresolved source gap is hidden, and the release has reproducible evidence for the
 active specification.

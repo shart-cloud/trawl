@@ -127,8 +127,21 @@ jobs:
           cache-dependency-path: docs/package-lock.json
       # ADRs, runbooks, and security docs are Starlight content. A broken link or
       # malformed frontmatter fails the build, so it is checked like code.
+      - name: Install dependencies
+        working-directory: docs
+        run: npm ci
+      # astro check reports what the build tolerates: a frontmatter field the
+      # content schema does not define, a broken internal reference, a component
+      # used with the wrong props. The build alone passes on all three.
+      - name: Check content and types
+        working-directory: docs
+        run: npm run check
       - name: Build documentation
         working-directory: docs
-        run: |
-          npm ci
-          npm run build
+        run: npm run build
+      # The deploy workflow publishes ./dist as-is. Validating the Worker config
+      # here means a malformed wrangler.jsonc fails on the pull request that
+      # introduced it rather than on the push to main that tries to ship it.
+      - name: Validate the Worker configuration
+        working-directory: docs
+        run: npx wrangler deploy --dry-run

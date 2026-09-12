@@ -1,0 +1,21 @@
+/* Brand accent sampled from the trawler illustration (#068491). Starlight
+   expects an accent ramp; these are generated around that hue so the light and
+   dark themes both meet contrast on body text and links. */
+:root {
+	--sl-color-accent-low: #0c2c31;
+	--sl-color-accent: #068491;
+	--sl-color-accent-high: #9adfe4;
+}
+
+:root[data-theme='light'] {
+	--sl-color-accent-low: #c5ecef;
+	--sl-color-accent: #046973;
+	--sl-color-accent-high: #08343a;
+}
+
+/* The hero illustration has no frame of its own and sits on the page ground in
+   both themes, so it needs a little breathing room rather than a background. */
+.hero > img,
+.hero > picture > img {
+	filter: drop-shadow(0 1px 2px rgb(0 0 0 / 0.08));
+}

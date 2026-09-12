@@ -566,43 +566,7 @@ func TestTheInstallBundleCarriesACRDForEveryAPIKind(t *testing.T) {
 	// hypothetical here.
 	root := repoRoot(t)
 
-	// The kinds are read from the API package rather than listed, so a new type
-	// is covered the day it is added rather than the day someone remembers this
-	// test.
-	entries, err := os.ReadDir(filepath.Join(root, "api", "v1alpha1"))
-	if err != nil {
-		t.Fatalf("reading the API package: %v", err)
-	}
-
-	rootMarker := regexp.MustCompile(`\+kubebuilder:object:root=true`)
-	typeDecl := regexp.MustCompile(`(?m)^type ([A-Z][A-Za-z0-9]*) struct`)
-
-	var kinds []string
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), "_types.go") {
-			continue
-		}
-		//nolint:gosec // G304: a repository path.
-		body, readErr := os.ReadFile(filepath.Join(root, "api", "v1alpha1", e.Name()))
-		if readErr != nil {
-			t.Fatalf("reading %s: %v", e.Name(), readErr)
-		}
-		text := string(body)
-		for _, loc := range rootMarker.FindAllStringIndex(text, -1) {
-			// The first type declared after the marker is the one it marks.
-			if m := typeDecl.FindStringSubmatch(text[loc[1]:]); m != nil {
-				kind := m[1]
-				// List types are root objects too and have no CRD of their own.
-				if strings.HasSuffix(kind, "List") {
-					continue
-				}
-				kinds = append(kinds, kind)
-			}
-		}
-	}
-	if len(kinds) == 0 {
-		t.Fatal("no root API kinds were found, so this check asserts nothing")
-	}
+	kinds := rootAPIKinds(t, root)
 
 	rendered := renderDefault(t)
 	shipped := map[string]bool{}
@@ -699,6 +663,8 @@ func TestEveryConfiguredWebhookIsWiredIntoTheManager(t *testing.T) {
 			continue
 		}
 		// networktap -> NetworkTapWebhook, capturejob -> CaptureJobWebhook.
+		// PortMirror has no mutating counterpart: its only default is
+		// structural, so the validate path is the only one it configures.
 		var setup string
 		switch m[1] {
 		case "networktap":
@@ -707,6 +673,8 @@ func TestEveryConfiguredWebhookIsWiredIntoTheManager(t *testing.T) {
 			setup = "CaptureJobWebhook"
 		case "capturepolicy":
 			setup = "CapturePolicyWebhook"
+		case "portmirror":
+			setup = "PortMirrorWebhook"
 		default:
 			t.Errorf("webhook path %q names kind %q, which this check does not know about; teach it "+
 				"rather than deleting the case, or a new webhook ships unwired", path, m[1])
@@ -719,6 +687,115 @@ func TestEveryConfiguredWebhookIsWiredIntoTheManager(t *testing.T) {
 			t.Errorf("the install configures %s but cmd/controller-manager never registers %s. "+
 				"failurePolicy is Fail, so the API server calls a path nothing serves and refuses "+
 				"every create and update of that kind.", path, setup)
+		}
+	}
+}
+
+// rootAPIKinds reads the served kinds out of the API package.
+//
+// Read rather than listed, so a new type is covered by the checks that call this
+// on the day it is added rather than the day somebody remembers them.
+func rootAPIKinds(t *testing.T, root string) []string {
+	t.Helper()
+
+	entries, err := os.ReadDir(filepath.Join(root, "api", "v1alpha1"))
+	if err != nil {
+		t.Fatalf("reading the API package: %v", err)
+	}
+
+	rootMarker := regexp.MustCompile(`\+kubebuilder:object:root=true`)
+	typeDecl := regexp.MustCompile(`(?m)^type ([A-Z][A-Za-z0-9]*) struct`)
+
+	var kinds []string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), "_types.go") {
+			continue
+		}
+		//nolint:gosec // G304: a repository path.
+		body, readErr := os.ReadFile(filepath.Join(root, "api", "v1alpha1", e.Name()))
+		if readErr != nil {
+			t.Fatalf("reading %s: %v", e.Name(), readErr)
+		}
+		text := string(body)
+		for _, loc := range rootMarker.FindAllStringIndex(text, -1) {
+			// The first type declared after the marker is the one it marks.
+			if m := typeDecl.FindStringSubmatch(text[loc[1]:]); m != nil {
+				kind := m[1]
+				// List types are root objects too and have no CRD of their own.
+				if strings.HasSuffix(kind, "List") {
+					continue
+				}
+				kinds = append(kinds, kind)
+			}
+		}
+	}
+	if len(kinds) == 0 {
+		t.Fatal("no root API kinds were found, so this check asserts nothing")
+	}
+	return kinds
+}
+
+func TestEveryRootKindIsValidatedAtAdmission(t *testing.T) {
+	// The check that was missing. PortMirror shipped with no validating webhook
+	// while contracts/crd-api.md said of every resource that "the validating
+	// webhook rejects off-namespace resources", and nothing failed: the type
+	// compiled, its CRD shipped, its controller reconciled, and the namespace
+	// rule was enforced only by the controller declining to act on an object
+	// the API server had already accepted.
+	//
+	// Namespace enforcement (FR-001) and the durable-audit gate (FR-036) both
+	// live in the webhook, so a kind without one has neither. This asserts
+	// nothing about *which* rules a webhook applies - only that the kind is not
+	// admitted unvalidated, which is the part no reviewer notices is absent.
+	//
+	// A mutating webhook is deliberately not required. A kind whose every
+	// default is structural does not need one, and demanding it would add a
+	// second failurePolicy=Fail call to every write for nothing.
+	root := repoRoot(t)
+
+	validated := map[string]bool{}
+	for doc := range strings.SplitSeq(renderDefault(t), "\n---\n") {
+		if strings.TrimSpace(doc) == "" {
+			continue
+		}
+		var cfg struct {
+			Kind     string `json:"kind"`
+			Webhooks []struct {
+				Rules []struct {
+					Resources []string `json:"resources"`
+				} `json:"rules"`
+			} `json:"webhooks"`
+		}
+		if err := yaml.Unmarshal([]byte(doc), &cfg); err != nil {
+			continue
+		}
+		if cfg.Kind != "ValidatingWebhookConfiguration" {
+			continue
+		}
+		for _, w := range cfg.Webhooks {
+			for _, rule := range w.Rules {
+				for _, res := range rule.Resources {
+					validated[res] = true
+				}
+			}
+		}
+	}
+	if len(validated) == 0 {
+		t.Fatal("the rendered install configures no validating webhook, so this check asserts nothing")
+	}
+
+	for _, kind := range rootAPIKinds(t, root) {
+		// The generated plural: lowercase, with the CRD's own pluralization.
+		// Only "policy" needs more than an "s" here.
+		plural := strings.ToLower(kind) + "s"
+		if strings.HasSuffix(strings.ToLower(kind), "policy") {
+			plural = strings.TrimSuffix(strings.ToLower(kind), "y") + "ies"
+		}
+		if !validated[plural] {
+			t.Errorf("%s is a served API kind and no ValidatingWebhookConfiguration rule covers %q. "+
+				"Namespace enforcement (FR-001) and the durable-audit gate (FR-036) are both in the "+
+				"webhook, so this kind is admitted without either, and the controller declining to "+
+				"reconcile the object afterwards is not the same as refusing it.", kind, plural)
 		}
 	}
 }
