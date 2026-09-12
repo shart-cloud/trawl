@@ -429,16 +429,102 @@ progress records. The controller owns aggregate conditions, failure, artifact fa
 and terminal phase. The reporter Role permits patching only its owning CaptureJob
 `/status` by `resourceNames`; the capture runner has no Kubernetes token.
 
+## PortMirror
+
+`PortMirror` is the only kind that writes to hardware outside the cluster. It is
+deliberately not a `NetworkTap` source type, so that granting it is its own
+authorization decision; see ADR-0007.
+
+### Example
+
+```yaml
+apiVersion: trawl.cloud/v1alpha1
+kind: PortMirror
+metadata:
+  name: lab-switch-span
+  namespace: trawl-system
+spec:
+  provider: MikroTikRouterOS7
+  deviceRef:
+    name: lab-switch
+  sources: [ether1, ether2]
+  target: ether24
+  direction: Both
+```
+
+The referenced Secret carries `address`, `username`, `password`, and either
+`ca.crt` or `insecureSkipVerify: "true"`. It is same-namespace, like every other
+reference in this contract.
+
+### Spec
+
+```text
+PortMirrorSpec
+├── provider: MikroTikRouterOS7                        required, immutable
+├── deviceRef: corev1.LocalObjectReference             required, immutable, non-empty name
+├── sources[]: string                                  required, 1..48, set, port-name pattern
+├── target: string                                     required, <=64, port-name pattern
+└── direction: Both | Ingress | Egress                 default Both
+```
+
+Cross-field rules:
+
+1. `target` must not also appear in `sources`; a port mirroring itself is a loop
+   the device will configure without complaint.
+2. `sources` is a set: duplicates are rejected. A repeated port is a second write
+   to the same port, and the device returns one copy, so the mirror would read as
+   drifted forever.
+3. `provider` and `deviceRef` are immutable. Revert resolves `deviceRef` at
+   deletion time, so repointing a live `PortMirror` would configure the new
+   device and leave the previous one mirroring with nothing in the cluster
+   recording that it does. Delete and recreate instead; the delete reverts the
+   device it still points at.
+4. `sources`, `target` and `direction` are mutable: changing them reconfigures
+   the same device, which the controller does by rewriting the mirror it owns.
+5. A provider the binary has no registered driver for is refused at admission
+   rather than left `Pending`.
+
+### Status
+
+```text
+PortMirrorStatus
+├── observedGeneration: int64
+├── phase: Pending | Active | Degraded | Error
+├── observedSources[]: string                          set, what the device reports
+├── observedTarget: string                             what the device reports
+├── deviceIdentity: string                             model and firmware, as the device states them
+├── lastVerifiedTime?: metav1.Time                     last successful read-back
+└── conditions[]: metav1.Condition                     map key: type
+```
+
+Required condition types: `DeviceReachable`, `MirrorConfigured`.
+
+`Active` is set only from a successful read-back, never from a successful write.
+On RouterOS a mirror with four sources is five unrelated writes with no
+transaction, so `Configure` returning success means every request was accepted
+and not that the device is in the requested state. `observedSources` and
+`observedTarget` record what the device actually reports, so a drifted device is
+visible as a difference rather than a bare `Degraded`.
+
 ## Authorization contract
 
 Recommended aggregated roles use explicit resources and verbs, never wildcards:
 
-| Role | NetworkTap | CapturePolicy | CaptureJob | `capturejobs/download` |
-|---|---|---|---|---|
-| Trawl viewer | get/list/watch | get/list/watch | none | none |
-| Trawl analyst | get/list/watch | get/list/watch | create/get/list/watch | get |
-| Trawl operator | all normal spec verbs | all normal spec verbs | create/get/list/watch | get |
-| Trawl admin | above plus controlled delete/retention administration | above | update retention and delete under documented override | get |
+| Role | NetworkTap | CapturePolicy | CaptureJob | `capturejobs/download` | PortMirror |
+|---|---|---|---|---|---|
+| Trawl viewer | get/list/watch | get/list/watch | none | none | none |
+| Trawl analyst | get/list/watch | get/list/watch | create/get/list/watch | get | none |
+| Trawl operator | all normal spec verbs | all normal spec verbs | create/get/list/watch | get | none |
+| Trawl admin | above plus controlled delete/retention administration | above | update retention and delete under documented override | get | none |
+| `port-mirror-viewer` | get/list/watch | none | none | none | get/list/watch |
+| `port-mirror-admin` | get/list/watch | none | none | none | all normal spec verbs |
+
+`PortMirror` is absent from every capture and policy role on purpose. The device
+credential cannot be narrowed to "may only set a mirror", so the only place the
+gap is controllable is who may create the resource at all, and that is a separate
+deliberate binding (`config/rbac/portmirror-roles.yaml`, ADR-0007). An
+installation that never binds `port-mirror-admin` has a Trawl that cannot
+reconfigure any device, whatever its stored credential permits.
 
 Status subresource writes belong only to Trawl service accounts. Users never write
 status. The artifact gateway checks `get` on the synthetic RBAC subresource

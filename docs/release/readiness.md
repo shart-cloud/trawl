@@ -148,16 +148,38 @@ and each is a decision someone should make knowingly.
    one.** The same input gets two answers, and in GitOps the clamp shows as
    permanent drift with no signal that evidence is being deleted early.
 
-6. **`PortMirror` has no admission webhook.** The other three kinds refuse an
-   off-namespace resource at admission; this one relies on the controller
-   declining to act on one. A `PortMirror` in `default` is accepted by the API
-   server and then ignored, which is weaker than the refusal the others give.
-   The switch-configuring feature is new (ADR-0007) and this is its sharpest
-   loose end.
-
-7. **Alloy drops entries with `entry too far behind`.** The Loki copy has gaps,
+6. **Alloy drops entries with `entry too far behind`.** The Loki copy has gaps,
    so exact observation counts must not be asserted from it. Cause still
    unexplained.
+
+---
+
+## Closed after this document was assembled
+
+**`PortMirror` now has a validating webhook** (2026-09-11). It was gap 6 above:
+the only kind for which the CRD contract's claim that "the validating webhook
+rejects off-namespace resources" was untrue. The controller declined to act on an
+off-namespace mirror, but the API server accepted it, so the object existed and
+read as configuration that had taken effect.
+
+`vportmirror.trawl.cloud` now enforces the namespace rule, the semantic rules the
+schema cannot express on a stored object, `provider` and `deviceRef`
+immutability, and the FR-036 audit gate, with `portmirror.create`,
+`portmirror.update` and `portmirror.delete` added to the telemetry contract.
+Three defects turned up alongside it and are fixed: the reconciler never
+re-validated a stored spec before configuring hardware, an off-namespace mirror
+reported `Accepted` as the reason it was refused, and a pre-device failure
+reported `DeviceReachable=False` about a device that had never been contacted.
+
+**Evidence is unit and contract tests, not a cluster run.** The
+unwired-webhook contract test covers the new path
+(`TestEveryConfiguredWebhookIsWiredIntoTheManager`), and
+`internal/admission/portmirror_webhook_test.go` covers the rules. Nothing here has
+been exercised against `admin@talos-cluster`, so the deployed-behaviour claim
+every other line in this document rests on does not yet hold for it. A release
+run must redeploy and confirm that an off-namespace `PortMirror` is refused by the
+API server, because `failurePolicy: Fail` on a new webhook path is also the way
+to break every `PortMirror` write in the installation.
 
 ---
 

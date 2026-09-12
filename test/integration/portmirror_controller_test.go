@@ -19,6 +19,7 @@ package integration
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -42,6 +43,7 @@ type fakeDevice struct {
 	state        fabric.State
 	configures   int
 	reverts      int
+	observes     int
 	configureErr error
 	observeErr   error
 	revertErr    error
@@ -54,6 +56,7 @@ type fakeDevice struct {
 func (f *fakeDevice) Name() string { return "MikroTikRouterOS7" }
 
 func (f *fakeDevice) Observe(context.Context, fabric.Device) (fabric.State, error) {
+	f.observes++
 	if f.observeErr != nil {
 		return fabric.State{}, f.observeErr
 	}
@@ -396,4 +399,89 @@ func indexOf(haystack, needle string) int {
 		}
 	}
 	return -1
+}
+
+func TestAnOffNamespacePortMirrorTouchesNoDeviceAndSaysWhy(t *testing.T) {
+	// Admission refuses these now, so one that exists reached etcd another way -
+	// a restore, or a webhook that was unavailable before this one existed. The
+	// controller is the second line, and what it reports matters: this said
+	// Accepted, the reason an *accepted* resource carries, so the status claimed
+	// the opposite of what had happened.
+	ns := NewNamespace(t)
+	elsewhere := NewNamespace(t)
+	h := mirrorReconcilerFor(t, ns)
+	deviceSecret(t, elsewhere, map[string]string{
+		"address": "192.0.2.10", "username": "trawl", "password": "secret",
+	})
+	m := newMirror(t, elsewhere, "off-namespace")
+
+	reconcileMirror(t, h.r, m)
+
+	if h.device.configures != 0 || h.device.observes != 0 {
+		t.Errorf("an off-namespace mirror reached the device: %d configures, %d observes",
+			h.device.configures, h.device.observes)
+	}
+
+	after := reloadMirror(t, m)
+	if after.Status.Phase != trawlv1alpha1.PortMirrorError {
+		t.Errorf("phase = %q, want Error", after.Status.Phase)
+	}
+	cond := findCondition(after.Status.Conditions, status.TypeMirrorConfigured)
+	if cond == nil {
+		t.Fatalf("no MirrorConfigured condition; conditions = %v", after.Status.Conditions)
+	}
+	if cond.Reason != status.ReasonWrongNamespace {
+		t.Errorf("reason = %q, want %q", cond.Reason, status.ReasonWrongNamespace)
+	}
+	// Nothing was asked of the device, so claiming it is unreachable would send
+	// an operator to the switch for a problem in the resource.
+	if reachable := findCondition(after.Status.Conditions, status.TypeDeviceReachable); reachable != nil &&
+		reachable.Status == metav1.ConditionFalse {
+		t.Error("it reported DeviceReachable=False about a device it never contacted")
+	}
+}
+
+func TestAnInvalidStoredSpecIsRefusedBeforeTheDeviceIsTouched(t *testing.T) {
+	// A spec that never passed admission - restored from a backup predating a
+	// rule - must not become a configuration change on a switch. deviceRef's
+	// name is optional in LocalObjectReference, so "deviceRef: {}" satisfies the
+	// structural schema and refers to nothing.
+	ns := NewNamespace(t)
+	h := mirrorReconcilerFor(t, ns)
+	deviceSecret(t, ns, map[string]string{
+		"address": "192.0.2.10", "username": "trawl", "password": "secret",
+	})
+
+	m := &trawlv1alpha1.PortMirror{
+		ObjectMeta: metav1.ObjectMeta{Name: "nameless-device", Namespace: ns},
+		Spec: trawlv1alpha1.PortMirrorSpec{
+			Provider:  trawlv1alpha1.MirrorProviderMikroTikRouterOS7,
+			DeviceRef: corev1.LocalObjectReference{},
+			Sources:   []string{"ether1"},
+			Target:    "ether24",
+			Direction: trawlv1alpha1.MirrorDirectionBoth,
+		},
+	}
+	if err := Client().Create(context.Background(), m); err != nil {
+		t.Fatalf("creating the PortMirror: %v", err)
+	}
+
+	reconcileMirror(t, h.r, m)
+
+	if h.device.configures != 0 || h.device.observes != 0 {
+		t.Errorf("an unvalidated spec reached the device: %d configures, %d observes",
+			h.device.configures, h.device.observes)
+	}
+
+	after := reloadMirror(t, m)
+	cond := findCondition(after.Status.Conditions, status.TypeMirrorConfigured)
+	if cond == nil {
+		t.Fatalf("no MirrorConfigured condition; conditions = %v", after.Status.Conditions)
+	}
+	if cond.Reason != status.ReasonInvalidSpec {
+		t.Errorf("reason = %q, want %q", cond.Reason, status.ReasonInvalidSpec)
+	}
+	if !strings.Contains(cond.Message, "deviceRef") {
+		t.Errorf("message does not name the field: %q", cond.Message)
+	}
 }

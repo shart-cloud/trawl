@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	trawlv1alpha1 "trawl.cloud/trawl/api/v1alpha1"
+	"trawl.cloud/trawl/internal/admission"
 	"trawl.cloud/trawl/internal/audit"
 	"trawl.cloud/trawl/internal/fabric"
 	"trawl.cloud/trawl/internal/sanitize"
@@ -88,7 +89,10 @@ func (r *PortMirrorReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// rejects them too; this is the controller declining to act on one that
 	// reached etcd by some other path.
 	if mirror.Namespace != r.SystemNamespace {
-		return r.fail(ctx, &mirror, status.ReasonAccepted,
+		// WrongNamespace, as the NetworkTap and CaptureJob reconcilers report
+		// it. This said Accepted, which is the reason an accepted resource
+		// carries: the status claimed the opposite of what had happened.
+		return r.fail(ctx, &mirror, status.ReasonWrongNamespace,
 			fmt.Errorf("PortMirror is only honoured in %s", r.SystemNamespace))
 	}
 
@@ -101,6 +105,15 @@ func (r *PortMirrorReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		if err := r.Update(ctx, &mirror); err != nil {
 			return ctrl.Result{}, err
 		}
+	}
+
+	// Re-validate the stored spec before touching hardware, for the same reason
+	// the namespace is re-checked: admission runs on write, and an object
+	// restored into etcd from a backup has never been through it. The other
+	// reconcilers do this because an invalid spec becomes a broken workload;
+	// here it becomes a configuration change on a switch.
+	if errs := admission.ValidatePortMirrorSpec(&mirror.Spec); len(errs) > 0 {
+		return r.fail(ctx, &mirror, status.ReasonInvalidSpec, errs.ToAggregate())
 	}
 
 	provider, err := r.Providers.Get(string(mirror.Spec.Provider))
@@ -353,8 +366,13 @@ func (r *PortMirrorReconciler) fail(
 	mirror.Status.Phase = trawlv1alpha1.PortMirrorError
 	mirror.Status.ObservedGeneration = mirror.Generation
 
+	// A failure before the device was contacted must not report
+	// DeviceReachable=False: the device was never asked, and saying it was
+	// unreachable sends an operator to the switch for a problem in the spec.
 	condition := status.TypeDeviceReachable
-	if reason == status.ReasonDeviceRefused || reason == status.ReasonAccepted {
+	switch reason {
+	case status.ReasonDeviceRefused, status.ReasonAccepted,
+		status.ReasonInvalidSpec, status.ReasonWrongNamespace:
 		condition = status.TypeMirrorConfigured
 	}
 	status.Set(&mirror.Status.Conditions, status.New(condition,

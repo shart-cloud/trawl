@@ -68,6 +68,16 @@ const (
 	ActionRetentionChange  = "retention.change"
 	ActionArtifactExpire   = "artifact.expire"
 
+	// API mutations of the PortMirror resource, kept distinct from the device
+	// actions below. "Somebody asked for a mirror" and "the switch was
+	// reconfigured" are separate events with separate actors - the first is a
+	// user at admission, the second is the controller against hardware - and
+	// collapsing them would make a request that was never carried out
+	// indistinguishable from one that was.
+	ActionPortMirrorCreate = "portmirror.create"
+	ActionPortMirrorUpdate = "portmirror.update"
+	ActionPortMirrorDelete = "portmirror.delete"
+
 	// Device configuration. Trawl changing hardware it does not own is the
 	// most physically consequential thing it does, and leaving it the least
 	// audited would be the wrong way round.
@@ -101,6 +111,7 @@ var validActions = []string{
 	ActionCapturePolicyArm, ActionCapturePolicyDisarm,
 	ActionCaptureJobManualCreate, ActionCaptureJobPolicyCreate, ActionCaptureJobTransition,
 	ActionArtifactDownload, ActionRetentionChange, ActionArtifactExpire,
+	ActionPortMirrorCreate, ActionPortMirrorUpdate, ActionPortMirrorDelete,
 	ActionPortMirrorConfigure, ActionPortMirrorRevert,
 }
 
