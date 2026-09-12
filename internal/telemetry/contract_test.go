@@ -202,7 +202,7 @@ func TestLabelValueEnumsAreClosed(t *testing.T) {
 	}{
 		{"audit decision", []string{"allowed", "denied", "succeeded", "failed"}, IsValidAuditDecision},
 		{"audit result", []string{"success", "retry", "unavailable", "conflict"}, IsValidAuditResult},
-		{"controller", []string{"networktap", "capturejob", "retention"}, IsValidController},
+		{"controller", []string{"networktap", "capturejob", "retention", "capturepolicy"}, IsValidController},
 		{"reconcile result", []string{"success", "requeue", "invalid", "dependency_unavailable", "error"}, IsValidReconcileResult},
 		{"source type", []string{"mirror_interface", "node_interface"}, IsValidSourceType},
 		{"analyzer", []string{"suricata", "zeek"}, IsValidAnalyzer},

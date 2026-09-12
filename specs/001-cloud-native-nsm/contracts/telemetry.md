@@ -122,7 +122,7 @@ Allowed `decision`: `allowed`, `denied`, `succeeded`, `failed`. Allowed `result`
 | `trawl_status_update_failures_total` | counter | `resource_kind`, `reason` | Failed status writes. |
 | `trawl_finalizer_failures_total` | counter | `resource_kind`, `reason` | External cleanup failures. |
 
-Allowed `controller`: `networktap`, `capturejob`, `retention`. Allowed `result`:
+Allowed `controller`: `networktap`, `capturejob`, `retention`, `capturepolicy`. Allowed `result`:
 `success`, `requeue`, `invalid`, `dependency_unavailable`, `error`.
 
 ### Sensor and ingestion

@@ -33,6 +33,7 @@ import (
 	"trawl.cloud/trawl/internal/sanitize"
 	"trawl.cloud/trawl/internal/status"
 	"trawl.cloud/trawl/internal/telemetry"
+	"trawl.cloud/trawl/internal/witness"
 )
 
 const (
@@ -93,6 +94,10 @@ type worker struct {
 	pollInterval   time.Duration
 	statusInterval time.Duration
 
+	// heartbeat is what lets something other than this process notice that
+	// this process has stopped writing policy status.
+	heartbeat *witness.Heartbeat
+
 	mu          sync.Mutex
 	alertHealth controller.SourceHealth
 }
@@ -123,6 +128,11 @@ func (w *worker) Start(ctx context.Context) error {
 	if err := w.tracker.Flush(flushCtx, w.sourceHealth()); err != nil {
 		logf("final status flush: %v", sanitize.Error(err))
 	}
+	// The heartbeat is deliberately not renewed here. This flush is the last
+	// thing a departing leader does, and attesting to liveness on the way out
+	// would keep the heartbeat fresh for a full window after the process is
+	// gone - delaying the report of an outage in the one case where the outage
+	// is certain. A successor renews it on its first flush instead.
 	return nil
 }
 
@@ -276,6 +286,12 @@ func (w *worker) runStatus(ctx context.Context) {
 		w.refreshReplayWindow(ctx)
 		if err := w.tracker.Flush(ctx, w.sourceHealth()); err != nil {
 			logf("writing policy status: %v", sanitize.Error(err))
+		} else if err := w.heartbeat.Renew(ctx); err != nil {
+			// Renewed only after a flush that succeeded, and a failure to
+			// renew is logged rather than retried: the next tick renews
+			// anyway, and the heartbeat going stale is precisely the outcome a
+			// worker that cannot write status should produce.
+			logf("renewing the worker heartbeat: %v", sanitize.Error(err))
 		}
 		select {
 		case <-ctx.Done():

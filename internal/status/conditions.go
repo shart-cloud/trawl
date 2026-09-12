@@ -101,6 +101,7 @@ const (
 	ReasonTapNotActive          = "TapNotActive"
 	ReasonSourceConnected       = "SourceConnected"
 	ReasonSourceDisconnected    = "SourceDisconnected"
+	ReasonWorkerStale           = "WorkerStale"
 	ReasonSourceGap             = "SourceGap"
 	ReasonWithinRateLimit       = "WithinRateLimit"
 	ReasonRateLimited           = "RateLimited"
@@ -145,6 +146,7 @@ func AllReasons() []string {
 		ReasonInterfaceMissing, ReasonContentStale,
 		ReasonTapResolved, ReasonTapNotFound, ReasonTapNotActive,
 		ReasonSourceConnected, ReasonSourceDisconnected, ReasonSourceGap,
+		ReasonWorkerStale,
 		ReasonWithinRateLimit, ReasonRateLimited, ReasonCooldownActive, ReasonDisarmed,
 		ReasonTargetReady, ReasonTargetUnavailable,
 		ReasonFilterValid, ReasonFilterInvalid,

@@ -40,9 +40,10 @@ const (
 
 // Controllers and reconcile outcomes.
 const (
-	ControllerNetworkTap = "networktap"
-	ControllerCaptureJob = "capturejob"
-	ControllerRetention  = "retention"
+	ControllerNetworkTap    = "networktap"
+	ControllerCaptureJob    = "capturejob"
+	ControllerRetention     = "retention"
+	ControllerCapturePolicy = "capturepolicy"
 
 	ReconcileSuccess               = "success"
 	ReconcileRequeue               = "requeue"
@@ -124,9 +125,12 @@ const (
 )
 
 var (
-	auditDecisions   = []string{AuditDecisionAllowed, AuditDecisionDenied, AuditDecisionSucceeded, AuditDecisionFailed}
-	auditResults     = []string{AuditResultSuccess, AuditResultRetry, AuditResultUnavailable, AuditResultConflict}
-	controllers      = []string{ControllerNetworkTap, ControllerCaptureJob, ControllerRetention}
+	auditDecisions = []string{AuditDecisionAllowed, AuditDecisionDenied, AuditDecisionSucceeded, AuditDecisionFailed}
+	auditResults   = []string{AuditResultSuccess, AuditResultRetry, AuditResultUnavailable, AuditResultConflict}
+	controllers    = []string{
+		ControllerNetworkTap, ControllerCaptureJob, ControllerRetention,
+		ControllerCapturePolicy,
+	}
 	reconcileResults = []string{ReconcileSuccess, ReconcileRequeue, ReconcileInvalid, ReconcileDependencyUnavailable, ReconcileError}
 	sourceTypes      = []string{SourceTypeMirrorInterface, SourceTypeNodeInterface}
 	analyzers        = []string{AnalyzerSuricata, AnalyzerZeek}

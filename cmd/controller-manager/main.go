@@ -310,6 +310,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	// A witness for CapturePolicy, and nothing more than a witness: the event
+	// worker owns policy status, and this reconciler writes only when the
+	// worker's heartbeat has gone stale. It exists because the staleness check
+	// that would report a dead worker used to live inside the worker.
+	if err := (&controller.CapturePolicyReconciler{
+		Client:          mgr.GetClient(),
+		SystemNamespace: installCfg.SystemNamespace,
+		Metrics:         trawlMetrics,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to set up the CapturePolicy witness")
+		os.Exit(1)
+	}
+
 	// Port mirroring is the only controller that writes to hardware outside the
 	// cluster, and the only one whose provider registry is assembled here
 	// rather than discovered. Registration is explicit so that "which binaries
