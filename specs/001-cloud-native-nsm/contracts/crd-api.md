@@ -115,6 +115,7 @@ TargetStatus
 ├── lastPacketTime?: metav1.Time
 ├── packetsObserved: int64
 ├── kernelDrops?: int64
+├── bytesObserved?: int64                             decoder-sourced; read with kernelDrops
 ├── duplication: Unknown | NotDetected | Suspected
 ├── rejectedRecords: int64
 └── analyzers[]: AnalyzerStatus                        map key: name

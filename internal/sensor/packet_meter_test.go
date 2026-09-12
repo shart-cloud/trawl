@@ -248,3 +248,112 @@ func TestAFallbackToTheOtherCounterDoesNotCountTheSamePacketsTwice(t *testing.T)
 		t.Errorf("packets observed = %d after switching back to the kernel counter, want 5000500", got)
 	}
 }
+
+func TestAMeterReportsTheBytesTheAnalyzerDecoded(t *testing.T) {
+	// Observed throughput was not answerable from Trawl's own signals at all:
+	// the telemetry contract had a packet counter and no byte equivalent, so
+	// "is this tap keeping up" meant reading Suricata's stats separately.
+	m := NewPacketMeter(DiscardPackets)
+	m.Observe(&observation.SuricataStats{
+		KernelPackets: i64(102), DecoderBytes: i64(8126), Timestamp: at(0),
+	})
+
+	got := m.Counters()
+	if got.BytesObserved == nil {
+		t.Fatal("bytes observed = nil after a record carrying decoder bytes")
+	}
+	if *got.BytesObserved != 8126 {
+		t.Errorf("bytes observed = %d, want 8126", *got.BytesObserved)
+	}
+}
+
+func TestAMeterDistinguishesZeroBytesFromUnreportedBytes(t *testing.T) {
+	// The same line FR-039 draws for drops. An analyzer that reports no byte
+	// counter has not established that nothing was decoded, and flattening the
+	// two would claim a measured throughput of zero on a tap nobody measured.
+	m := NewPacketMeter(DiscardPackets)
+	m.Observe(&observation.SuricataStats{KernelPackets: i64(10), Timestamp: at(0)})
+
+	if got := m.Counters(); got.BytesObserved != nil {
+		t.Errorf("bytes observed = %d with no byte counter reported, want nil",
+			*got.BytesObserved)
+	}
+
+	m.Observe(&observation.SuricataStats{
+		KernelPackets: i64(20), DecoderBytes: i64(0), Timestamp: at(1),
+	})
+
+	got := m.Counters()
+	if got.BytesObserved == nil {
+		t.Fatal("bytes observed = nil after the analyzer reported zero bytes")
+	}
+	if *got.BytesObserved != 0 {
+		t.Errorf("bytes observed = %d, want 0 reported", *got.BytesObserved)
+	}
+}
+
+func TestAnAnalyzerRestartDoesNotLoseTheBytesItAlreadyDecoded(t *testing.T) {
+	// The packet counter's rule, applied to bytes. Suricata's counters are
+	// cumulative for a process the sensor outlives, so a reading below its
+	// predecessor is a restart rather than a negative delta.
+	m := NewPacketMeter(DiscardPackets)
+	m.Observe(&observation.SuricataStats{
+		KernelPackets: i64(100), DecoderBytes: i64(90_000), Timestamp: at(0),
+	})
+	m.Observe(&observation.SuricataStats{
+		KernelPackets: i64(10), DecoderBytes: i64(1_500), Timestamp: at(1),
+	})
+
+	got := m.Counters()
+	if got.BytesObserved == nil {
+		t.Fatal("bytes observed = nil")
+	}
+	if *got.BytesObserved != 91_500 {
+		t.Errorf("bytes observed = %d across a restart, want 91500", *got.BytesObserved)
+	}
+}
+
+func TestAPacketSourceSwitchDoesNotRebaselineTheByteCounter(t *testing.T) {
+	// Packets can change source - kernel counters to the decoder's - and that
+	// switch re-baselines the packet count so history is not counted twice.
+	// Bytes have only one source, so the switch must not touch them: a tap
+	// whose kernel counters went away would otherwise appear to stop decoding.
+	m := NewPacketMeter(DiscardPackets)
+	m.Observe(&observation.SuricataStats{
+		KernelPackets: i64(1_000), DecoderBytes: i64(500_000), Timestamp: at(0),
+	})
+	m.Observe(&observation.SuricataStats{
+		DecoderPackets: i64(2_000), DecoderBytes: i64(600_000), Timestamp: at(1),
+	})
+
+	got := m.Counters()
+	if got.BytesObserved == nil {
+		t.Fatal("bytes observed = nil")
+	}
+	if *got.BytesObserved != 600_000 {
+		t.Errorf("bytes observed = %d after a packet-source switch, want 600000",
+			*got.BytesObserved)
+	}
+}
+
+func TestAStatsRecordWithBytesAndNoPacketCounterStillMeasures(t *testing.T) {
+	// A record carrying bytes is a measurement even with no packet counter in
+	// it. Discarding it along with the absent packet reading would drop the
+	// only throughput evidence the record held.
+	var got []Increment
+	m := NewPacketMeter(func(inc Increment) { got = append(got, inc) })
+	m.Observe(&observation.SuricataStats{DecoderBytes: i64(4_096), Timestamp: at(0)})
+
+	if len(got) != 1 {
+		t.Fatalf("observer saw %d measurements, want 1", len(got))
+	}
+	if got[0].Bytes != 4_096 {
+		t.Errorf("increment bytes = %d, want 4096", got[0].Bytes)
+	}
+	if got[0].Packets != 0 {
+		t.Errorf("increment packets = %d with no packet counter, want 0", got[0].Packets)
+	}
+	if !got[0].LastPacket.IsZero() {
+		t.Error("a bytes-only record claimed a packet arrival time")
+	}
+}

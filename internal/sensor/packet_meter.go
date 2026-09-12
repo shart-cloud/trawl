@@ -69,6 +69,21 @@ type PacketMeter struct {
 	// unmeasured drops are different answers (FR-039).
 	drops *int64
 
+	// bytes accumulates the decoded byte count the same way observed
+	// accumulates packets, and for the same reason: the analyzer's counter is
+	// cumulative for a process the sensor outlives.
+	//
+	// Tracked separately from the packet counter rather than alongside it,
+	// because the two can change source independently. Packets may switch from
+	// the kernel counter to the decoder's; bytes have only ever one source, so
+	// a packet-source switch must not re-baseline them.
+	bytes     int64
+	lastBytes int64
+
+	// haveBytes distinguishes a decoder that has reported zero bytes from one
+	// that reports no byte counter at all.
+	haveBytes bool
+
 	// lastPacket advances only when the count actually grew. Stats records are
 	// emitted on a timer whether or not traffic arrived, so their timestamp
 	// says when the analyzer reported, not when a packet was seen.
@@ -88,6 +103,11 @@ type Increment struct {
 	// Drops is the cumulative kernel drop count, nil when the analyzer does
 	// not report drops - the same distinction the status field draws.
 	Drops *int64
+
+	// Bytes is how many decoded bytes this measurement added, zero when the
+	// counter stood still or the record carried none. Decoder-sourced, so it
+	// describes what the analyzer accepted rather than what reached the wire.
+	Bytes int64
 
 	// LastPacket is when a packet was last seen, zero when this measurement
 	// established no new arrival.
@@ -143,15 +163,26 @@ func (m *PacketMeter) measure(stats *observation.SuricataStats) (Increment, bool
 		m.drops = &d
 	}
 
+	// Folded before the packet counter is consulted, so a record carrying bytes
+	// and no packet counter still reports a measurement rather than being
+	// discarded along with it.
+	bytesAdded, measuredBytes := m.foldBytes(stats)
+
 	raw, source := packetReading(stats)
-	if source == sourceNone {
-		// No packet counter in this record. Any drop count it carried has been
-		// taken, but there is no measurement to report.
+	if source == sourceNone && !measuredBytes {
+		// No counter of either kind in this record. Any drop count it carried
+		// has been taken, but there is no measurement to report.
 		return Increment{}, false
 	}
 	before := m.observed
 
 	switch {
+	case source == sourceNone:
+		// Bytes only. Nothing to fold into the packet count, and the packet
+		// source is deliberately left as it was: adopting sourceNone as the
+		// last source would make the next real reading look like a switch and
+		// re-baseline a counter that never changed source.
+
 	case m.lastSource == sourceNone:
 		// The first reading of this meter's life. The analyzer may have been
 		// running before the sensor attached, and those packets were observed,
@@ -173,12 +204,14 @@ func (m *PacketMeter) measure(stats *observation.SuricataStats) (Increment, bool
 	}
 
 	grew := m.observed > before
-	inc := Increment{Packets: m.observed - before}
+	inc := Increment{Packets: m.observed - before, Bytes: bytesAdded}
 	if m.drops != nil {
 		d := *m.drops
 		inc.Drops = &d
 	}
-	m.last, m.lastSource = raw, source
+	if source != sourceNone {
+		m.last, m.lastSource = raw, source
+	}
 
 	if grew {
 		seen := stats.Timestamp
@@ -186,6 +219,34 @@ func (m *PacketMeter) measure(stats *observation.SuricataStats) (Increment, bool
 		inc.LastPacket = seen
 	}
 	return inc, true
+}
+
+// foldBytes folds this record's byte counter in and returns what it added.
+//
+// The reset rule is the packet counter's: a reading below its predecessor means
+// the analyzer restarted, and the bytes counted before the reset were still
+// decoded, so the new run is added to them rather than differenced against a
+// larger number and silently dropped.
+func (m *PacketMeter) foldBytes(stats *observation.SuricataStats) (int64, bool) {
+	if stats.DecoderBytes == nil {
+		return 0, false
+	}
+	raw := *stats.DecoderBytes
+	before := m.bytes
+
+	switch {
+	case !m.haveBytes:
+		// The analyzer may have been decoding before the sensor attached, and
+		// those bytes crossed the capture boundary, so the whole cumulative
+		// value is taken - as it is for the first packet reading.
+		m.bytes += raw
+	case raw < m.lastBytes:
+		m.bytes += raw
+	default:
+		m.bytes += raw - m.lastBytes
+	}
+	m.lastBytes, m.haveBytes = raw, true
+	return m.bytes - before, true
 }
 
 // Counters reports what has been measured so far.
@@ -197,6 +258,10 @@ func (m *PacketMeter) Counters() PacketCounters {
 	if m.drops != nil {
 		d := *m.drops
 		out.KernelDrops = &d
+	}
+	if m.haveBytes {
+		b := m.bytes
+		out.BytesObserved = &b
 	}
 	if m.lastPacket != nil {
 		t := *m.lastPacket

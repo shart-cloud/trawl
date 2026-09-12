@@ -58,7 +58,13 @@ type AnalyzerObserver interface {
 type PacketCounters struct {
 	PacketsObserved int64
 	KernelDrops     *int64
-	LastPacketTime  *time.Time
+
+	// BytesObserved is nil until the analyzer reports a byte counter, for the
+	// same reason KernelDrops is: a tap that has decoded nothing and one whose
+	// analyzer reports no bytes at all are different findings.
+	BytesObserved *int64
+
+	LastPacketTime *time.Time
 }
 
 // StatusReporter builds the TargetStatus this sensor owns.
@@ -115,6 +121,7 @@ func (r *StatusReporter) Build() trawlv1alpha1.TargetStatus {
 		p := r.Packets()
 		status.PacketsObserved = p.PacketsObserved
 		status.KernelDrops = p.KernelDrops
+		status.BytesObserved = p.BytesObserved
 		if p.LastPacketTime != nil {
 			t := metav1.NewTime(*p.LastPacketTime)
 			status.LastPacketTime = &t

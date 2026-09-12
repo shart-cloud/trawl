@@ -309,6 +309,13 @@ func packetMetrics(metrics *telemetry.Metrics, sourceType string) sensor.PacketO
 			metrics.SensorPacketsTotal.WithLabelValues(labels...).Add(float64(inc.Packets))
 		}
 
+		// Already a delta, unlike Drops below: the meter folds the analyzer's
+		// cumulative byte counter and its restarts the same way it folds
+		// packets, so there is nothing to difference here.
+		if inc.Bytes > 0 {
+			metrics.SensorBytesTotal.WithLabelValues(labels...).Add(float64(inc.Bytes))
+		}
+
 		if inc.Drops != nil {
 			added := *inc.Drops - reported
 			if added < 0 {

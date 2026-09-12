@@ -81,6 +81,7 @@ type Metrics struct {
 
 	// Sensor and ingestion.
 	SensorPacketsTotal      *prometheus.CounterVec
+	SensorBytesTotal        *prometheus.CounterVec
 	SensorKernelDropsTotal  *prometheus.CounterVec
 	SensorRecordsTotal      *prometheus.CounterVec
 	SensorLastPacketSeconds *prometheus.GaugeVec
@@ -155,6 +156,16 @@ func NewMetrics() *Metrics {
 		SensorPacketsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "trawl_sensor_packets_total",
 			Help: "Packets reported at the capture/analyzer boundary.",
+		}, []string{"source_type", "analyzer"}),
+		// Observed throughput is the first number anyone asks a sensor for, and
+		// until this existed it was not answerable from Trawl's own signals:
+		// the only byte metric was trawl_capture_size_bytes, which is artifact
+		// size. Decoder-sourced, because Suricata reports bytes nowhere else,
+		// so it is what the analyzer accepted rather than what reached the
+		// wire - read it with trawl_sensor_kernel_drops_total.
+		SensorBytesTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "trawl_sensor_bytes_total",
+			Help: "Bytes decoded at the capture/analyzer boundary.",
 		}, []string{"source_type", "analyzer"}),
 		SensorKernelDropsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "trawl_sensor_kernel_drops_total",
@@ -245,7 +256,7 @@ func (m *Metrics) collectors() []prometheus.Collector {
 		m.AuditBacklogObjects, m.AuditOldestUnforwardedSecs,
 		m.ReconcileTotal, m.ReconcileDurationSeconds, m.WorkqueueDepth,
 		m.StatusUpdateFailures, m.FinalizerFailures,
-		m.SensorPacketsTotal, m.SensorKernelDropsTotal, m.SensorRecordsTotal,
+		m.SensorPacketsTotal, m.SensorBytesTotal, m.SensorKernelDropsTotal, m.SensorRecordsTotal,
 		m.SensorLastPacketSeconds, m.AlloyDeliveryFailures,
 		m.TriggerEventsTotal, m.PolicyDecisionsTotal, m.TriggerSourceConnected,
 		m.TriggerLagSeconds, m.TriggerGapTotal,
@@ -290,6 +301,7 @@ func (m *Metrics) initSeries() {
 	for _, st := range sourceTypes {
 		for _, a := range analyzers {
 			m.SensorPacketsTotal.WithLabelValues(st, a)
+			m.SensorBytesTotal.WithLabelValues(st, a)
 			m.SensorKernelDropsTotal.WithLabelValues(st, a)
 			m.SensorLastPacketSeconds.WithLabelValues(st, a)
 		}
