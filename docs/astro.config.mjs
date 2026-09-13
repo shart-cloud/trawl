@@ -10,6 +10,10 @@ export default defineConfig({
 			social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/withastro/starlight' }],
 			sidebar: [
 				{
+					label: 'Planning',
+					items: [{ label: 'Post-MVP Evolution Plan', slug: 'roadmap' }],
+				},
+				{
 					label: 'Architecture Decisions',
 					items: [{ autogenerate: { directory: 'adr' } }],
 				},
