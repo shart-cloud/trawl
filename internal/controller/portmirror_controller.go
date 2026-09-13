@@ -96,6 +96,13 @@ func (r *PortMirrorReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return r.revert(ctx, &mirror)
 	}
 
+	// Contention is settled before the finalizer is taken, and before the
+	// device is so much as read. Both orderings are deliberate: see
+	// checkDeviceConflict.
+	if conflict, err := r.checkDeviceConflict(ctx, &mirror); conflict || err != nil {
+		return ctrl.Result{RequeueAfter: mirrorResyncInterval}, err
+	}
+
 	if !controllerutil.ContainsFinalizer(&mirror, portMirrorFinalizer) {
 		controllerutil.AddFinalizer(&mirror, portMirrorFinalizer)
 		if err := r.Update(ctx, &mirror); err != nil {
@@ -259,6 +266,82 @@ func (r *PortMirrorReconciler) revert(ctx context.Context, mirror *trawlv1alpha1
 	return ctrl.Result{}, r.Update(ctx, mirror)
 }
 
+// checkDeviceConflict refuses to drive a device another PortMirror already holds.
+//
+// A RouterOS switch has one global mirror-target. Two PortMirrors naming the
+// same deviceRef therefore describe one piece of hardware and disagree about
+// it, and left alone each observes the other's configuration as drift and
+// rewrites it on the next resync. That is not a slow leak: it is indefinite
+// flapping, and every lap of it writes a configuration change to the device log
+// and a record to the write-once ledger. The ledger cannot be pruned, so a
+// contention nobody noticed is a contention nobody can clean up after.
+//
+// Admission cannot do this. Whether two resources contend depends on what else
+// is stored at the moment they are compared, and an admission webhook sees one
+// object with no reliable view of the rest - so a pair created concurrently
+// would both pass and both be wrong. It belongs at reconcile time, which is
+// also where ProbePortConflict settles the same shape of question.
+//
+// The younger claim yields, so contention can never take down a mirror that is
+// already running: the incumbent keeps the device and keeps mirroring. The
+// yielding resource does not take the finalizer either, because the finalizer's
+// whole purpose is to revert the device on deletion - and a resource that never
+// configured the device would, in reverting it, tear down the mirror the
+// incumbent owns.
+func (r *PortMirrorReconciler) checkDeviceConflict(
+	ctx context.Context,
+	mirror *trawlv1alpha1.PortMirror,
+) (bool, error) {
+	var mirrors trawlv1alpha1.PortMirrorList
+	if err := r.List(ctx, &mirrors, client.InNamespace(r.SystemNamespace)); err != nil {
+		_, statusErr := r.fail(ctx, mirror, status.ReasonDependencyUnavailable,
+			fmt.Errorf("listing PortMirrors to check for device contention: %w", err))
+		if statusErr != nil {
+			return true, statusErr
+		}
+		return true, nil
+	}
+
+	for i := range mirrors.Items {
+		other := &mirrors.Items[i]
+		if other.UID == mirror.UID || !other.DeletionTimestamp.IsZero() {
+			continue
+		}
+		if other.Spec.DeviceRef.Name != mirror.Spec.DeviceRef.Name {
+			continue
+		}
+		if !olderClaim(other, mirror) {
+			continue
+		}
+		// Deliberately not conditioned on the incumbent's phase. An incumbent
+		// that is currently failing - an unreachable device, a missing
+		// credential - may recover at any time, and a rule that let the
+		// younger claim seize the device whenever the older one stumbled would
+		// hand the two of them the device in turn, which is the flapping this
+		// exists to prevent.
+		_, err := r.fail(ctx, mirror, status.ReasonDeviceConflict,
+			fmt.Errorf("PortMirror %s/%s already holds device %q; a device has one mirror target, "+
+				"so the older claim keeps it and this resource makes no device changes",
+				other.Namespace, other.Name, sanitize.String(other.Spec.DeviceRef.Name)))
+		return true, err
+	}
+	return false, nil
+}
+
+// olderClaim reports whether other has the prior claim on a contended resource.
+//
+// Creation time decides it, with the UID as a tie-break so that two objects
+// created in the same instant still agree on which of them yields. They
+// reconcile independently, and a rule they could read differently would yield
+// both or neither.
+func olderClaim(other, mine metav1.Object) bool {
+	otherAt, mineAt := other.GetCreationTimestamp(), mine.GetCreationTimestamp()
+	if !otherAt.Equal(&mineAt) {
+		return otherAt.Before(&mineAt)
+	}
+	return string(other.GetUID()) < string(mine.GetUID())
+}
+
 // device resolves the credential Secret into a fabric.Device.
 func (r *PortMirrorReconciler) device(ctx context.Context, mirror *trawlv1alpha1.PortMirror) (fabric.Device, error) {
 	var secret corev1.Secret
@@ -354,7 +437,11 @@ func (r *PortMirrorReconciler) fail(
 	mirror.Status.ObservedGeneration = mirror.Generation
 
 	condition := status.TypeDeviceReachable
-	if reason == status.ReasonDeviceRefused || reason == status.ReasonAccepted {
+	switch reason {
+	case status.ReasonDeviceRefused, status.ReasonAccepted, status.ReasonDeviceConflict:
+		// None of these are statements about reachability. A contended mirror
+		// in particular has not spoken to the device at all, so claiming it
+		// unreachable would be inventing an observation nobody made.
 		condition = status.TypeMirrorConfigured
 	}
 	status.Set(&mirror.Status.Conditions, status.New(condition,

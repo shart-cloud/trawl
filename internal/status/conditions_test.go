@@ -17,6 +17,10 @@ limitations under the License.
 package status
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -185,4 +189,98 @@ func TestUnknownIsDistinctFromFalse(t *testing.T) {
 	if IsTrue(conds, TypeAnalyzersHealthy, 1) {
 		t.Error("Unknown must not satisfy IsTrue")
 	}
+}
+
+// TestAllReasonsIsComplete proves the enum lists every reason that exists.
+//
+// AllReasons is what the shape test above walks, so a reason missing from it is
+// a reason nothing checks. That is not hypothetical: every PortMirror reason -
+// DeviceReachable, DeviceUnreachable, DeviceRefused, MirrorConfigured,
+// MirrorDrifted, CredentialMissing - was absent from the list from the day the
+// fabric work landed, so the six of them went unverified while the test that
+// would have caught a malformed one passed.
+//
+// A hand-maintained list of hand-maintained constants needs something that
+// notices when the two drift apart, so this reads the declarations out of the
+// source rather than trusting anyone to remember.
+func TestAllReasonsIsComplete(t *testing.T) {
+	fileSet := token.NewFileSet()
+	parsed, err := parser.ParseFile(fileSet, "conditions.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parsing conditions.go: %v", err)
+	}
+
+	declared := make(map[string]struct{})
+	for _, decl := range parsed.Decls {
+		general, ok := decl.(*ast.GenDecl)
+		if !ok || general.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range general.Specs {
+			value, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for _, name := range value.Names {
+				if strings.HasPrefix(name.Name, "Reason") {
+					declared[name.Name] = struct{}{}
+				}
+			}
+		}
+	}
+	if len(declared) == 0 {
+		t.Fatal("no Reason constants found; the parser is looking in the wrong place")
+	}
+
+	listed := make(map[string]struct{}, len(AllReasons()))
+	for _, r := range AllReasons() {
+		listed[r] = struct{}{}
+	}
+
+	// The constant's name is not its value, so compare on value: every declared
+	// constant must resolve to a string AllReasons returns.
+	byValue := reasonValues(t, parsed)
+	for name := range declared {
+		value, ok := byValue[name]
+		if !ok {
+			t.Errorf("reason constant %s has no literal value", name)
+			continue
+		}
+		if _, listed := listed[value]; !listed {
+			t.Errorf("reason %s (%q) is declared but missing from AllReasons, so nothing verifies it", name, value)
+		}
+	}
+}
+
+// reasonValues maps each Reason constant's name to its string literal.
+func reasonValues(t *testing.T, parsed *ast.File) map[string]string {
+	t.Helper()
+	values := make(map[string]string)
+	for _, decl := range parsed.Decls {
+		general, ok := decl.(*ast.GenDecl)
+		if !ok || general.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range general.Specs {
+			value, ok := spec.(*ast.ValueSpec)
+			if !ok || len(value.Names) != len(value.Values) {
+				continue
+			}
+			for i, name := range value.Names {
+				if !strings.HasPrefix(name.Name, "Reason") {
+					continue
+				}
+				literal, ok := value.Values[i].(*ast.BasicLit)
+				if !ok || literal.Kind != token.STRING {
+					continue
+				}
+				unquoted, err := strconv.Unquote(literal.Value)
+				if err != nil {
+					t.Fatalf("unquoting %s: %v", name.Name, err)
+				}
+				values[name.Name] = unquoted
+			}
+		}
+	}
+	return values
 }

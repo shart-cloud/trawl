@@ -128,6 +128,7 @@ const (
 	ReasonDeviceRefused         = "DeviceRefused"
 	ReasonMirrorConfigured      = "MirrorConfigured"
 	ReasonMirrorDrifted         = "MirrorDrifted"
+	ReasonDeviceConflict        = "DeviceConflict"
 	// A condition reason, not a credential. gosec matches the name.
 	ReasonCredentialMissing = "CredentialMissing" //nolint:gosec // G101: a status reason string.
 )
@@ -154,6 +155,9 @@ func AllReasons() []string {
 		ReasonArtifactVerified, ReasonArtifactMissing, ReasonChecksumMismatch,
 		ReasonStorageFailure, ReasonDownloadable, ReasonNotDownloadable,
 		ReasonRetentionEnforced, ReasonRetentionFailed, ReasonExpired, ReasonPending,
+		ReasonDeviceReachable, ReasonDeviceUnreachable, ReasonDeviceRefused,
+		ReasonMirrorConfigured, ReasonMirrorDrifted, ReasonDeviceConflict,
+		ReasonCredentialMissing,
 	}
 }
 

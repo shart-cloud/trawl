@@ -261,14 +261,10 @@ func (r *NetworkTapReconciler) checkProbePortConflict(ctx context.Context, tap *
 
 // incumbent reports whether other has the older claim on a probe port.
 //
-// Creation time decides it, with the UID as a tie-break so that two taps created
-// in the same instant still agree on which of them yields - both reconcile
-// independently, and a rule they read differently would fail both or neither.
+// The rule is shared with PortMirror device contention, which settles the same
+// question about a different resource; see olderClaim.
 func incumbent(other, tap *trawlv1alpha1.NetworkTap) bool {
-	if !other.CreationTimestamp.Equal(&tap.CreationTimestamp) {
-		return other.CreationTimestamp.Before(&tap.CreationTimestamp)
-	}
-	return string(other.UID) < string(tap.UID)
+	return olderClaim(other, tap)
 }
 
 // applyOwnedResources creates or updates everything the tap owns.

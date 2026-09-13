@@ -86,22 +86,38 @@ reason onto every policy the dead worker owned.
 worker's egress. It now asserts the policy status changes, not just that the
 injection applied.
 
-### 0.2 PortMirror device contention — **open**
+### 0.2 PortMirror device contention — **closed**
 
-Nothing stops two `PortMirror` resources naming the same `deviceRef`. A RouterOS
-switch has one global `mirror-target`, so each observes the other's
-configuration as drift and rewrites it every resync: indefinite flapping,
-filling the device log and the write-once audit ledger.
+Nothing stopped two `PortMirror` resources naming the same `deviceRef`. A
+RouterOS switch has one global `mirror-target`, so each observed the other's
+configuration as drift and rewrote it every resync: indefinite flapping,
+filling the device log and the write-once audit ledger. The ledger cannot be
+pruned, so a contention nobody noticed was one nobody could clean up after.
 
-**Fix:** follow the `ProbePortConflict` precedent. The controller detects the
-overlap and reports a conflict reason on whichever resource holds the younger
-claim; the incumbent keeps the device. Admission does not reject, because
-admission cannot see reconcile-time state.
+Closed by `checkDeviceConflict`, following the `ProbePortConflict` precedent.
+The controller detects the overlap and reports `DeviceConflict` on whichever
+resource holds the younger claim; the incumbent keeps the device and keeps
+mirroring. Creation time decides the claim with the UID as a tie-break, so two
+resources created in the same instant still agree on which yields — the rule is
+now shared with `ProbePortConflict` as `olderClaim`. Admission does not reject,
+because admission sees one object and cannot see reconcile-time state; a pair
+created concurrently would both pass and both be wrong.
 
-**Why now rather than later:** Workstream 5 adds cloud vTAP providers, where
-repointing a mirror session is a single API call and a leftover mirror copies
-production traffic to an interface nobody is watching. The contention rule needs
-to exist before the provider count grows.
+The contended resource also declines the revert finalizer. That is not
+incidental: the finalizer exists to un-configure the device on deletion, so a
+resource that never configured it would, in reverting, tear down the mirror the
+incumbent owns.
+
+**Why it mattered now rather than later:** Workstream 5 adds cloud vTAP
+providers, where repointing a mirror session is a single API call and a leftover
+mirror copies production traffic to an interface nobody is watching. The
+contention rule needed to exist before the provider count grew.
+
+**Turned up on the way:** `status.AllReasons()` was missing every PortMirror
+reason. It is what the condition-shape contract test walks, so the six of them
+had gone unverified since the fabric work landed — the same failure class as a
+silently skipping test. The list is complete now, and a new test parses the
+source to prove it stays that way.
 
 ### 0.3 No observed-byte counter — **closed**
 
@@ -627,7 +643,7 @@ WS5  Cloud fabric providers  ──── independent, needs only WS0.2
 
 **Recommended order:**
 
-1. **WS0** — carried gaps. 0.1 and 0.3 are closed; 0.2 and 0.4 remain.
+1. **WS0** — carried gaps. 0.1, 0.2 and 0.3 are closed; 0.4 remains.
 2. **WS1** — event time versus ingest time. Small now, a migration later.
 3. **WS2** — ring buffer and AnalysisJob as one increment. The headline.
 4. **WS3** — storage interface revision, then the second backend.
