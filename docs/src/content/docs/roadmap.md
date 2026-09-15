@@ -151,8 +151,14 @@ or restate the criterion), not an implementation. See open question 3.
 - Branch protection does not include the Security workflow jobs, so gates
   written to fail are advisory in practice. This is a repository setting, not a
   commit.
-- `README.md` is the untouched kubebuilder scaffold, every `TODO(user)`
-  included.
+- `README.md` was the untouched kubebuilder scaffold, every `TODO(user)`
+  included. **Closed.** Writing it turned up two things: the repository asserts
+  Apache 2.0 in 195 file headers and shipped no `LICENSE`, which is now added,
+  and there is no published install bundle — `dist/` is gitignored, no workflow
+  releases one, so the scaffold's one-command `kubectl apply` install was never
+  going to work. The README says so rather than linking a 404. Publishing a
+  bundle is a release-process decision and is not recorded anywhere else, so it
+  belongs on this list.
 - `AGENTS.md` is the generic kubebuilder scaffold and is actively wrong: it
   describes `internal/webhook/` when admission code lives in
   `internal/admission/`, and says nothing about the audit ledger, the fabric
