@@ -164,8 +164,15 @@ or restate the criterion), not an implementation. See open question 3.
   `internal/admission/`, and says nothing about the audit ledger, the fabric
   providers, the observation envelope, the analyzer images, or the suppression
   workflow. Any agent pointed at this repo is being misled by it.
-- The docs site landing page is the unmodified Starlight welcome scaffold, and
-  `guides/example.md` and `reference/example.md` are stock placeholders.
+- The docs site landing page was the unmodified Starlight welcome scaffold, and
+  `guides/example.md` and `reference/example.md` were stock placeholders.
+  **Closed.** The landing page is Trawl's now, the placeholders are gone, and
+  the Reference section holds the two normative contracts —
+  `contracts/crd-api.md` and `contracts/telemetry.md` — rendered through
+  `sync-content.mjs` rather than copied, which is what the `PAGES` table was for.
+  The GitHub link in the header had pointed at the Starlight repository since
+  the site was scaffolded, and `site` was unset so no sitemap was ever emitted.
+  Both fixed.
 - `docs/src/content/docs/quickstart.md` carried a generated-by header naming
   `docs/scripts/sync-content.mjs`, which did not exist in the repository — the
   file was hand-maintained while claiming not to be. **Closed** by writing the

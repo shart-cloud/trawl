@@ -33,6 +33,20 @@ const PAGES = [
 		description:
 			'The release-candidate acceptance path: install Trawl, then validate every user story against a real cluster.',
 	},
+	{
+		source: 'specs/001-cloud-native-nsm/contracts/crd-api.md',
+		output: 'src/content/docs/reference/crd-api.md',
+		title: 'CRD Reference',
+		description:
+			'The normative contract for trawl.cloud/v1alpha1: every field, bound, enum and immutability rule across the four resources.',
+	},
+	{
+		source: 'specs/001-cloud-native-nsm/contracts/telemetry.md',
+		output: 'src/content/docs/reference/telemetry.md',
+		title: 'Telemetry Reference',
+		description:
+			'Metric and log contracts, and the cardinality and redaction rules that keep packet evidence out of operational signals.',
+	},
 ];
 
 // Strip a single leading H1 and the blank line after it. Anything else is left
