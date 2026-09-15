@@ -199,8 +199,9 @@ or restate the criterion), not an implementation. See open question 3.
   so what is missing is who asked for the mirror, not what it did. Decide
   whether that is acceptable for a resource that copies production traffic, and
   record the answer either way.
-- Known code issues from the code-quality assessment: hand-rolled `itoa32` with
-  a `MinInt32` edge case in `correlation.go`; forward-defined status conditions
+- Known code issues from the code-quality assessment: ~~hand-rolled `itoa32`
+  with a `MinInt32` edge case in `correlation.go`~~ (closed — deleted in favour
+  of `strconv`, with a test that pins every extreme of the range); forward-defined status conditions
   for unimplemented CRDs; informer cache lag in `workloadReady`;
   get-then-update on owned resources instead of server-side apply;
   `sourceOf` nil dereference risk after re-validation; controller unit coverage
