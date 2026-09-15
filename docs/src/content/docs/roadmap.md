@@ -140,10 +140,14 @@ or restate the criterion), not an implementation. See open question 3.
 
 ### 0.4 The smaller ones — **open**
 
-- `requireReachableObjectStore` needs a host-level `/etc/hosts` entry, and five
-  e2e specs skip silently without it. Same family as the `kustomize` silent
-  skip, not fixable by a Makefile dependency. Make it a preflight that fails
-  loudly with the remedy in the message rather than a skip.
+- `requireReachableObjectStore` needs a host-level `/etc/hosts` entry, and six
+  e2e specs skipped silently without it — every download path, the expiry
+  refusal, the retention enforcement and the audit-outage spec — so
+  `make test-acceptance` exited zero having asserted none of them. Same family
+  as the `kustomize` silent skip, not fixable by a Makefile dependency.
+  **Closed**: it fails now, with the port-forward and `/etc/hosts` remedy in the
+  message. Not-applicable is still a skip and still lives above it, in
+  `requireAcceptanceCluster`.
 - Branch protection does not include the Security workflow jobs, so gates
   written to fail are advisory in practice. This is a repository setting, not a
   commit.
