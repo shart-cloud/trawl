@@ -84,18 +84,23 @@ credentials**. Only the controller manager holds the ledger's.
 
 ## Install
 
-There is no published install bundle yet. Install from a checkout, building
-and pushing your own images:
+Each tagged release publishes `install.yaml`, a single bundle with every image
+pinned by digest:
+
+```sh
+kubectl apply -f https://github.com/shart-cloud/trawl/releases/latest/download/install.yaml
+```
+
+No release has been cut yet, so until the first tag, render the bundle from a
+checkout with `make build-installer` and apply `dist/install.yaml`.
+
+To run your own images instead:
 
 ```sh
 make docker-build-all IMAGE_REPO=<registry>/trawl VERSION=<tag>
 make install                      # CRDs only
 make deploy IMG=<registry>/trawl:<tag>
 ```
-
-`make build-installer` renders everything into a single `dist/install.yaml` for
-a one-command `kubectl apply`, but `dist/` is not committed and no release
-publishes it, so that file is yours to produce for now.
 
 Sample resources are in `config/samples/`. `config/samples/invalid/` holds ones
 that are supposed to be rejected, which is the faster way to see what the
