@@ -84,9 +84,11 @@ func (r *PortMirrorReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// Off-namespace resources are refused rather than serviced. Admission
-	// rejects them too; this is the controller declining to act on one that
-	// reached etcd by some other path.
+	// Off-namespace resources are refused rather than serviced. For the other
+	// three kinds this is defence in depth behind an admission gate; PortMirror
+	// has no webhook, so this is the only place the namespace is enforced and
+	// the only reason an off-namespace mirror does not reach a switch. It is
+	// load-bearing here rather than a second opinion.
 	if mirror.Namespace != r.SystemNamespace {
 		return r.fail(ctx, &mirror, status.ReasonAccepted,
 			fmt.Errorf("PortMirror is only honoured in %s", r.SystemNamespace))

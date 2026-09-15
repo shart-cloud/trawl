@@ -168,6 +168,14 @@ or restate the criterion), not an implementation. See open question 3.
   drift. The script runs from `prebuild`/`predev`, the generated page is
   gitignored so there is nothing to hand-edit, and the quickstart is now in the
   sidebar — it had been unreachable and absent from a clean clone.
+- PortMirror has no admission webhook, and a comment in its controller claimed
+  one rejected off-namespace resources. The comment is corrected; the gap is
+  not. It means PortMirror is the one kind whose namespace confinement rests
+  entirely on the reconciler, and the one kind whose create, update and delete
+  are absent from the ledger at admission — the controller audits device writes,
+  so what is missing is who asked for the mirror, not what it did. Decide
+  whether that is acceptable for a resource that copies production traffic, and
+  record the answer either way.
 - Known code issues from the code-quality assessment: hand-rolled `itoa32` with
   a `MinInt32` edge case in `correlation.go`; forward-defined status conditions
   for unimplemented CRDs; informer cache lag in `workloadReady`;
