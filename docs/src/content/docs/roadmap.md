@@ -148,9 +148,13 @@ or restate the criterion), not an implementation. See open question 3.
   **Closed**: it fails now, with the port-forward and `/etc/hosts` remedy in the
   message. Not-applicable is still a skip and still lives above it, in
   `requireAcceptanceCluster`.
-- Branch protection does not include the Security workflow jobs, so gates
-  written to fail are advisory in practice. This is a repository setting, not a
-  commit.
+- Branch protection did not include the Security workflow jobs, so gates written
+  to fail were advisory in practice. **This is stale: it is already done.** The
+  required status checks on `main` include all six — Suppression review, Go
+  vulnerabilities, Container images, Manifest privilege, Dependency
+  vulnerabilities and Secret scanning — alongside the six CI jobs, with strict
+  mode on and admins included. Checked against the API rather than from memory,
+  which is the only way this item could have been resolved either way.
 - `README.md` was the untouched kubebuilder scaffold, every `TODO(user)`
   included. **Closed.** Writing it turned up two things: the repository asserts
   Apache 2.0 in 195 file headers and shipped no `LICENSE`, which is now added,
@@ -159,11 +163,17 @@ or restate the criterion), not an implementation. See open question 3.
   going to work. The README says so rather than linking a 404. Publishing a
   bundle is a release-process decision and is not recorded anywhere else, so it
   belongs on this list.
-- `AGENTS.md` is the generic kubebuilder scaffold and is actively wrong: it
-  describes `internal/webhook/` when admission code lives in
-  `internal/admission/`, and says nothing about the audit ledger, the fabric
-  providers, the observation envelope, the analyzer images, or the suppression
-  workflow. Any agent pointed at this repo is being misled by it.
+- `AGENTS.md` was the generic kubebuilder scaffold and actively wrong: it
+  described `internal/webhook/` when admission lives in `internal/admission/`,
+  pointed at a `cmd/main.go` that does not exist, and said nothing about the
+  audit ledger, the fabric providers, the observation envelope, the analyzer
+  images, or the suppression workflow. **Closed.** Rewritten against the tree
+  and then audited claim by claim against it, which caught nine errors in the
+  rewrite — the most consequential being that the manager's CapturePolicy
+  reconciler is the witness rather than the policy controller, which is exactly
+  the confusion the file exists to prevent. The scaffold's dead
+  `config/network-policy/` went with it; Trawl's own `networkpolicy/` has
+  carried default-deny and a policy per component since the fabric work.
 - The docs site landing page was the unmodified Starlight welcome scaffold, and
   `guides/example.md` and `reference/example.md` were stock placeholders.
   **Closed.** The landing page is Trawl's now, the placeholders are gone, and
