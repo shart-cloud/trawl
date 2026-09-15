@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	trawlv1alpha1 "trawl.cloud/trawl/api/v1alpha1"
+	"trawl.cloud/trawl/internal/admission"
 	"trawl.cloud/trawl/internal/audit"
 	"trawl.cloud/trawl/internal/fabric"
 	"trawl.cloud/trawl/internal/sanitize"
@@ -84,14 +85,20 @@ func (r *PortMirrorReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// Off-namespace resources are refused rather than serviced. For the other
-	// three kinds this is defence in depth behind an admission gate; PortMirror
-	// has no webhook, so this is the only place the namespace is enforced and
-	// the only reason an off-namespace mirror does not reach a switch. It is
-	// load-bearing here rather than a second opinion.
+	// Off-namespace resources are refused rather than serviced. Admission
+	// rejects them too; this is the controller declining to act on one that
+	// reached etcd by some other path, because CEL and webhooks run on write
+	// and an object restored into etcd never met either.
 	if mirror.Namespace != r.SystemNamespace {
 		return r.fail(ctx, &mirror, status.ReasonAccepted,
 			fmt.Errorf("PortMirror is only honoured in %s", r.SystemNamespace))
+	}
+
+	// The same argument applies to the spec itself, which is why the webhook
+	// exports its validator. A mirror that never passed admission must not
+	// reach a switch on the strength of a schema that did not run either.
+	if errs := admission.ValidatePortMirrorSpec(&mirror.Spec); len(errs) > 0 {
+		return r.fail(ctx, &mirror, status.ReasonAccepted, errs.ToAggregate())
 	}
 
 	if !mirror.DeletionTimestamp.IsZero() {

@@ -564,46 +564,7 @@ func TestTheInstallBundleCarriesACRDForEveryAPIKind(t *testing.T) {
 	// never applied - the audit Service and the artifact gateway, both recorded
 	// in config/default/kustomization.yaml's comments - so the class is not
 	// hypothetical here.
-	root := repoRoot(t)
-
-	// The kinds are read from the API package rather than listed, so a new type
-	// is covered the day it is added rather than the day someone remembers this
-	// test.
-	entries, err := os.ReadDir(filepath.Join(root, "api", "v1alpha1"))
-	if err != nil {
-		t.Fatalf("reading the API package: %v", err)
-	}
-
-	rootMarker := regexp.MustCompile(`\+kubebuilder:object:root=true`)
-	typeDecl := regexp.MustCompile(`(?m)^type ([A-Z][A-Za-z0-9]*) struct`)
-
-	var kinds []string
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), "_types.go") {
-			continue
-		}
-		//nolint:gosec // G304: a repository path.
-		body, readErr := os.ReadFile(filepath.Join(root, "api", "v1alpha1", e.Name()))
-		if readErr != nil {
-			t.Fatalf("reading %s: %v", e.Name(), readErr)
-		}
-		text := string(body)
-		for _, loc := range rootMarker.FindAllStringIndex(text, -1) {
-			// The first type declared after the marker is the one it marks.
-			if m := typeDecl.FindStringSubmatch(text[loc[1]:]); m != nil {
-				kind := m[1]
-				// List types are root objects too and have no CRD of their own.
-				if strings.HasSuffix(kind, "List") {
-					continue
-				}
-				kinds = append(kinds, kind)
-			}
-		}
-	}
-	if len(kinds) == 0 {
-		t.Fatal("no root API kinds were found, so this check asserts nothing")
-	}
-
+	kinds := rootAPIKinds(t)
 	rendered := renderDefault(t)
 	shipped := map[string]bool{}
 	for doc := range strings.SplitSeq(rendered, "\n---\n") {
@@ -707,6 +668,8 @@ func TestEveryConfiguredWebhookIsWiredIntoTheManager(t *testing.T) {
 			setup = "CaptureJobWebhook"
 		case "capturepolicy":
 			setup = "CapturePolicyWebhook"
+		case "portmirror":
+			setup = "PortMirrorWebhook"
 		default:
 			t.Errorf("webhook path %q names kind %q, which this check does not know about; teach it "+
 				"rather than deleting the case, or a new webhook ships unwired", path, m[1])
@@ -719,6 +682,124 @@ func TestEveryConfiguredWebhookIsWiredIntoTheManager(t *testing.T) {
 			t.Errorf("the install configures %s but cmd/controller-manager never registers %s. "+
 				"failurePolicy is Fail, so the API server calls a path nothing serves and refuses "+
 				"every create and update of that kind.", path, setup)
+		}
+	}
+}
+
+// rootAPIKinds lists the CRD kinds declared in the API package.
+//
+// Read from the source rather than listed, so a new type is covered the day it
+// is added rather than the day someone remembers to update a test. Shared by
+// the checks below because two of them ask "is every kind covered by X", and a
+// second hand-maintained list would be one more thing to forget.
+func rootAPIKinds(t *testing.T) []string {
+	t.Helper()
+	root := repoRoot(t)
+
+	entries, err := os.ReadDir(filepath.Join(root, "api", "v1alpha1"))
+	if err != nil {
+		t.Fatalf("reading the API package: %v", err)
+	}
+
+	rootMarker := regexp.MustCompile(`\+kubebuilder:object:root=true`)
+	typeDecl := regexp.MustCompile(`(?m)^type ([A-Z][A-Za-z0-9]*) struct`)
+
+	var kinds []string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), "_types.go") {
+			continue
+		}
+		//nolint:gosec // G304: a repository path.
+		body, readErr := os.ReadFile(filepath.Join(root, "api", "v1alpha1", e.Name()))
+		if readErr != nil {
+			t.Fatalf("reading %s: %v", e.Name(), readErr)
+		}
+		text := string(body)
+		for _, loc := range rootMarker.FindAllStringIndex(text, -1) {
+			// The first type declared after the marker is the one it marks.
+			if m := typeDecl.FindStringSubmatch(text[loc[1]:]); m != nil {
+				kind := m[1]
+				// List types are root objects too and have no CRD of their own.
+				if strings.HasSuffix(kind, "List") {
+					continue
+				}
+				kinds = append(kinds, kind)
+			}
+		}
+	}
+	if len(kinds) == 0 {
+		t.Fatal("no root API kinds were found, so this check asserts nothing")
+	}
+	return kinds
+}
+
+func TestEveryKindHasAdmissionWebhooks(t *testing.T) {
+	// The companion to the wiring check below, asking the other direction.
+	// That one catches a configured webhook nothing serves; this catches a kind
+	// nothing guards.
+	//
+	// PortMirror shipped that way and stayed that way through a release. The
+	// absence was invisible from inside the code - every test passed, the
+	// reconciler had its own namespace check, and a comment in it said
+	// admission rejected off-namespace mirrors too, so the one place that
+	// described the gap asserted the opposite. Nothing compared the set of
+	// kinds against the set of webhooks, because the comparison had no owner.
+	//
+	// Two things were actually missing, and neither announces itself: the
+	// authenticated requester, which only admission can supply and which the
+	// ledger therefore never recorded for the one resource that reconfigures
+	// hardware, and the immutability of the field that decides which device
+	// that is.
+	//
+	// A kind that genuinely needs no webhook should be named here with the
+	// reason, not left to fall through.
+	rendered := renderDefault(t)
+
+	pathKind := regexp.MustCompile(`^/(mutate|validate)-trawl-cloud-v1alpha1-([a-z0-9]+)$`)
+	served := map[string]map[string]bool{}
+	for doc := range strings.SplitSeq(rendered, "\n---\n") {
+		if strings.TrimSpace(doc) == "" {
+			continue
+		}
+		var cfg struct {
+			Kind     string `json:"kind"`
+			Webhooks []struct {
+				ClientConfig struct {
+					Service struct {
+						Path string `json:"path"`
+					} `json:"service"`
+				} `json:"clientConfig"`
+			} `json:"webhooks"`
+		}
+		if err := yaml.Unmarshal([]byte(doc), &cfg); err != nil {
+			continue
+		}
+		if cfg.Kind != "ValidatingWebhookConfiguration" && cfg.Kind != "MutatingWebhookConfiguration" {
+			continue
+		}
+		for _, w := range cfg.Webhooks {
+			if m := pathKind.FindStringSubmatch(w.ClientConfig.Service.Path); m != nil {
+				if served[m[2]] == nil {
+					served[m[2]] = map[string]bool{}
+				}
+				served[m[2]][m[1]] = true
+			}
+		}
+	}
+	if len(served) == 0 {
+		t.Fatal("the rendered install configures no webhook paths, so this check asserts nothing")
+	}
+
+	for _, kind := range rootAPIKinds(t) {
+		lower := strings.ToLower(kind)
+		for _, verb := range []string{"mutate", "validate"} {
+			if !served[lower][verb] {
+				t.Errorf("%s has no %s webhook in the rendered install. Admission is where the "+
+					"namespace is enforced, where the authenticated requester is taken from the "+
+					"request rather than the object, and where the durable-audit gate runs; a kind "+
+					"without one has none of those, and nothing else in the tree will say so.",
+					kind, verb)
+			}
 		}
 	}
 }

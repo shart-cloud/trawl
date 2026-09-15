@@ -71,6 +71,15 @@ const (
 	// Device configuration. Trawl changing hardware it does not own is the
 	// most physically consequential thing it does, and leaving it the least
 	// audited would be the wrong way round.
+	//
+	// The create/update/delete trio is admission's, and answers a different
+	// question from the configure/revert pair: those record what was done to a
+	// device, these record who asked for it to be done. The controller acts
+	// under its own workload identity, so without these the requesting human
+	// appears nowhere in the ledger.
+	ActionPortMirrorCreate    = "portmirror.create"
+	ActionPortMirrorUpdate    = "portmirror.update"
+	ActionPortMirrorDelete    = "portmirror.delete"
 	ActionPortMirrorConfigure = "portmirror.configure"
 	ActionPortMirrorRevert    = "portmirror.revert"
 )
@@ -101,6 +110,7 @@ var validActions = []string{
 	ActionCapturePolicyArm, ActionCapturePolicyDisarm,
 	ActionCaptureJobManualCreate, ActionCaptureJobPolicyCreate, ActionCaptureJobTransition,
 	ActionArtifactDownload, ActionRetentionChange, ActionArtifactExpire,
+	ActionPortMirrorCreate, ActionPortMirrorUpdate, ActionPortMirrorDelete,
 	ActionPortMirrorConfigure, ActionPortMirrorRevert,
 }
 

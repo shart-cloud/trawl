@@ -148,21 +148,18 @@ or restate the criterion), not an implementation. See open question 3.
   **Closed**: it fails now, with the port-forward and `/etc/hosts` remedy in the
   message. Not-applicable is still a skip and still lives above it, in
   `requireAcceptanceCluster`.
-- Branch protection did not include the Security workflow jobs, so gates written
-  to fail were advisory in practice. **This is stale: it is already done.** The
-  required status checks on `main` include all six — Suppression review, Go
-  vulnerabilities, Container images, Manifest privilege, Dependency
-  vulnerabilities and Secret scanning — alongside the six CI jobs, with strict
-  mode on and admins included. Checked against the API rather than from memory,
-  which is the only way this item could have been resolved either way.
 - `README.md` was the untouched kubebuilder scaffold, every `TODO(user)`
   included. **Closed.** Writing it turned up two things: the repository asserts
   Apache 2.0 in 195 file headers and shipped no `LICENSE`, which is now added,
-  and there is no published install bundle — `dist/` is gitignored, no workflow
-  releases one, so the scaffold's one-command `kubectl apply` install was never
-  going to work. The README says so rather than linking a 404. Publishing a
-  bundle is a release-process decision and is not recorded anywhere else, so it
-  belongs on this list.
+  and no published install bundle existed — `dist/` is gitignored and no workflow
+  released one, so the scaffold's one-command `kubectl apply` install was never
+  going to work. **Both closed.** A `Release` workflow now renders the bundle
+  from a tagged tree and attaches it, with the supply-chain manifest and
+  checksums, to the GitHub release. It refuses a tag whose committed generated
+  artifacts do not match its source, and refuses a bundle carrying any image not
+  pinned by digest — `install.yaml` is the one artifact where the
+  no-floating-tags rule is checkable after the fact and the easiest to break by
+  accident. No release has been cut yet, so the first tag is what proves it.
 - `AGENTS.md` was the generic kubebuilder scaffold and actively wrong: it
   described `internal/webhook/` when admission lives in `internal/admission/`,
   pointed at a `cmd/main.go` that does not exist, and said nothing about the
@@ -191,14 +188,16 @@ or restate the criterion), not an implementation. See open question 3.
   drift. The script runs from `prebuild`/`predev`, the generated page is
   gitignored so there is nothing to hand-edit, and the quickstart is now in the
   sidebar — it had been unreachable and absent from a clean clone.
-- PortMirror has no admission webhook, and a comment in its controller claimed
-  one rejected off-namespace resources. The comment is corrected; the gap is
-  not. It means PortMirror is the one kind whose namespace confinement rests
-  entirely on the reconciler, and the one kind whose create, update and delete
-  are absent from the ledger at admission — the controller audits device writes,
-  so what is missing is who asked for the mirror, not what it did. Decide
-  whether that is acceptable for a resource that copies production traffic, and
-  record the answer either way.
+- PortMirror had no admission webhook, and a comment in its controller claimed
+  one rejected off-namespace resources. **Closed.** It has both a defaulter and
+  a validator now, so all four kinds are covered. The answer to "is that
+  acceptable for a resource that copies production traffic" was no: the ledger
+  recorded what was done to a switch and never who asked, and the reconciler's
+  namespace check was load-bearing rather than defence in depth. Writing it
+  turned up a second defect — `spec.deviceRef` was mutable, and since the revert
+  finalizer runs only on deletion, repointing it stranded the old device
+  mirroring with nothing left to un-configure it. Both `deviceRef` and
+  `provider` are immutable now.
 - Known code issues from the code-quality assessment: ~~hand-rolled `itoa32`
   with a `MinInt32` edge case in `correlation.go`~~ (closed — deleted in favour
   of `strconv`, with a test that pins every extreme of the range); forward-defined status conditions

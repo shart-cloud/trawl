@@ -159,6 +159,15 @@ func ActionFor(kind string, op admissionv1.Operation) (string, error) {
 		case admissionv1.Delete:
 			return audit.ActionCapturePolicyDelete, nil
 		}
+	case "PortMirror":
+		switch op {
+		case admissionv1.Create:
+			return audit.ActionPortMirrorCreate, nil
+		case admissionv1.Update:
+			return audit.ActionPortMirrorUpdate, nil
+		case admissionv1.Delete:
+			return audit.ActionPortMirrorDelete, nil
+		}
 	case KindCaptureJob:
 		// Create is Manual by default; the CaptureJob webhook substitutes the
 		// policy action when the request type says so, via CommitMutationAs.

@@ -69,7 +69,7 @@ plus a policy per component), `audit/`, `gateway/`, `alloy/` and `grafana/`.
 
 | package | what it holds |
 |---|---|
-| `admission` | webhooks for NetworkTap, CaptureJob and CapturePolicy, and the shared gate |
+| `admission` | a webhook per kind, and the shared namespace and audit gate |
 | `controller` | five controllers, plus the policy engine and status tracker that run **elsewhere** |
 | `capture` | the CaptureJob lifecycle as a pure function, bounds, filters, the runner |
 | `policy` | trigger matching, dedup keys, rate limits, BPF templating — all pure |
@@ -126,7 +126,7 @@ This trips people up, so check before assuming.
 `PolicyEngine` and `PolicyStatusTracker` live in `internal/controller/` but do
 **not** run in the controller manager. They run in the event worker. Only these
 run in the manager: the NetworkTap, CaptureJob, CapturePolicy, PortMirror and
-retention controllers, the webhooks, the audit sink server and the audit
+retention controllers, the four webhooks, the audit sink server and the audit
 replayer.
 
 The manager's CapturePolicy reconciler is **the witness**, registered as
@@ -175,10 +175,9 @@ resources in exactly one namespace and why the webhooks enforce that.
 
 ## Admission, and what cannot live there
 
-There are three kinds with webhooks, and six registered admission webhooks:
-each of NetworkTap, CaptureJob and CapturePolicy has both a mutating and a
-validating one. The mutating path is easy to forget and is where the
-authenticated requester is stamped onto the object.
+All four kinds have webhooks, and there are eight registered: each kind has
+both a mutating and a validating one. The mutating path is easy to forget and is
+where the authenticated requester is stamped onto the object.
 
 The webhooks own three things that are security boundaries rather than
 conveniences: namespace confinement, the durable-audit gate that commits a
@@ -189,9 +188,9 @@ would make causing an outage a way around the gates.
 
 Admission is **not trusted as the only enforcement**. CEL runs on write, so an
 object restored straight into etcd or written before a rule existed arrives
-unchecked. That is why `ValidateNetworkTapSpec`, `ValidateCaptureJobSpec` and
-`ValidateCapturePolicySpec` are exported and re-run inside the reconcilers, and
-why the reconcilers re-check the namespace themselves.
+unchecked. That is why all four `Validate<Kind>Spec` functions are exported and
+re-run inside their reconcilers, and why the reconcilers re-check the namespace
+themselves.
 
 Some questions cannot be asked at admission at all. Whether two resources
 contend depends on what else is stored at the moment they are compared, and a
@@ -202,8 +201,13 @@ incumbent keeps the port or the device and keeps observing, so contention can
 never take down something already running, and ties break on UID so both sides
 reach the same answer independently.
 
-PortMirror has no webhook. Its controller's namespace check is the only gate,
-not a second opinion. This is a recorded gap, not a pattern to copy.
+PortMirror's webhook is the newest and carries two rules the others do not.
+`spec.deviceRef` and `spec.provider` are immutable, because the revert finalizer
+runs only on deletion: repointing a live mirror at another device configures the
+new one and abandons the old one still mirroring, with nothing left that names
+it. Its defaulter stamps the requester, which for this kind is the only record
+of who asked — the controller audits device writes under its own workload
+identity.
 
 ## Adding or changing a reason
 
