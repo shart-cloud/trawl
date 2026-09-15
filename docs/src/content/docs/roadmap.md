@@ -156,10 +156,14 @@ or restate the criterion), not an implementation. See open question 3.
   workflow. Any agent pointed at this repo is being misled by it.
 - The docs site landing page is the unmodified Starlight welcome scaffold, and
   `guides/example.md` and `reference/example.md` are stock placeholders.
-- `docs/src/content/docs/quickstart.md` carries a generated-by header naming
-  `docs/scripts/sync-content.mjs`, which does not exist in the repository. The
-  file is hand-maintained while claiming not to be. Either write the sync script
-  or drop the header.
+- `docs/src/content/docs/quickstart.md` carried a generated-by header naming
+  `docs/scripts/sync-content.mjs`, which did not exist in the repository — the
+  file was hand-maintained while claiming not to be. **Closed** by writing the
+  script rather than dropping the header, because the page really is derived
+  from `specs/001-cloud-native-nsm/quickstart.md` and the duplicate was free to
+  drift. The script runs from `prebuild`/`predev`, the generated page is
+  gitignored so there is nothing to hand-edit, and the quickstart is now in the
+  sidebar — it had been unreachable and absent from a clean clone.
 - Known code issues from the code-quality assessment: hand-rolled `itoa32` with
   a `MinInt32` edge case in `correlation.go`; forward-defined status conditions
   for unimplemented CRDs; informer cache lag in `workloadReady`;

@@ -9,6 +9,7 @@ export default defineConfig({
 			title: 'Trawl',
 			social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/withastro/starlight' }],
 			sidebar: [
+				{ label: 'Quickstart', slug: 'quickstart' },
 				{
 					label: 'Planning',
 					items: [{ label: 'Post-MVP Evolution Plan', slug: 'roadmap' }],

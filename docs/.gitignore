@@ -19,3 +19,7 @@ pnpm-debug.log*
 
 # macOS-specific files
 .DS_Store
+
+# Pages rendered from specs/ by scripts/sync-content.mjs at build time. The
+# source is the specification; a committed copy here would be edited by hand.
+src/content/docs/quickstart.md
