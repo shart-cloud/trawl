@@ -65,11 +65,27 @@ releasing it would destroy the only record that a switch is still mirroring.
 
 **5. Every device change is audited**, as an intent and an outcome, including
 refusals. `portmirror.configure` and `portmirror.revert` are in the telemetry
-contract, so the ledger-completeness test covers them like any other action.
+contract, so the ledger-completeness test covers them like any other action. The
+API mutations are recorded separately as `portmirror.create`,
+`portmirror.update` and `portmirror.delete`: "somebody asked for a mirror" and
+"the switch was reconfigured" have different actors, and a request that was never
+carried out must not be indistinguishable from one that was.
 
 **6. Explicit provider registration.** Drivers are constructed in
 `cmd/controller-manager` rather than registering themselves on import, so
 "which binaries can reconfigure a switch" has an answer somebody can read.
+
+**7. Refused at admission, not merely ignored.** `vportmirror.trawl.cloud`
+enforces the namespace rule, the audit gate, and the immutability of the two
+fields that name the device. This was missing when the feature first shipped,
+and the controller's refusal to act on an off-namespace mirror was standing in
+for it: the API server accepted the object, so it existed, and an operator
+reading it saw configuration that had taken effect on a switch somewhere.
+`provider` and `deviceRef` are immutable because revert resolves `deviceRef` at
+deletion time — repointing a live resource would configure the new device and
+leave the old one copying traffic with nothing in the cluster recording it,
+which is the leftover control 4 exists to prevent, reached by an edit instead of
+a crash.
 
 ## Consequences
 

@@ -90,15 +90,11 @@ func (r *PortMirrorReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// reached etcd by some other path, because CEL and webhooks run on write
 	// and an object restored into etcd never met either.
 	if mirror.Namespace != r.SystemNamespace {
-		return r.fail(ctx, &mirror, status.ReasonAccepted,
+		// WrongNamespace, as the NetworkTap and CaptureJob reconcilers report
+		// it. This said Accepted, which is the reason an accepted resource
+		// carries: the status claimed the opposite of what had happened.
+		return r.fail(ctx, &mirror, status.ReasonWrongNamespace,
 			fmt.Errorf("PortMirror is only honoured in %s", r.SystemNamespace))
-	}
-
-	// The same argument applies to the spec itself, which is why the webhook
-	// exports its validator. A mirror that never passed admission must not
-	// reach a switch on the strength of a schema that did not run either.
-	if errs := admission.ValidatePortMirrorSpec(&mirror.Spec); len(errs) > 0 {
-		return r.fail(ctx, &mirror, status.ReasonAccepted, errs.ToAggregate())
 	}
 
 	if !mirror.DeletionTimestamp.IsZero() {
@@ -117,6 +113,15 @@ func (r *PortMirrorReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		if err := r.Update(ctx, &mirror); err != nil {
 			return ctrl.Result{}, err
 		}
+	}
+
+	// Re-validate the stored spec before touching hardware, for the same reason
+	// the namespace is re-checked: admission runs on write, and an object
+	// restored into etcd from a backup has never been through it. The other
+	// reconcilers do this because an invalid spec becomes a broken workload;
+	// here it becomes a configuration change on a switch.
+	if errs := admission.ValidatePortMirrorSpec(&mirror.Spec); len(errs) > 0 {
+		return r.fail(ctx, &mirror, status.ReasonInvalidSpec, errs.ToAggregate())
 	}
 
 	provider, err := r.Providers.Get(string(mirror.Spec.Provider))
@@ -445,9 +450,13 @@ func (r *PortMirrorReconciler) fail(
 	mirror.Status.Phase = trawlv1alpha1.PortMirrorError
 	mirror.Status.ObservedGeneration = mirror.Generation
 
+	// A failure before the device was contacted must not report
+	// DeviceReachable=False: the device was never asked, and saying it was
+	// unreachable sends an operator to the switch for a problem in the spec.
 	condition := status.TypeDeviceReachable
 	switch reason {
-	case status.ReasonDeviceRefused, status.ReasonAccepted, status.ReasonDeviceConflict:
+	case status.ReasonDeviceRefused, status.ReasonAccepted, status.ReasonDeviceConflict,
+		status.ReasonInvalidSpec, status.ReasonWrongNamespace:
 		// None of these are statements about reachability. A contended mirror
 		// in particular has not spoken to the device at all, so claiming it
 		// unreachable would be inventing an observation nobody made.

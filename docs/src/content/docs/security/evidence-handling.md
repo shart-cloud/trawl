@@ -36,6 +36,18 @@ That rejection depends on the webhook seeing the request in the first place — 
 resource skip validation rather than be refused by it, so the absence of one is
 asserted as a test.
 
+**One credential is more capable than what Trawl does with it.** An installation
+that uses `PortMirror` stores device credentials in the namespace, and they
+cannot be narrowed: RouterOS group policies have no "may only set a mirror", so a
+user that can write `mirror-target` can usually also change a firewall rule or
+shut a port. Trawl never does either, and the drivers have three methods -
+Configure, Observe, Revert - with nothing else in them. But the credential's
+capability is real, and compromise of the namespace becomes the ability to change
+the network fabric. It is bounded by who may create a `PortMirror` at all
+(below), by the audit ledger recording every device change and refusal, and by
+nothing else. See ADR-0007; an installation unwilling to accept it creates no
+device Secret and binds no mirror role.
+
 **Every workload's network egress is allowlisted.** A default-deny
 `NetworkPolicy` covers the namespace and each component is granted only the
 destinations it needs: the worker reaches Loki, Hubble Relay, the audit sink and
@@ -45,7 +57,7 @@ scheduled beside them.
 
 ## Who can do what
 
-Five roles ship with the installation. They exist because "can see a capture
+Seven roles ship with the installation. They exist because "can see a capture
 exists" and "can read the packets in it" are different permissions, and
 collapsing them is the mistake this model is designed to prevent.
 
@@ -56,8 +68,10 @@ collapsing them is the mistake this model is designed to prevent.
 | `trawl-capture-policy-viewer` | see policies, taps and captures | change anything |
 | `trawl-capture-policy-admin` | create, arm, disarm and delete policies | download captures |
 | `trawl-retention-admin` | change a capture's retention | download captures; create them |
+| `port-mirror-viewer` | see which switch ports are being copied, and to where | change any of it |
+| `port-mirror-admin` | create, change and delete device mirroring | read any packets; request captures; manage policies |
 
-Three properties of that table are deliberate and worth stating plainly.
+Four properties of that table are deliberate and worth stating plainly.
 
 **Downloading is a separate subresource.** The analyst and the viewer differ by
 exactly one grant, `capturejobs/download`. Reading the bytes is therefore an
@@ -71,6 +85,15 @@ holding both can quietly turn a detection rule into a wiretap.
 
 **The retention admin cannot download.** Changing how long evidence is kept is a
 custody decision, not an investigative one.
+
+**The mirror admin holds no capture path, and no capture role holds mirroring.**
+Configuring a switch and reading packets are separate grants in both directions.
+This is the only place the device credential's excess capability can actually be
+controlled, which is why `port-mirror-admin` is its own binding rather than part
+of an operator role: an installation that never binds it has a Trawl that cannot
+reconfigure any device, whatever the stored credential permits. What RBAC cannot
+express is that anyone who may update a `PortMirror` may repoint it at different
+ports; the ledger carries that weight instead.
 
 None of these roles is bound to anything by default. Binding them is an explicit
 act by whoever operates the cluster.
@@ -234,6 +257,11 @@ than one you know you lack.
 - **Trawl does not classify content.** It does not detect credentials or
   personal data in a capture, and it applies no handling rules based on what a
   capture turned out to contain. Classification is the investigator's judgement.
+- **A reverted mirror is the device's state, not Trawl's record of it.** If a
+  `PortMirror` is force-deleted by removing its finalizer while the device is
+  unreachable, the switch keeps mirroring and nothing in the cluster says so. The
+  ledger holds the `portmirror.delete` and the absence of a matching
+  `portmirror.revert`, which is the only signal there is.
 - **Retention bounds the artifact, not the analysis.** Notes, extracted
   indicators and screenshots taken from a capture outlive it, and Trawl knows
   nothing about them.

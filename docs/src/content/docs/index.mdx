@@ -1,94 +1,64 @@
 ---
 title: Trawl
-description: Kubernetes-native network security monitoring. Declare where to watch; Trawl runs Suricata and Zeek there, and captures the packets around a detection.
+# Starlight appends the site title to every page title. Without an explicit
+# override the landing page renders as "Trawl | Trawl".
+head:
+  - tag: title
+    content: Trawl — network security monitoring for Kubernetes
+description: A Kubernetes-native network security monitoring operator — Zeek, Suricata, and event-driven packet capture, orchestrated by CRDs.
 template: splash
 hero:
-  tagline: |
-    Declare where to watch. Trawl runs Suricata and Zeek there, normalizes what
-    they see into one searchable record, and captures the packets around a
-    detection so an analyst can still read them next week.
+  tagline: Network security monitoring for Kubernetes. Zeek, Suricata, and event-driven packet capture, orchestrated declaratively — and every capture accounted for.
+  image:
+    file: ../../assets/trawl-logo.svg
+    alt: A trawler dragging a net through teal water, fish funnelling into the cod end.
   actions:
-    - text: Quickstart
-      link: /quickstart/
+    - text: Read the runbook
+      link: /operations/runbook/
       icon: right-arrow
     - text: Architecture decisions
       link: /adr/0001-normalized-observation-envelope/
-      icon: open-book
+      icon: document
       variant: minimal
 ---
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
-Network security monitoring has good tools and no cloud-native home. Trawl is a
-Kubernetes operator that treats Zeek and Suricata as first-class workloads. It
-was built for Talos Linux, where the host is immutable and there is no SSH and
-no package manager, so a sensor cannot be installed on a node at all: everything
-is a pod, and everything that changes is a resource.
-
-It is alpha. The API is `v1alpha1` and will change.
-
-## What you declare
+Trawl runs Zeek and Suricata as first-class Kubernetes citizens on immutable
+infrastructure — no SSH, no package manager, every tool in a pod. Sensors watch
+traffic continuously; packet capture is short-lived, triggered by what the
+sensors see, and bounded by design rather than by convention.
 
 <CardGrid>
-	<Card title="NetworkTap" icon="magnifier">
-		An interface to watch and which analyzers to run on it. A mirror source
-		gets one pod; a node source gets a DaemonSet that rolls one node at a
-		time, so an update never blinds the whole cluster.
+	<Card title="Evidence, not telemetry" icon="approve-check">
+		A packet capture is the most sensitive artifact a network tool produces.
+		Captures land in a private bucket, are retrieved only through a
+		Kubernetes-authorized gateway, and are recorded in a write-once audit
+		ledger. See [evidence handling](/security/evidence-handling/).
 	</Card>
-	<Card title="CapturePolicy" icon="approve-check">
-		A trigger armed against a tap, with bounded capture behavior. It defaults
-		to disarmed, because creating a policy is not the same act as switching
-		it on.
+	<Card title="Capture is deliberate" icon="warning">
+		Capture runs in node-pinned Jobs with two Linux capabilities, no API
+		token, and an unprivileged reporter sidecar — so the component holding
+		raw traffic is the one that can do least.
 	</Card>
-	<Card title="CaptureJob" icon="document">
-		One bounded packet capture and its verified artifact. Retrieving it is
-		authorized per request and written to the ledger before the bytes move.
+	<Card title="One envelope, both sensors" icon="list-format">
+		Suricata EVE JSON and Zeek JSON describe the same traffic differently.
+		A sidecar normalizes both into one versioned envelope, so correlation
+		and pivoting happen in a single Grafana view.
 	</Card>
-	<Card title="PortMirror" icon="setting">
-		A mirror session on a switch, so a tap has something to observe. Its
-		status reports what the device says, never what was asked for.
+	<Card title="Restart-safe triggers" icon="seti:clock">
+		Persistent cursors, direction-neutral flow keys, and cooldown buckets
+		make automatic capture exactly-once within a window — a restart does
+		not replay yesterday's alerts as today's captures.
 	</Card>
 </CardGrid>
 
-## Three properties that drove the design
+## Where to start
 
-<CardGrid>
-	<Card title="Passive, and fail-open for traffic" icon="heart">
-		Trawl must never affect the packets it watches. No component has a
-		transmit path, and every failure mode degrades monitoring rather than the
-		network.
-	</Card>
-	<Card title="Fail-closed for privileged operations" icon="seti:lock">
-		A capture whose authorization could not be durably committed does not
-		happen, and a download the ledger did not hear about is not served. The
-		ledger is a gate, not a log.
-	</Card>
-	<Card title="Status is a claim, not an echo" icon="star">
-		A tap reporting Active means traffic is being analyzed right now. An
-		external witness watches the event worker, so a dead worker cannot leave
-		every policy claiming coverage it is not providing.
-	</Card>
-</CardGrid>
-
-## Where to go next
-
-<CardGrid>
-	<Card title="Quickstart" icon="rocket">
-		The acceptance path end to end, from an empty cluster to validating every
-		user story against real traffic. [Start here](/quickstart/).
-	</Card>
-	<Card title="Reference" icon="list-format">
-		The normative [CRD contract](/reference/crd-api/) and the
-		[telemetry contract](/reference/telemetry/), including the rules that
-		keep packet evidence out of metrics and logs.
-	</Card>
-	<Card title="Operations" icon="puzzle">
-		The [runbook](/operations/runbook/), and
-		[evidence handling](/security/evidence-handling/) for what the ledger
-		guarantees and what it does not.
-	</Card>
-	<Card title="What comes next" icon="seti:plan">
-		The [roadmap](/roadmap/): nine workstreams after the MVP, and the order
-		they have to be built in.
-	</Card>
-</CardGrid>
+- **Operating an installation** — the [runbook](/operations/runbook/) is the
+  on-call document, organized by the signal that brings you to it.
+- **Handling captured traffic** — [evidence handling](/security/evidence-handling/)
+  covers who can see captures, what Trawl trusts, and how evidence is reviewed
+  and destroyed.
+- **Understanding a design choice** — the ADRs record what was decided, when,
+  and what it cost.

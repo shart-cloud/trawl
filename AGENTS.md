@@ -126,7 +126,7 @@ This trips people up, so check before assuming.
 `PolicyEngine` and `PolicyStatusTracker` live in `internal/controller/` but do
 **not** run in the controller manager. They run in the event worker. Only these
 run in the manager: the NetworkTap, CaptureJob, CapturePolicy, PortMirror and
-retention controllers, the four webhooks, the audit sink server and the audit
+retention controllers, the webhooks, the audit sink server and the audit
 replayer.
 
 The manager's CapturePolicy reconciler is **the witness**, registered as
@@ -175,9 +175,12 @@ resources in exactly one namespace and why the webhooks enforce that.
 
 ## Admission, and what cannot live there
 
-All four kinds have webhooks, and there are eight registered: each kind has
-both a mutating and a validating one. The mutating path is easy to forget and is
-where the authenticated requester is stamped onto the object.
+All four kinds have a validating webhook; three of them also have a mutating
+one. PortMirror deliberately has no mutating webhook, because its only default
+is structural and the API server applies it while decoding, so one would have
+nothing to do and would add a second `failurePolicy: Fail` call to every write.
+The mutating path is easy to forget and is where the authenticated requester is
+stamped onto the object.
 
 The webhooks own three things that are security boundaries rather than
 conveniences: namespace confinement, the durable-audit gate that commits a
@@ -203,11 +206,11 @@ reach the same answer independently.
 
 PortMirror's webhook is the newest and carries two rules the others do not.
 `spec.deviceRef` and `spec.provider` are immutable, because the revert finalizer
-runs only on deletion: repointing a live mirror at another device configures the
-new one and abandons the old one still mirroring, with nothing left that names
-it. Its defaulter stamps the requester, which for this kind is the only record
-of who asked — the controller audits device writes under its own workload
-identity.
+resolves `deviceRef` at deletion time: repointing a live mirror at another device
+configures the new one and abandons the old one still mirroring, on hardware no
+`kubectl get` will ever show. Its API mutations also get their own audit actions,
+separate from the device ones, so that somebody asking for a mirror and the
+switch actually being reconfigured stay distinguishable in the ledger.
 
 ## Adding or changing a reason
 

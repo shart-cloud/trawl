@@ -26,12 +26,13 @@ lying to you, the ledger is the thing that still knows what happened.
 kubectl get deploy -n trawl-system -o wide
 
 # What does Trawl think about itself?
-kubectl get networktaps,capturepolicies,capturejobs -n trawl-system
+kubectl get networktaps,capturepolicies,capturejobs,portmirrors -n trawl-system
 
-# The four phases that mean "look closer":
+# The phases that mean "look closer":
 #   NetworkTap     Degraded | Error
 #   CapturePolicy  Degraded | RateLimited
 #   CaptureJob     Failed
+#   PortMirror     Degraded | Error
 kubectl get networktaps -n trawl-system \
   -o custom-columns=NAME:.metadata.name,PHASE:.status.phase
 ```
@@ -83,7 +84,93 @@ kubectl debug node/<node> -it --image=busybox -- ip -br link
 it is the one that silently produces an empty investigation. Either the
 interface genuinely carries no traffic, or it carries traffic the sensor cannot
 see — a mirror that was never configured upstream, or a bond member rather than
-the bond. Confirm from the node before concluding the network is quiet.
+the bond. Confirm from the node before concluding the network is quiet. If a
+`PortMirror` is what feeds this tap, check it too: *A mirror is Degraded or
+Error* below.
+
+---
+
+## A mirror is Degraded or Error
+
+**Signal:** `PortMirror` phase is `Degraded` or `Error`. Often found from the
+other end: a tap reporting `PacketsObserved=False` on a healthy sensor.
+
+This is the only resource that configures hardware Trawl does not own, so the
+failure is usually on the other side of the API call. Two conditions carry it.
+
+| Condition | False means |
+|---|---|
+| `DeviceReachable` | the device could not be reached, or its credential is missing or wrong |
+| `MirrorConfigured` | the device answered and the mirror is not what was asked for |
+
+The reason narrows it further:
+
+| Reason | What happened | What to do |
+|---|---|---|
+| `WrongNamespace` | the resource is outside the system namespace | admission refuses these; one that exists was written another way. Delete it — it is not configuring anything |
+| `InvalidSpec` | the stored spec fails validation | the message names the field. Usually an object restored from a backup that predates a rule |
+| `CredentialMissing` | the `deviceRef` Secret is absent or missing `address`, `username` or `password` | check the Secret, and ESO's sync if it is managed |
+| `DeviceUnreachable` | no answer from the device's REST API | below |
+| `DeviceRefused` | the device answered and rejected the configuration | usually a port name that does not exist on this device, or a user without `write` policy |
+| `MirrorDrifted` | the device's mirror is not what the spec asks | below |
+| `AuditUnavailable` | the ledger could not record the device change, so it was not attempted | fail-closed, by design. See *Audit ledger backlog and replay* |
+
+**Check in this order:**
+
+1. `kubectl describe portmirror <name> -n trawl-system` — the conditions, and
+   `deviceIdentity` for the model and firmware the device reported.
+2. `kubectl get portmirror <name> -n trawl-system -o jsonpath='{.status.observedSources} -> {.status.observedTarget}{"\n"}'`
+   — what the device says, as against what the spec asks for.
+3. `kubectl logs -n trawl-system deploy/trawl-controller-manager | grep -i portmirror`
+
+**`DeviceUnreachable` is a network or TLS problem, not a Trawl one.** A factory
+RouterOS device serves a self-signed certificate, so either `ca.crt` is pinned in
+the Secret or `insecureSkipVerify` is set deliberately; a pinned CA that no
+longer matches the device's certificate fails exactly here. Confirm from inside
+the cluster rather than from a workstation — the controller's path to the device
+is the one that matters:
+
+```bash
+kubectl run -n trawl-system curl --rm -it --image=curlimages/curl --restart=Never -- \
+  -sk https://<device-address>/rest/system/resource -u <user>
+```
+
+**`MirrorDrifted` means somebody changed the switch.** The controller re-reads
+every five minutes and does not enforce continuously, so drift is detected rather
+than prevented, and `observedSources`/`observedTarget` name what it drifted *to*
+— usually somebody else's change, and whose is the interesting question. Captures
+taken inside that window may be of traffic nobody intended to collect; check
+`lastVerifiedTime` against the capture's own window before trusting it. The
+controller rewrites the mirror on the next reconcile, so a mirror that keeps
+returning to `Degraded` is being fought over by something else, not failing.
+
+### A PortMirror will not delete
+
+**Signal:** `kubectl delete portmirror` hangs; the object remains with a
+`deletionTimestamp` and the `trawl.cloud/portmirror-revert` finalizer.
+
+This is deliberate, and the one place the runbook asks you to override Trawl by
+hand. Deleting the resource is supposed to un-configure the device; when revert
+fails, releasing the finalizer would destroy the only record that a switch
+somewhere is still copying traffic to a port. So the finalizer is held until the
+device answers.
+
+**The device is unreachable because it is unplugged, replaced, or decommissioned**
+is the case that needs you. Confirm the mirror is genuinely gone from the device
+— or that the device is genuinely gone — and then remove the finalizer:
+
+```bash
+# Confirm first. This is the step that makes the next one safe.
+kubectl describe portmirror <name> -n trawl-system
+
+kubectl patch portmirror <name> -n trawl-system \
+  --type=json -p='[{"op":"remove","path":"/metadata/finalizers"}]'
+```
+
+Record why in the incident notes. If the device comes back, it comes back
+mirroring, with nothing in the cluster expecting it to — that is now a
+hand-configured mirror, and the next person to wonder where the traffic on that
+port comes from has only your note to find.
 
 ---
 

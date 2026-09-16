@@ -50,7 +50,7 @@ type AuditCommitter = audit.Committer
 // Trawl resource mutation.
 //
 // It is shared by the per-kind webhooks so the two rules cannot drift apart
-// between NetworkTap, CapturePolicy, and CaptureJob.
+// between NetworkTap, CapturePolicy, CaptureJob, and PortMirror.
 type Gate struct {
 	// SystemNamespace is the only namespace in which Trawl resources are
 	// accepted.

@@ -18,10 +18,8 @@ package admission
 
 import (
 	"context"
-	"regexp"
 	"slices"
 
-	admissionv1 "k8s.io/api/admission/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -31,234 +29,162 @@ import (
 	"trawl.cloud/trawl/internal/audit"
 )
 
-// Bounds the CRD's schema also enforces, re-checked here for the reason the
-// other webhooks re-check theirs: CEL runs on write, so an object restored
-// straight into etcd or written before a rule existed never passed through it.
-const (
-	maxMirrorSources = 48
-	maxMirrorPortLen = 64
-)
-
-// mirrorPortRE matches the device port names the schema accepts. A port name is
-// interpolated into a request to switch hardware, so the set of characters that
-// can reach a device is closed here as well as in the schema.
-var mirrorPortRE = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
-
-// PortMirrorWebhook validates and defaults PortMirror resources.
+// PortMirrorWebhook validates PortMirror resources.
 //
-// This kind went without a webhook until well after the others had one, and the
-// gap was not visible: a comment in the reconciler asserted that admission
-// rejected off-namespace mirrors, so the namespace check there read as defence
-// in depth when it was in fact the only gate. Two things were actually missing.
+// PortMirror shipped without one, which made it the only Trawl kind the CRD
+// contract's promise was untrue of: "all resources are accepted only in the
+// installation-configured system namespace; the validating webhook rejects
+// off-namespace resources". The controller declines to act on an off-namespace
+// mirror, but the API server accepted it, so the object existed and read as
+// configuration that had taken effect. The other three kinds refuse it outright
+// and this one now does too.
 //
-// The first is provenance. The controller audits every device write under its
-// own workload identity, so the ledger recorded what was done to a switch and
-// never who asked for it. For the one resource that reconfigures hardware
-// outside the cluster, that is the wrong field to be missing, and it is the one
-// thing only admission can supply: the authenticated user exists in the request
-// and nowhere in the stored object.
-//
-// The second is deviceRef immutability, below.
-//
-// What stays out of here is contention. Whether two mirrors claim one device
-// depends on what else is stored at the moment they are compared, and this sees
-// one object; a pair created concurrently would both pass. checkDeviceConflict
-// settles that at reconcile time, and this does not attempt to duplicate it.
+// There is no defaulting counterpart. Every PortMirror default the type wants -
+// `direction: Both` - is a structural schema default the API server applies
+// while decoding, so a mutating webhook would have nothing left to do and would
+// only add a second failurePolicy=Fail call to every create.
 type PortMirrorWebhook struct {
 	Gate *Gate
 }
 
-// +kubebuilder:webhook:path=/mutate-trawl-cloud-v1alpha1-portmirror,mutating=true,failurePolicy=fail,sideEffects=None,groups=trawl.cloud,resources=portmirrors,verbs=create;update,versions=v1alpha1,name=mportmirror.trawl.cloud,admissionReviewVersions=v1
 // +kubebuilder:webhook:path=/validate-trawl-cloud-v1alpha1-portmirror,mutating=false,failurePolicy=fail,sideEffects=None,groups=trawl.cloud,resources=portmirrors,verbs=create;update;delete,versions=v1alpha1,name=vportmirror.trawl.cloud,admissionReviewVersions=v1
 
-// SetupWithManager registers the webhook. failurePolicy is Fail for the same
-// reason as the others: an unavailable webhook must not become a bypass of the
-// namespace and audit gates.
+// SetupWithManager registers the webhook.
+//
+// failurePolicy is Fail, as on the other three kinds: an Ignore policy would
+// make every rule here bypassable by making the webhook unavailable, which for
+// the namespace and audit gates means bypassing a security control by causing
+// an outage. For this kind in particular the bypass would end at a switch.
 func (w *PortMirrorWebhook) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr, &trawlv1alpha1.PortMirror{}).
-		WithDefaulter(w).
 		WithValidator(w).
 		Complete()
 }
 
-var (
-	_ admission.Defaulter[*trawlv1alpha1.PortMirror] = &PortMirrorWebhook{}
-	_ admission.Validator[*trawlv1alpha1.PortMirror] = &PortMirrorWebhook{}
-)
+var _ admission.Validator[*trawlv1alpha1.PortMirror] = &PortMirrorWebhook{}
 
-// Default records who asked for the mirror.
-//
-// Stamped on create only, from the API server's user info rather than anything
-// the object claims about itself. This is the field the ledger was missing: the
-// controller's own records name the controller.
-func (w *PortMirrorWebhook) Default(ctx context.Context, m *trawlv1alpha1.PortMirror) error {
-	req, err := admission.RequestFromContext(ctx)
-	if err != nil {
-		return nil
-	}
-	if req.Operation == admissionv1.Create && m.Annotations[trawlv1alpha1.AnnotationRequester] == "" {
-		if m.Annotations == nil {
-			m.Annotations = map[string]string{}
-		}
-		m.Annotations[trawlv1alpha1.AnnotationRequester] = req.UserInfo.Username
-	}
-	return nil
+// ValidateCreate validates a new PortMirror and records the mutation.
+func (w *PortMirrorWebhook) ValidateCreate(ctx context.Context, mirror *trawlv1alpha1.PortMirror) (admission.Warnings, error) {
+	return w.validate(ctx, mirror, nil)
 }
 
-// ValidateCreate validates a new PortMirror and records the request.
-func (w *PortMirrorWebhook) ValidateCreate(ctx context.Context, m *trawlv1alpha1.PortMirror) (admission.Warnings, error) {
-	if err := w.Gate.CheckNamespace(m.Namespace); err != nil {
-		return nil, err
-	}
-	if errs := ValidatePortMirrorSpec(&m.Spec); len(errs) > 0 {
-		return nil, apierrors.NewInvalid(m.GroupVersionKind().GroupKind(), m.Name, errs)
-	}
-
-	req, err := admission.RequestFromContext(ctx)
-	if err != nil {
-		// Not a real admission call; nothing to authorize or audit.
-		return nil, nil
-	}
-	return nil, w.Gate.CommitMutationAs(ctx, req,
-		audit.ActionPortMirrorCreate, audit.DecisionAllowed, "Accepted")
-}
-
-// ValidateUpdate revalidates the spec and freezes the two fields that must not
-// move under a live mirror.
-func (w *PortMirrorWebhook) ValidateUpdate(
-	ctx context.Context, old, updated *trawlv1alpha1.PortMirror,
-) (admission.Warnings, error) {
-	if err := w.Gate.CheckNamespace(updated.Namespace); err != nil {
-		return nil, err
-	}
-	if errs := ValidatePortMirrorSpec(&updated.Spec); len(errs) > 0 {
-		return nil, apierrors.NewInvalid(updated.GroupVersionKind().GroupKind(), updated.Name, errs)
-	}
-
-	var errs field.ErrorList
-
-	// deviceRef is immutable, and this is the rule that matters most here.
-	//
-	// The revert finalizer un-configures the device on deletion, and deletion
-	// is the only thing that triggers it. Repointing deviceRef at another
-	// Secret therefore does not revert the first device: the controller
-	// configures the new one and walks away from the old, which keeps mirroring
-	// to a port nobody is watching, with no resource left naming it and nothing
-	// that will ever clean it up. The mirror outlives every record of why it
-	// exists.
-	//
-	// Nothing detects that afterwards, because Trawl only looks at devices it
-	// is told about. A new mirror is the honest way to move to another device:
-	// deleting the old one reverts it.
-	if old.Spec.DeviceRef.Name != updated.Spec.DeviceRef.Name {
-		errs = append(errs, field.Forbidden(field.NewPath("spec", "deviceRef"),
-			"deviceRef is immutable; the revert finalizer runs only on deletion, so repointing "+
-				"this at another device would leave the current one mirroring with nothing to "+
-				"un-configure it. Delete this PortMirror and create one for the new device."))
-	}
-
-	// Provider is immutable for a narrower version of the same reason: it
-	// selects the driver that would have to speak to the existing device in
-	// order to revert it.
-	if old.Spec.Provider != updated.Spec.Provider {
-		errs = append(errs, field.Forbidden(field.NewPath("spec", "provider"),
-			"provider is immutable; the driver that configured a device is the one that must revert it"))
-	}
-
-	// The requester annotation is provenance, stamped once on create. A later
-	// change would misattribute the mirror to whoever edited it last.
-	if old.Annotations[trawlv1alpha1.AnnotationRequester] != updated.Annotations[trawlv1alpha1.AnnotationRequester] {
-		errs = append(errs, field.Forbidden(
-			field.NewPath("metadata", "annotations", trawlv1alpha1.AnnotationRequester),
-			"the requester annotation is set on create and cannot be changed"))
-	}
-
-	if len(errs) > 0 {
-		return nil, apierrors.NewInvalid(updated.GroupVersionKind().GroupKind(), updated.Name, errs)
-	}
-
-	req, err := admission.RequestFromContext(ctx)
-	if err != nil {
-		return nil, nil
-	}
-	return nil, w.Gate.CommitMutationAs(ctx, req,
-		audit.ActionPortMirrorUpdate, audit.DecisionAllowed, "Accepted")
+// ValidateUpdate validates a change to an existing PortMirror.
+func (w *PortMirrorWebhook) ValidateUpdate(ctx context.Context, old, updated *trawlv1alpha1.PortMirror) (admission.Warnings, error) {
+	return w.validate(ctx, updated, old)
 }
 
 // ValidateDelete records the deletion.
 //
-// Deletion is how a mirror is meant to be removed, and it is the only thing
-// that reverts the device. The record is committed before the delete is
-// admitted, so the intent to stop mirroring is durable even if the revert then
-// fails against an unreachable switch - which is the case where the ledger and
-// the hardware disagree and someone has to be told which.
-func (w *PortMirrorWebhook) ValidateDelete(
-	ctx context.Context, m *trawlv1alpha1.PortMirror,
-) (admission.Warnings, error) {
-	if err := w.Gate.CheckNamespace(m.Namespace); err != nil {
+// Deleting a PortMirror is how mirroring stops, so it is recorded for the same
+// reason deleting a NetworkTap is: it is the action that blinds a sensor. The
+// device-side `portmirror.revert` the controller writes afterwards is a
+// different event with a different actor, and a delete that never reaches the
+// device - an unreachable switch holds the finalizer - produces this record and
+// no revert, which is precisely the state an operator needs to be able to find.
+func (w *PortMirrorWebhook) ValidateDelete(ctx context.Context, mirror *trawlv1alpha1.PortMirror) (admission.Warnings, error) {
+	if err := w.Gate.CheckNamespace(mirror.Namespace); err != nil {
 		return nil, err
 	}
-	req, err := admission.RequestFromContext(ctx)
-	if err != nil {
-		return nil, nil
-	}
-	return nil, w.Gate.CommitMutationAs(ctx, req,
-		audit.ActionPortMirrorDelete, audit.DecisionAllowed, "Accepted")
+	return nil, w.commit(ctx)
 }
 
-// ValidatePortMirrorSpec checks what the schema also enforces.
+func (w *PortMirrorWebhook) validate(ctx context.Context, mirror, old *trawlv1alpha1.PortMirror) (admission.Warnings, error) {
+	if err := w.Gate.CheckNamespace(mirror.Namespace); err != nil {
+		return nil, err
+	}
+
+	if errs := ValidatePortMirrorSpec(&mirror.Spec); len(errs) > 0 {
+		return nil, apierrors.NewInvalid(
+			mirror.GroupVersionKind().GroupKind(), mirror.Name, errs)
+	}
+
+	if old != nil {
+		if errs := validateImmutableMirrorFields(old, mirror); len(errs) > 0 {
+			return nil, apierrors.NewInvalid(
+				mirror.GroupVersionKind().GroupKind(), mirror.Name, errs)
+		}
+	}
+
+	return nil, w.commit(ctx)
+}
+
+// commit records the mutation before it is admitted (FR-036).
+func (w *PortMirrorWebhook) commit(ctx context.Context) error {
+	req, err := admission.RequestFromContext(ctx)
+	if err != nil {
+		// Not a real admission call, so there is nothing to audit.
+		return nil
+	}
+	return w.Gate.CommitMutation(ctx, req, audit.DecisionAllowed, "Accepted")
+}
+
+// ValidatePortMirrorSpec applies the semantic rules the schema cannot.
 //
-// Exported so the reconciler can re-check a stored object, as the other three
-// kinds do. Port names are echoed in errors: they are device port identifiers
-// such as ether7, already present in the spec the caller just submitted, and
-// naming the offending one is the difference between a usable message and a
-// guess. The credential they sit beside is in a Secret and never comes near
-// this function.
+// Most of what this re-checks the CRD also enforces, through enums, item
+// patterns, MinItems and a CEL rule for the target/source overlap. It is
+// repeated here for the reason the other kinds repeat theirs: CEL and structural
+// validation run on write, so an object stored before a rule existed, or
+// restored straight into etcd from a backup, has never been through them. The
+// consequence of letting one past is not a Kubernetes error but a device
+// change - a mirror configured from a spec nothing ever checked.
+//
+// Exported so the reconciler can re-check a stored object before touching
+// hardware, as the NetworkTap and CaptureJob reconcilers do.
 func ValidatePortMirrorSpec(spec *trawlv1alpha1.PortMirrorSpec) field.ErrorList {
 	var errs field.ErrorList
 	specPath := field.NewPath("spec")
 
 	if spec.Provider != trawlv1alpha1.MirrorProviderMikroTikRouterOS7 {
+		// A provider the binary has no driver for is not an inert typo: it
+		// names the vendor whose command set is about to be sent to hardware.
 		errs = append(errs, field.NotSupported(specPath.Child("provider"), spec.Provider,
 			[]string{string(trawlv1alpha1.MirrorProviderMikroTikRouterOS7)}))
 	}
 
+	// LocalObjectReference carries an optional name, so "deviceRef: {}" is a
+	// structurally valid reference to nothing. Without a Secret there is no
+	// address and no credential, and the only symptom would be a mirror stuck
+	// reporting a missing Secret named "".
 	if spec.DeviceRef.Name == "" {
 		errs = append(errs, field.Required(specPath.Child("deviceRef", "name"),
-			"a Secret holding the device address and credentials is required"))
+			"a device Secret name is required; the mirror has no address or credential without it"))
 	}
 
-	switch {
-	case len(spec.Sources) == 0:
-		errs = append(errs, field.Required(specPath.Child("sources"), "at least one source port is required"))
-	case len(spec.Sources) > maxMirrorSources:
-		errs = append(errs, field.TooMany(specPath.Child("sources"), len(spec.Sources), maxMirrorSources))
+	sourcesPath := specPath.Child("sources")
+	if len(spec.Sources) == 0 {
+		errs = append(errs, field.Required(sourcesPath,
+			"at least one source port is required; a mirror with no sources copies nothing"))
 	}
-
-	seen := make(map[string]struct{}, len(spec.Sources))
 	for i, src := range spec.Sources {
-		errs = append(errs, validateMirrorPort(specPath.Child("sources").Index(i), src)...)
-		if _, dup := seen[src]; dup {
-			errs = append(errs, field.Duplicate(specPath.Child("sources").Index(i), src))
+		if src == "" {
+			errs = append(errs, field.Required(sourcesPath.Index(i), "a port name is required"))
+			continue
 		}
-		seen[src] = struct{}{}
+		// listType=set makes the API server reject duplicates, so a stored
+		// object carrying them predates the marker. Left alone they are not
+		// merely redundant: the MikroTik driver resolves each name to a port id
+		// and writes it, so a duplicate is a second write to the same port, and
+		// Observe returns the device's single copy - which then never matches
+		// what was asked for, and a correctly configured mirror reports
+		// Degraded forever.
+		if slices.Index(spec.Sources, src) != i {
+			errs = append(errs, field.Duplicate(sourcesPath.Index(i), truncate(src, 64)))
+		}
 	}
 
-	errs = append(errs, validateMirrorPort(specPath.Child("target"), spec.Target)...)
-
-	// The CEL rule on the type says the same thing. It is repeated because a
-	// mirror whose target is also a source is a loop the switch will configure
-	// without complaint, and this function is what the reconciler can call on
-	// an object that never met CEL.
-	if spec.Target != "" && slices.Contains(spec.Sources, spec.Target) {
-		errs = append(errs, field.Invalid(specPath.Child("target"), spec.Target,
+	targetPath := specPath.Child("target")
+	if spec.Target == "" {
+		errs = append(errs, field.Required(targetPath,
+			"a target port is required; the copies have nowhere to go without it"))
+	} else if slices.Contains(spec.Sources, spec.Target) {
+		// A port that mirrors itself is a loop the switch will configure
+		// without complaint. The CRD's CEL rule says so too; this is the
+		// stored-object path.
+		errs = append(errs, field.Invalid(targetPath, truncate(spec.Target, 64),
 			"target must not also be a source"))
 	}
 
-	switch spec.Direction {
-	case "", trawlv1alpha1.MirrorDirectionBoth,
-		trawlv1alpha1.MirrorDirectionIngress, trawlv1alpha1.MirrorDirectionEgress:
-	default:
+	if spec.Direction != "" && !knownMirrorDirection(spec.Direction) {
 		errs = append(errs, field.NotSupported(specPath.Child("direction"), spec.Direction,
 			[]string{
 				string(trawlv1alpha1.MirrorDirectionBoth),
@@ -270,15 +196,41 @@ func ValidatePortMirrorSpec(spec *trawlv1alpha1.PortMirrorSpec) field.ErrorList 
 	return errs
 }
 
-func validateMirrorPort(path *field.Path, port string) field.ErrorList {
-	switch {
-	case port == "":
-		return field.ErrorList{field.Required(path, "a device port name is required")}
-	case len(port) > maxMirrorPortLen:
-		return field.ErrorList{field.TooLongCharacters(path, port, maxMirrorPortLen)}
-	case !mirrorPortRE.MatchString(port):
-		return field.ErrorList{field.Invalid(path, port,
-			"must contain only letters, digits, and the characters . _ / -")}
+func knownMirrorDirection(d trawlv1alpha1.MirrorDirection) bool {
+	return d == trawlv1alpha1.MirrorDirectionBoth ||
+		d == trawlv1alpha1.MirrorDirectionIngress ||
+		d == trawlv1alpha1.MirrorDirectionEgress
+}
+
+// validateImmutableMirrorFields rejects changes that would orphan a mirror on a
+// device nothing in the cluster still refers to.
+//
+// `provider` and `deviceRef` together name the switch this resource has
+// configured. Revert follows the *current* spec: the finalizer resolves
+// deviceRef at deletion time and un-configures whatever it points at then. So
+// repointing a live PortMirror from switch A to switch B configures B, and the
+// eventual delete reverts B, while A goes on copying traffic to a port with
+// nothing in the cluster recording that it does. That is the exact leftover the
+// finalizer exists to prevent, reachable by an edit rather than a crash, and on
+// hardware where no `kubectl get` will ever show it.
+//
+// Sources, target and direction stay mutable: changing them is reconfiguring
+// the same device, which the controller handles by rewriting the mirror it
+// already owns.
+func validateImmutableMirrorFields(old, updated *trawlv1alpha1.PortMirror) field.ErrorList {
+	var errs field.ErrorList
+	specPath := field.NewPath("spec")
+
+	if old.Spec.Provider != updated.Spec.Provider {
+		errs = append(errs, field.Forbidden(specPath.Child("provider"),
+			"provider is immutable; delete this PortMirror so its device is reverted, "+
+				"then create one for the new device"))
 	}
-	return nil
+	if old.Spec.DeviceRef.Name != updated.Spec.DeviceRef.Name {
+		errs = append(errs, field.Forbidden(specPath.Child("deviceRef", "name"),
+			"deviceRef is immutable; repointing it would leave the previous device mirroring "+
+				"with nothing in the cluster recording it. Delete this PortMirror so the device "+
+				"is reverted, then create one for the new device"))
+	}
+	return errs
 }

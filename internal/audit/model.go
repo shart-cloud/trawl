@@ -68,18 +68,19 @@ const (
 	ActionRetentionChange  = "retention.change"
 	ActionArtifactExpire   = "artifact.expire"
 
+	// API mutations of the PortMirror resource, kept distinct from the device
+	// actions below. "Somebody asked for a mirror" and "the switch was
+	// reconfigured" are separate events with separate actors - the first is a
+	// user at admission, the second is the controller against hardware - and
+	// collapsing them would make a request that was never carried out
+	// indistinguishable from one that was.
+	ActionPortMirrorCreate = "portmirror.create"
+	ActionPortMirrorUpdate = "portmirror.update"
+	ActionPortMirrorDelete = "portmirror.delete"
+
 	// Device configuration. Trawl changing hardware it does not own is the
 	// most physically consequential thing it does, and leaving it the least
 	// audited would be the wrong way round.
-	//
-	// The create/update/delete trio is admission's, and answers a different
-	// question from the configure/revert pair: those record what was done to a
-	// device, these record who asked for it to be done. The controller acts
-	// under its own workload identity, so without these the requesting human
-	// appears nowhere in the ledger.
-	ActionPortMirrorCreate    = "portmirror.create"
-	ActionPortMirrorUpdate    = "portmirror.update"
-	ActionPortMirrorDelete    = "portmirror.delete"
 	ActionPortMirrorConfigure = "portmirror.configure"
 	ActionPortMirrorRevert    = "portmirror.revert"
 )

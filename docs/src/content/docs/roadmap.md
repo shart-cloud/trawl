@@ -189,15 +189,14 @@ or restate the criterion), not an implementation. See open question 3.
   gitignored so there is nothing to hand-edit, and the quickstart is now in the
   sidebar — it had been unreachable and absent from a clean clone.
 - PortMirror had no admission webhook, and a comment in its controller claimed
-  one rejected off-namespace resources. **Closed.** It has both a defaulter and
-  a validator now, so all four kinds are covered. The answer to "is that
-  acceptable for a resource that copies production traffic" was no: the ledger
-  recorded what was done to a switch and never who asked, and the reconciler's
-  namespace check was load-bearing rather than defence in depth. Writing it
-  turned up a second defect — `spec.deviceRef` was mutable, and since the revert
-  finalizer runs only on deletion, repointing it stranded the old device
-  mirroring with nothing left to un-configure it. Both `deviceRef` and
-  `provider` are immutable now.
+  one rejected off-namespace resources. **Closed on `main` in PR #36**, which
+  reached this independently and went further: it added the validating webhook,
+  made `deviceRef` and `provider` immutable, gave API mutations their own audit
+  actions, and found three status lies on the way — an off-namespace mirror
+  reporting `Accepted` as the reason it was refused, `DeviceReachable=False`
+  about a device that had never been contacted, and a reconciler that never
+  re-validated a stored spec before configuring hardware. No mutating webhook,
+  deliberately: the type's only default is structural.
 - Known code issues from the code-quality assessment: ~~hand-rolled `itoa32`
   with a `MinInt32` edge case in `correlation.go`~~ (closed — deleted in favour
   of `strconv`, with a test that pins every extreme of the range); forward-defined status conditions

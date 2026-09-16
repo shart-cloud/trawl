@@ -64,26 +64,6 @@ webhooks:
     resources:
     - networktaps
   sideEffects: None
-- admissionReviewVersions:
-  - v1
-  clientConfig:
-    service:
-      name: webhook-service
-      namespace: system
-      path: /mutate-trawl-cloud-v1alpha1-portmirror
-  failurePolicy: Fail
-  name: mportmirror.trawl.cloud
-  rules:
-  - apiGroups:
-    - trawl.cloud
-    apiVersions:
-    - v1alpha1
-    operations:
-    - CREATE
-    - UPDATE
-    resources:
-    - portmirrors
-  sideEffects: None
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration

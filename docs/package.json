@@ -1,5 +1,5 @@
 {
-  "name": "",
+  "name": "trawl-docs",
   "type": "module",
   "version": "0.0.1",
   "scripts": {
@@ -11,7 +11,13 @@
     "prebuild": "npm run sync",
     "build": "astro build",
     "preview": "astro preview",
-    "astro": "astro"
+    "astro": "astro",
+    "check": "astro check",
+    "deploy": "astro build && wrangler deploy",
+    "sync": "node scripts/sync-content.mjs",
+    "predev": "npm run sync",
+    "prebuild": "npm run sync",
+    "precheck": "npm run sync"
   },
   "dependencies": {
     "@astrojs/starlight": "^0.41.10",
@@ -20,5 +26,10 @@
   },
   "allowScripts": {
     "esbuild": true
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.10",
+    "typescript": "^6.0.3",
+    "wrangler": "^4.131.1"
   }
 }
