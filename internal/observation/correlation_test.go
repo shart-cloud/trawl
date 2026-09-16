@@ -17,6 +17,7 @@ limitations under the License.
 package observation
 
 import (
+	"math"
 	"testing"
 	"time"
 )
@@ -286,5 +287,31 @@ func TestCrossAnalyzerPivotWorksInBothDirections(t *testing.T) {
 	}
 	if got := c.Match(conn, alert); got != MatchExact {
 		t.Errorf("conn -> alert = %q, want %q", got, MatchExact)
+	}
+}
+
+func TestEndpointStringRendersEveryInt32Port(t *testing.T) {
+	// endpointString builds half of the attribute-time correlation key, so two
+	// endpoints that differ only by port must render differently. The schema
+	// bounds a port to 0-65535 and every emitted record is validated against
+	// it, so the extremes here are unreachable through the sensor; this pins
+	// the helper itself, which has no such guard and is the thing being relied
+	// on.
+	for _, tc := range []struct {
+		port int32
+		want string
+	}{
+		{0, "10.0.0.1/0"},
+		{443, "10.0.0.1/443"},
+		{65535, "10.0.0.1/65535"},
+		{math.MaxInt32, "10.0.0.1/2147483647"},
+		{-1, "10.0.0.1/-1"},
+		{math.MinInt32, "10.0.0.1/-2147483648"},
+	} {
+		port := tc.port
+		got := endpointString(Endpoint{IP: "10.0.0.1", Port: &port})
+		if got != tc.want {
+			t.Errorf("endpointString(port=%d) = %q, want %q", tc.port, got, tc.want)
+		}
 	}
 }

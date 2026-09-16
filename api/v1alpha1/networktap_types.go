@@ -275,6 +275,18 @@ type TargetStatus struct {
 	// +optional
 	KernelDrops *int64 `json:"kernelDrops,omitempty"`
 
+	// BytesObserved counts bytes the analyzer decoded, which is what makes
+	// observed throughput answerable from Trawl's own signals rather than from
+	// the analyzer's stats separately.
+	//
+	// Suricata reports bytes only from its decoder - the capture block has no
+	// byte equivalent of kernel_packets - so this counts what the analyzer
+	// accepted, and under loss it is less than what crossed the wire. Read it
+	// with KernelDrops, never alone. Absent when the analyzer reports no byte
+	// counter at all.
+	// +optional
+	BytesObserved *int64 `json:"bytesObserved,omitempty"`
+
 	// Duplication reports whether duplicate observations are suspected.
 	// +kubebuilder:default=Unknown
 	// +optional

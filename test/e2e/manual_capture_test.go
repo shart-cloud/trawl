@@ -111,7 +111,7 @@ const (
 )
 
 // requireReachableObjectStore ensures the presigned redirect can actually be
-// followed from this machine, and skips with the fix when it cannot.
+// followed from this machine, and fails with the fix when it cannot.
 //
 // The gateway does not serve bytes. It authorizes and answers 303 with a
 // presigned URL for the object store endpoint in the installation config, and
@@ -122,18 +122,37 @@ const (
 // it needs a forward on that exact port and a name that resolves to it, which
 // is what quickstart section 6 documents.
 //
-// This is a skip rather than a failure because it describes the machine the
-// test is running on, not the software under test. It is deliberately not
-// silent about which.
+// This was a skip, on the reasoning that it describes the machine the test runs
+// on rather than the software under test. That reasoning does not survive what
+// the skip did: six specs across two files - every download path, the expiry
+// refusal, the retention enforcement and the audit-outage spec - silently did
+// not run, and `make test-acceptance` exited zero having asserted none of them.
+// A run that produces release evidence cannot report success for evidence it
+// never gathered, and the distinction between an unfit machine and unfit
+// software is not one an exit code carries.
+//
+// The environment is also not external to what is being accepted here. Reaching
+// the bucket under the name the signature covers is quickstart section 6, a
+// documented step of the acceptance path itself, so a machine that has not done
+// it has an incomplete acceptance run rather than an inapplicable one.
+//
+// Not applicable is still a skip, and still lives above this: requireAcceptance-
+// Cluster skips when there is no cluster to accept anything against. Past that
+// gate the operator has asked for an acceptance run, and this reports whether
+// they got one.
 func (a *acceptance) requireReachableObjectStore(t *testing.T) {
 	t.Helper()
 	// Like the ledger's forward, this one is not torn down per spec: several
 	// specs need it and the process owns it for its lifetime.
 	a.objectStoreOnce.Do(func() { a.objectStoreErr = a.reachObjectStore() })
 	if a.objectStoreErr != nil {
-		t.Skipf("the presigned redirect cannot be followed from here: %v\n"+
+		t.Fatalf("the presigned redirect cannot be followed from here, so this spec "+
+			"cannot verify a download and must not pass: %v\n"+
 			"quickstart section 6 covers this: forward the object store on its own port "+
-			"and make its hostname resolve to the forward.", a.objectStoreErr)
+			"and make its hostname resolve to the forward, for example\n"+
+			"  kubectl -n %s port-forward svc/minio 9000:9000\n"+
+			"  echo '127.0.0.1 minio.%s.svc.cluster.local' | sudo tee -a /etc/hosts",
+			a.objectStoreErr, a.namespace, a.namespace)
 	}
 }
 

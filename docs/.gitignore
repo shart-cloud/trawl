@@ -25,3 +25,5 @@ pnpm-debug.log*
 
 # generated from specs/ by scripts/sync-content.mjs
 /src/content/docs/quickstart.md
+/src/content/docs/reference/crd-api.md
+/src/content/docs/reference/telemetry.md

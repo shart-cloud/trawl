@@ -327,3 +327,53 @@ func TestSuricataHandlesAlertWithoutCommunityID(t *testing.T) {
 		t.Errorf("alert without community_id violates the schema: %v", err)
 	}
 }
+
+func TestSuricataStatsCarryDecoderBytes(t *testing.T) {
+	// Field names and values taken from Suricata 8.0.6 run against a 102
+	// packet, 8126 byte capture: decoder.bytes is the only byte counter it
+	// reports, and the capture block came back empty in pcap-read mode - so
+	// there is no kernel byte counter to prefer over it.
+	n := suricataNormalizer()
+	line := `{
+	  "timestamp": "2026-09-12T10:26:00.000000+0000",
+	  "event_type": "stats",
+	  "stats": {
+	    "decoder": {"pkts": 102, "bytes": 8126}
+	  }
+	}`
+
+	_, stats, err := n.Normalize([]byte(line))
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+	if stats == nil {
+		t.Fatal("no stats returned")
+	}
+	if stats.DecoderBytes == nil || *stats.DecoderBytes != 8126 {
+		t.Errorf("decoder bytes = %v, want 8126", stats.DecoderBytes)
+	}
+}
+
+func TestSuricataStatsDistinguishZeroBytesFromUnknown(t *testing.T) {
+	// The distinction KernelDrops draws, for bytes. A record with no byte
+	// counter has not reported a throughput of zero.
+	n := suricataNormalizer()
+
+	absent := `{"timestamp":"2026-09-12T10:26:00.000000+0000","event_type":"stats","stats":{"decoder":{"pkts":10}}}`
+	_, stats, err := n.Normalize([]byte(absent))
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+	if stats.DecoderBytes != nil {
+		t.Errorf("decoder bytes = %d when unreported, want nil", *stats.DecoderBytes)
+	}
+
+	zero := `{"timestamp":"2026-09-12T10:26:00.000000+0000","event_type":"stats","stats":{"decoder":{"pkts":10,"bytes":0}}}`
+	_, stats, err = n.Normalize([]byte(zero))
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+	if stats.DecoderBytes == nil || *stats.DecoderBytes != 0 {
+		t.Errorf("decoder bytes = %v when reported zero, want 0", stats.DecoderBytes)
+	}
+}

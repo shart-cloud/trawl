@@ -57,6 +57,7 @@ import (
 	"trawl.cloud/trawl/internal/observation"
 	"trawl.cloud/trawl/internal/sanitize"
 	"trawl.cloud/trawl/internal/telemetry"
+	"trawl.cloud/trawl/internal/witness"
 )
 
 var scheme = runtime.NewScheme()
@@ -241,6 +242,13 @@ func main() {
 		metrics:        metrics,
 		pollInterval:   time.Duration(cfg.EventWorker.AlertPollInterval),
 		statusInterval: time.Duration(cfg.EventWorker.StatusInterval),
+		heartbeat: &witness.Heartbeat{
+			Client:    mgr.GetClient(),
+			Namespace: cfg.SystemNamespace,
+			// The pod, not the service account: during a handoff an operator
+			// reading the lease wants to know which replica holds it.
+			Identity: os.Getenv("POD_NAME"),
+		},
 	}
 	if err := mgr.Add(worker); err != nil {
 		fatal("registering the worker", err)

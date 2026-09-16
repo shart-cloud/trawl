@@ -17,6 +17,7 @@ limitations under the License.
 package observation
 
 import (
+	"strconv"
 	"strings"
 	"time"
 )
@@ -178,7 +179,7 @@ func endpointString(e Endpoint) string {
 	b.WriteString(e.IP)
 	b.WriteByte('/')
 	if e.Port != nil {
-		b.WriteString(itoa32(*e.Port))
+		b.WriteString(strconv.FormatInt(int64(*e.Port), 10))
 	}
 	return b.String()
 }
@@ -189,27 +190,4 @@ func withinWindow(a, b time.Time, window time.Duration) bool {
 		d = -d
 	}
 	return d <= window
-}
-
-func itoa32(v int32) string {
-	if v == 0 {
-		return "0"
-	}
-	var buf [12]byte
-	i := len(buf)
-	neg := v < 0
-	u := v
-	if neg {
-		u = -v
-	}
-	for u > 0 {
-		i--
-		buf[i] = byte('0' + u%10)
-		u /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
 }

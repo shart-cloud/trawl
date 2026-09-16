@@ -76,6 +76,12 @@ type eveStats struct {
 	} `json:"capture"`
 	Decoder struct {
 		Packets *int64 `json:"pkts"`
+		// Bytes is the only byte counter Suricata reports. The capture block
+		// carries kernel_packets and kernel_drops and no byte equivalent, so
+		// unlike packets there is nothing to prefer it over: bytes are what
+		// the decoder accepted, which under loss is less than what was on the
+		// wire. Read against KernelDrops, never alone.
+		Bytes *int64 `json:"bytes"`
 	} `json:"decoder"`
 }
 
@@ -84,7 +90,12 @@ type SuricataStats struct {
 	KernelPackets  *int64
 	KernelDrops    *int64
 	DecoderPackets *int64
-	Timestamp      time.Time
+
+	// DecoderBytes is nil when the analyzer reported no byte counter, which is
+	// not the same as having decoded nothing (FR-039).
+	DecoderBytes *int64
+
+	Timestamp time.Time
 }
 
 // SuricataNormalizer converts EVE JSON into normalized observations.
@@ -199,6 +210,7 @@ func (n *SuricataNormalizer) normalizeStats(rec *eveRecord) *SuricataStats {
 		KernelPackets:  rec.Stats.Capture.KernelPackets,
 		KernelDrops:    rec.Stats.Capture.KernelDrops,
 		DecoderPackets: rec.Stats.Decoder.Packets,
+		DecoderBytes:   rec.Stats.Decoder.Bytes,
 		Timestamp:      ts,
 	}
 }

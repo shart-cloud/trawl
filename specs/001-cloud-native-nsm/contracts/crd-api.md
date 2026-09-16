@@ -115,6 +115,7 @@ TargetStatus
 ├── lastPacketTime?: metav1.Time
 ├── packetsObserved: int64
 ├── kernelDrops?: int64
+├── bytesObserved?: int64                             decoder-sourced; read with kernelDrops
 ├── duplication: Unknown | NotDetected | Suspected
 ├── rejectedRecords: int64
 └── analyzers[]: AnalyzerStatus                        map key: name
@@ -269,6 +270,25 @@ CapturePolicyStatus
 
 Required condition types: `Accepted`, `TapResolved`, `SourceConnected`,
 `WithinRateLimit`, `Ready`.
+
+CapturePolicy status has two writers, and which one wrote it matters when
+reading it. The event worker owns the field: it is the only component that
+knows what a policy decided, whether the trigger source is connected, and how
+many captures the policy has taken this hour.
+
+The controller manager writes one thing only, and only when the worker's status
+heartbeat has gone stale: `SourceConnected=False` with reason `WorkerStale`,
+`Ready=False`, and phase `Degraded`. `WorkerStale` is not `SourceDisconnected`.
+`SourceDisconnected` means the worker looked and the stream was down;
+`WorkerStale` means nothing looked at all, and the two send an operator to
+different places. The decision counters, the resolved tap and
+`observedGeneration` are left exactly as the worker set them - they remain a
+true account of the period the worker was running, and `observedGeneration` in
+particular must not advance for a spec nothing has evaluated.
+
+An armed policy reads as a claim of detection coverage. Without the external
+witness, a worker outage left that claim standing indefinitely, because the
+staleness check that would have reported it ran inside the worker.
 
 ## CaptureJob
 

@@ -123,7 +123,7 @@ Allowed `decision`: `allowed`, `denied`, `succeeded`, `failed`. Allowed `result`
 | `trawl_status_update_failures_total` | counter | `resource_kind`, `reason` | Failed status writes. |
 | `trawl_finalizer_failures_total` | counter | `resource_kind`, `reason` | External cleanup failures. |
 
-Allowed `controller`: `networktap`, `capturejob`, `retention`. Allowed `result`:
+Allowed `controller`: `networktap`, `capturejob`, `retention`, `capturepolicy`. Allowed `result`:
 `success`, `requeue`, `invalid`, `dependency_unavailable`, `error`.
 
 ### Sensor and ingestion
@@ -131,6 +131,7 @@ Allowed `controller`: `networktap`, `capturejob`, `retention`. Allowed `result`:
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
 | `trawl_sensor_packets_total` | counter | `source_type`, `analyzer` | Packets reported at capture/analyzer boundary. |
+| `trawl_sensor_bytes_total` | counter | `source_type`, `analyzer` | Bytes decoded at the capture/analyzer boundary. Suricata reports bytes only from its decoder - there is no kernel byte counter to prefer - so this is what the analyzer accepted, and under loss it is less than what crossed the wire. Read with `trawl_sensor_kernel_drops_total`, never alone. |
 | `trawl_sensor_kernel_drops_total` | counter | `source_type`, `analyzer` | Kernel drops where available. |
 | `trawl_sensor_records_total` | counter | `source_kind`, `observation_type`, `result` | Normalized, unsupported, or malformed records. |
 | `trawl_sensor_last_packet_timestamp_seconds` | gauge | `source_type`, `analyzer` | Latest packet time per sensor process; target identity is supplied out of band at scrape time, not a custom label. |

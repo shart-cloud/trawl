@@ -101,6 +101,7 @@ const (
 	ReasonTapNotActive          = "TapNotActive"
 	ReasonSourceConnected       = "SourceConnected"
 	ReasonSourceDisconnected    = "SourceDisconnected"
+	ReasonWorkerStale           = "WorkerStale"
 	ReasonSourceGap             = "SourceGap"
 	ReasonWithinRateLimit       = "WithinRateLimit"
 	ReasonRateLimited           = "RateLimited"
@@ -127,6 +128,7 @@ const (
 	ReasonDeviceRefused         = "DeviceRefused"
 	ReasonMirrorConfigured      = "MirrorConfigured"
 	ReasonMirrorDrifted         = "MirrorDrifted"
+	ReasonDeviceConflict        = "DeviceConflict"
 	// A condition reason, not a credential. gosec matches the name.
 	ReasonCredentialMissing = "CredentialMissing" //nolint:gosec // G101: a status reason string.
 )
@@ -145,6 +147,7 @@ func AllReasons() []string {
 		ReasonInterfaceMissing, ReasonContentStale,
 		ReasonTapResolved, ReasonTapNotFound, ReasonTapNotActive,
 		ReasonSourceConnected, ReasonSourceDisconnected, ReasonSourceGap,
+		ReasonWorkerStale,
 		ReasonWithinRateLimit, ReasonRateLimited, ReasonCooldownActive, ReasonDisarmed,
 		ReasonTargetReady, ReasonTargetUnavailable,
 		ReasonFilterValid, ReasonFilterInvalid,
@@ -152,6 +155,9 @@ func AllReasons() []string {
 		ReasonArtifactVerified, ReasonArtifactMissing, ReasonChecksumMismatch,
 		ReasonStorageFailure, ReasonDownloadable, ReasonNotDownloadable,
 		ReasonRetentionEnforced, ReasonRetentionFailed, ReasonExpired, ReasonPending,
+		ReasonDeviceReachable, ReasonDeviceUnreachable, ReasonDeviceRefused,
+		ReasonMirrorConfigured, ReasonMirrorDrifted, ReasonDeviceConflict,
+		ReasonCredentialMissing,
 	}
 }
 

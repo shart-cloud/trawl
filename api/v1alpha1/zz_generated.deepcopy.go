@@ -901,6 +901,11 @@ func (in *TargetStatus) DeepCopyInto(out *TargetStatus) {
 		*out = new(int64)
 		**out = **in
 	}
+	if in.BytesObserved != nil {
+		in, out := &in.BytesObserved, &out.BytesObserved
+		*out = new(int64)
+		**out = **in
+	}
 	if in.Analyzers != nil {
 		in, out := &in.Analyzers, &out.Analyzers
 		*out = make([]AnalyzerStatus, len(*in))

@@ -1,0 +1,113 @@
+# Publishes the install bundle for a tagged release.
+#
+# The README told the reader to kubectl apply dist/install.yaml from the
+# repository, and dist/ is gitignored and nothing ever published one, so the
+# documented way to install Trawl did not exist. This is the missing half.
+#
+# The bundle is rendered from the tagged tree rather than built fresh. Every
+# image in config/manager is pinned by digest and refreshed for the commit being
+# deployed, so a release is a rendering of manifests that already name exactly
+# what will run. Nothing here resolves a tag to a digest, because by the time a
+# release is cut that has already happened and been committed - and a workflow
+# that re-resolved would be free to disagree with the tree it claims to install.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The existing tag to build the bundle for.
+        required: true
+
+permissions: {}
+
+env:
+  # Pinned by the `go` directive in go.mod; GOTOOLCHAIN=auto fetches it exactly.
+  GOTOOLCHAIN: auto
+
+jobs:
+  installer:
+    name: Install bundle
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+
+      - name: Install pinned tools
+        run: hack/verify-tools.sh --install
+
+      # build-installer regenerates before rendering, so a tree whose committed
+      # CRDs or RBAC no longer match its source produces a bundle that differs
+      # from what was reviewed. CI gates that on every commit; a tag can still
+      # be cut from one that predates the gate, and the bundle is the artifact
+      # people actually apply.
+      - name: Render the bundle
+        run: make build-installer
+
+      - name: Refuse a bundle that differs from the tagged tree
+        run: |
+          set -euo pipefail
+          if ! git diff --quiet; then
+            echo "Rendering the bundle changed tracked files, so the tag's committed"
+            echo "generated artifacts do not match its source. Fix the tag, not this job."
+            git --no-pager diff --stat
+            exit 1
+          fi
+
+      # The constitution forbids deploying by floating tag. install.yaml is the
+      # one artifact where that rule is checkable after the fact and easiest to
+      # break by accident: a single un-pinned image would be resolved at pull
+      # time on someone else's cluster, months later, to something nobody
+      # reviewed.
+      - name: Refuse an image that is not pinned by digest
+        run: |
+          set -euo pipefail
+          unpinned="$(grep -E '^\s+image:' dist/install.yaml | grep -v '@sha256:' || true)"
+          if [ -n "$unpinned" ]; then
+            echo "install.yaml carries images that are not pinned by digest:"
+            echo "$unpinned"
+            exit 1
+          fi
+          echo "All images pinned by digest:"
+          grep -E '^\s+image:' dist/install.yaml
+
+      # The supply-chain manifest describes what the bundle installs. Shipping
+      # it beside the bundle is the point: a consumer can answer "what is in
+      # this" without pulling every image first.
+      - name: Build the supply-chain manifest
+        run: make supply-chain
+
+      - name: Collect the release assets
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          cp dist/install.yaml release-assets/install.yaml
+          if [ -d dist/supply-chain ]; then
+            tar -czf release-assets/supply-chain.tar.gz -C dist supply-chain
+          fi
+          sha256sum release-assets/* | sed 's#release-assets/##' > release-assets/SHA256SUMS
+          cat release-assets/SHA256SUMS
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          # --clobber so re-running a dispatch replaces the assets rather than
+          # failing half way, and the release is created only if absent so a
+          # hand-written body is never overwritten by this job.
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "$TAG" --generate-notes
+          fi
+          gh release upload "$TAG" --clobber release-assets/*

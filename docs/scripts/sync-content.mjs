@@ -25,6 +25,26 @@ const pages = [
 		},
 		note: 'This page is generated from `specs/001-cloud-native-nsm/quickstart.md`. Edit that file — changes made here are overwritten by the next build.',
 	},
+	{
+		source: 'specs/001-cloud-native-nsm/contracts/crd-api.md',
+		target: 'docs/src/content/docs/reference/crd-api.md',
+		frontmatter: {
+			title: 'CRD Reference',
+			description:
+				'The normative contract for trawl.cloud/v1alpha1: every field, bound, enum and immutability rule across the four resources.',
+		},
+		note: 'This page is generated from `specs/001-cloud-native-nsm/contracts/crd-api.md`. Edit that file — changes made here are overwritten by the next build.',
+	},
+	{
+		source: 'specs/001-cloud-native-nsm/contracts/telemetry.md',
+		target: 'docs/src/content/docs/reference/telemetry.md',
+		frontmatter: {
+			title: 'Telemetry Reference',
+			description:
+				'Metric and log contracts, and the cardinality and redaction rules that keep packet evidence out of operational signals.',
+		},
+		note: 'This page is generated from `specs/001-cloud-native-nsm/contracts/telemetry.md`. Edit that file — changes made here are overwritten by the next build.',
+	},
 ];
 
 const quote = (value) => `"${value.replaceAll('"', '\\"')}"`;
