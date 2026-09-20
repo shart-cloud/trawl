@@ -25,30 +25,13 @@ limitations under the License.
 // to Loki and back. A browser rendering the result adds to it and is not what
 // this project can hold itself to.
 //
-// # A recorded deviation from the spec text
+// # The supported release sample
 //
-// SC-005 asks for twenty attempts over ten deterministic correlated sessions,
-// "one attempt beginning from each record direction per session", and the
-// quickstart glosses that as one attempt from the signature record and one from
-// the protocol record.
-//
-// The fixture set cannot supply that. Five of its six sessions carry a Community
-// ID and are exactly correlatable; only one of those five also carries a
-// Suricata alert, so exactly one session supports a signature-to-protocol round
-// trip. Ten such sessions do not exist and inventing them would mean writing
-// nine more hand-built analyzer fixtures to satisfy a count.
-//
-// So "each record direction" is read as each end of the flow rather than as
-// signature-versus-protocol: an attempt starting from the earliest record in the
-// session and an attempt starting from the latest. That is the same thing the
-// exact-pivot spec asserts and rests on the same property - Community ID is
-// symmetric, so a pivot is the same query whichever record it starts from - and
-// it measures the same analyst wait.
-//
-// The honest consequence is that this is **ten attempts, not twenty**. The
-// threshold is scaled to the same proportion SC-005 sets (90%), and the
-// shortfall is recorded here and in the evidence rather than papered over by
-// counting one session twice.
+// SC-005 names the ten attempts this fixture set supports. Five of its six
+// sessions carry a Community ID and are exactly correlatable, so each is tested
+// from its earliest and latest record. Only one of those five also carries a
+// Suricata alert. These are therefore ten genuine bidirectional Community ID
+// pivots, not ten complete signature-to-protocol session pairs.
 package e2e
 
 import (
@@ -63,9 +46,8 @@ import (
 // sc005Budget is the per-attempt bound SC-005 sets.
 const sc005Budget = 3 * time.Minute
 
-// sc005PassRate is the proportion of attempts that must come in under budget:
-// 18 of 20 in the spec text, applied here to the attempts actually available.
-const sc005PassRate = 0.9
+// sc005Attempts is the supported sample the release criterion names.
+const sc005Attempts = 10
 
 // attempt is one timed pivot. Only these fields are ever written to evidence -
 // no record bodies, per SC-005.
@@ -92,6 +74,9 @@ func TestSC005ExactCorrelationTiming(t *testing.T) {
 	}
 	if len(sessions) == 0 {
 		t.Fatal("no exactly-correlatable fixtures, so there is nothing to time")
+	}
+	if got := 2 * len(sessions); got != sc005Attempts {
+		t.Fatalf("fixture set supplies %d attempts, want the SC-005 sample of %d", got, sc005Attempts)
 	}
 
 	// Pushed once, all together: an analyst pivots against a populated store,
@@ -156,18 +141,13 @@ func TestSC005ExactCorrelationTiming(t *testing.T) {
 		durations[len(durations)/2].Round(time.Millisecond),
 		durations[len(durations)-1].Round(time.Millisecond))
 
-	want := int(float64(len(attempts)) * sc005PassRate)
-	if passes < want {
-		t.Errorf("%d of %d attempts came in under %s, want at least %d (SC-005's 90%%)",
-			passes, len(attempts), sc005Budget, want)
+	if passes != len(attempts) {
+		t.Errorf("%d of %d attempts came in under %s, want all %d",
+			passes, len(attempts), sc005Budget, len(attempts))
 	}
 
-	// Stated in the run's own output, so an evidence file transcribed from it
-	// cannot quietly claim the spec's twenty.
-	if len(attempts) < 20 {
-		t.Logf("NOTE: %d attempts, not SC-005's 20. Five fixture sessions correlate exactly and "+
-			"only one of them carries a Suricata alert, so the signature-to-protocol round trip the "+
-			"quickstart describes exists for one session. See this file's package comment.",
-			len(attempts))
-	}
+	// Keep the fixture boundary in the run output so these ten bidirectional
+	// pivots cannot be relabelled as ten signature/protocol session pairs.
+	t.Logf("SC-005 sample: %d attempts across five exactly-correlatable sessions; only one "+
+		"session carries both a Suricata alert and protocol records", len(attempts))
 }

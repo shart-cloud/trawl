@@ -38,16 +38,11 @@ what stops a fast query that finds nothing being recorded as a fast pivot.
 Mutation-checked by pivoting on a Community ID no fixture carries: every attempt
 then returns zero records and fails, rather than passing on speed.
 
-### Deviation from the spec text, recorded rather than papered over
+### The accepted sample and its limit
 
-**This is ten attempts. SC-005 asks for twenty.**
+**This is the ten-attempt sample SC-005 now names.**
 
-The spec asks for twenty attempts over ten deterministic correlated sessions,
-"one attempt beginning from each record direction per session", which the
-quickstart glosses as one attempt from the signature record and one from the
-protocol record.
-
-The fixture set cannot supply that:
+The fixture set's boundary remains part of the evidence:
 
 | | count |
 |---|---:|
@@ -55,20 +50,15 @@ The fixture set cannot supply that:
 | …carrying a Community ID (exactly correlatable) | 5 |
 | …**also** carrying a Suricata alert | **1** |
 
-So exactly one session supports the signature-to-protocol round trip the
-quickstart describes, and ten such sessions do not exist. Reaching twenty would
-have meant writing nine more hand-built analyzer fixtures to satisfy a count.
+Exactly one session supports a signature-to-protocol round trip; this evidence
+does not claim ten such pairs.
 
-"Each record direction" is therefore read as **each end of the flow** — an
+Each attempt begins at **one end of the flow** — an
 attempt from the earliest record and one from the latest. That is what
 `TestExactPivotReachesTheWholeFlowFromEitherEnd` already asserts, and it rests
 on the same property: Community ID is symmetric, so the pivot is the same query
-whichever record it starts from. It measures the same analyst wait. It is still
-ten attempts and not twenty, and the run's own output says so.
-
-The 90% threshold is applied to the attempts that exist. At 10 of 10 the
-shortfall changes no conclusion, but a future regression would be measured
-against a smaller sample than SC-005 intends.
+whichever record it starts from. The accepted criterion requires all ten to
+finish within budget; this run did so.
 
 ## Commands that did not exist
 

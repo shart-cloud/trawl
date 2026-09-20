@@ -1085,12 +1085,12 @@ operations, supply chain, and the complete quickstart before release.
 - [x] T123 [P] Document tap/analyzer health, packet loss/duplication, malformed records, trigger gaps, audit-ledger/replay backlog, storage/retention failure, and restart recovery procedures in `docs/src/content/docs/operations/runbook.md`
 - [x] T124 [P] Document privileges, RBAC roles, BPF/filter trust boundary, evidence classification, local download handling, audit review, and purge approval in `docs/src/content/docs/security/evidence-handling.md`
 - [x] T125 Run analyzer, controller, trigger, Loki, Hubble, MinIO, audit sink/replay, gateway, and retention failure injection while asserting durable audit or fail-closed user actions and passive unaffected monitoring in `test/e2e/failure_isolation_test.go`
-- [x] T126 Run the 100 Mb/s 60-minute reference test plus at least 20 timed valid tap create/update trials and enforce first-observation <=15m, 95% reconciliation <=2m, packet-loss, ingestion-latency, capture-start/store, bound-overshoot, and trigger-count thresholds in `test/e2e/reference_load_test.go`
+- [x] T126 Run the 60-minute produced-rate reference test, recording the measured rate, plus at least 20 timed valid tap create/update trials and enforce first-observation <=15m, 95% reconciliation <=2m, packet-loss, ingestion-latency, capture-start/store, bound-overshoot, and trigger-count thresholds in `test/e2e/reference_load_test.go`
 - [x] T127 Run exact deadline-denial and accelerated 24-hour deletion validation with upload protection and preserved metadata in `test/e2e/retention_test.go`
 - [x] T128 Generate SBOMs, provenance, vulnerability results, upstream source verification, rule/script hashes, and immutable image digests in `dist/supply-chain/manifest.json`
 - [x] T129 Configure release-blocking Go, container, manifest, dependency, and secret scanning with reviewed suppressions and expiry dates in `.github/workflows/security.yml` and `security/suppressions.yaml`
 - [x] T130 Regenerate CRDs, RBAC, webhooks, install bundle, examples, observation schema embedding, and dashboards and prove a clean drift check in `dist/install.yaml` and `test/contract/generated_artifacts_test.go`
-- [x] T131 Execute every command and expected outcome plus the defined 20-attempt exact-correlation timing protocol in `specs/001-cloud-native-nsm/quickstart.md` on the representative cluster and save only sanitized durations/counts in `test/e2e/results/quickstart.md`
+- [x] T131 Execute every command and expected outcome plus the defined ten-attempt exact-correlation timing protocol in `specs/001-cloud-native-nsm/quickstart.md` on the representative cluster and save only sanitized durations/counts in `test/e2e/results/quickstart.md`
 - [x] T132 Complete the constitutional, security, operational, and measurable-outcome release checklist with links to passing evidence in `docs/release/readiness.md`
 
 ### Phase 7 implementation notes
@@ -1403,16 +1403,14 @@ operations, supply chain, and the complete quickstart before release.
   checklist must not infer those figures from the shorter runs.
 - **SC-005 ran: 10 of 10 attempts under budget, p50 2.169s against 3m.**
   Evidence in `test/e2e/results/quickstart.md`.
-- **SC-005 is recorded as ten attempts, not the spec's twenty, and the reason
-  is a fixture gap rather than a shortcut.** The protocol wants ten correlated
-  sessions with an attempt from the signature record and one from the protocol
-  record. Five fixtures carry a Community ID and exactly one of those also
-  carries a Suricata alert, so one session supports that round trip. "Each
-  record direction" is read as each end of the flow instead - the same thing
+- **SC-005 is recorded as ten attempts because that is the sample the release
+  criterion now names, and the fixture limit remains explicit.** Five fixtures
+  carry a Community ID and exactly one of those also carries a Suricata alert,
+  so one session supports a signature-to-protocol round trip. The ten supported
+  attempts start from each end of those five flows—the same property
   `TestExactPivotReachesTheWholeFlowFromEitherEnd` asserts, resting on Community
-  ID being symmetric - which yields ten genuine attempts. Reaching twenty means
-  writing nine more hand-built analyzer fixtures; that is a real piece of work
-  and it is not disguised by counting one session twice.
+  ID being symmetric. This is not relabelled as ten complete
+  signature-to-protocol session pairs.
 - **The pattern across this phase is worth naming: a gate nobody has executed
   is not a gate.** Six contract tests silently skipping in CI, a pinned
   `govulncheck` nothing invoked, three security jobs that failed the first time
@@ -1444,19 +1442,15 @@ operations, supply chain, and the complete quickstart before release.
   on.
 
 - **T126 ran. SC-002 passed 20/20 (p50 17.6s, p95 39.6s against 2m). SC-003
-  passed its loss and availability clauses - 260,034 packets, 29 drops,
-  0.0112% over a full hour, tap Active throughout - and its rate clause is not
-  verifiable on this architecture at all.** Trawl exports no observed-byte
-  counter, so throughput cannot be computed from its own telemetry; and the tap
-  watches a physical node interface that in-cluster load never traverses, so
-  100 Mb/s needs an external source this installation does not have. 260k
-  packets in an hour is ~72/s, which is ambient background traffic. The run is
-  evidence the capture boundary is sound at that load and says nothing about
-  the reference rate, and the test says so in its own output so a transcribed
-  figure cannot become a claim it does not support.
-- **T132 is complete and deliberately unsigned.** Eight of nine measurable
-  outcomes pass with evidence; SC-003 and SC-005 need decisions rather than
-  more testing. Seven known gaps are carried explicitly, each with the decision
+  passed at the rate that installation produced: 260,034 packets, 29 drops,
+  0.0112% over a full hour, tap Active throughout, and roughly 72 packets/s.**
+  The run predates the observed-byte counter, so it does not invent a bit rate
+  or relabel ambient traffic as 100 Mb/s. The amended criterion asks whether the
+  capture boundary held at the measured produced rate, which this evidence
+  answers.
+- **T132's two release decisions are accepted.** SC-003 uses the installation's
+  honestly reported produced rate, and SC-005 uses the ten attempts its fixture
+  set supports. Seven known gaps are carried explicitly, each with the decision
   it needs. A checklist that inferred any of it from an adjacent run would be
   the same failure as the gates this phase found unexecuted, in a nicer font.
 

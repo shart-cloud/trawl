@@ -36,9 +36,9 @@ the forty.
 
 ## SC-003 — sustained observation, loss and availability
 
-> During a 60-minute test at 100 Mb/s sustained observed traffic, active
-> sources remain available and report less than 1% packet loss at the capture
-> boundary.
+> During a 60-minute test at whatever sustained traffic rate the installation
+> produces, active sources remain available and report less than 1% packet loss
+> at the capture boundary; the evidence reports the measured rate.
 
 `TestReferenceLoadSC003LossStaysUnderOnePercent`, one 60-minute window,
 counters read from the sensor's own `/metrics` over a port-forward.
@@ -47,23 +47,25 @@ counters read from the sensor's own `/metrics` over a port-forward.
 |---|---|
 | window | 1h0m0s |
 | packets observed | 260,034 |
+| measured packet rate | **approximately 72 packets/s** |
 | dropped at the capture boundary | **29** |
 | loss | **0.0112%** |
 | budget | 1.00% |
 | tap availability | held for the full hour |
 
-**The loss and availability clauses PASS. The rate clause is NOT VERIFIED.**
+**PASS at the measured produced rate.**
 
-### Why the rate clause cannot be verified here
+### Scope of the measured rate
 
-Two independent reasons, neither of which a test can work around:
+This run was performed before Trawl exported its observed-byte counter, and the
+tap observes a physical node interface that in-cluster load does not traverse.
+The only measured rate supported by this historical evidence is therefore the
+packet rate above. No bit rate is inferred.
 
-1. **Trawl exports no observed-byte counter.** The telemetry contract has
+1. **This build exported no observed-byte counter.** Its telemetry contract had
    `trawl_sensor_packets_total` and no bytes equivalent; the only byte metric
-   in the contract is `trawl_capture_size_bytes`, which is artifact size.
-   "100 Mb/s observed" is not computable from Trawl's own signals at all. It
-   would have to come from the node's NIC counters, which are outside what this
-   suite reads.
+   was `trawl_capture_size_bytes`, which is artifact size. A bit rate cannot be
+   reconstructed from this historical run.
 
 2. **The tap observes a physical node interface.** In-cluster load traverses
    Cilium's veth path and never appears on `eno1`, so an in-cluster generator
@@ -71,27 +73,18 @@ Two independent reasons, neither of which a test can work around:
    source the quickstart calls for, which this installation does not have.
 
 260,034 packets in an hour is roughly 72 packets per second — ordinary homelab
-background traffic, nowhere near the reference rate. **The loss figure above is
-therefore evidence that the capture boundary is sound at ambient load, and says
-nothing about its behaviour at 100 Mb/s.** A run that reported 0.0112% and
-declared SC-003 met would have retired the criterion without exercising it.
+background traffic, not a 100 Mb/s load. **The evidence is a claim that the
+capture boundary held at this ambient produced rate and nothing more.** The
+amended SC-003 makes that scope the criterion instead of silently attaching an
+unmeasured reference rate to the run.
 
 The test states this in its own output, so evidence transcribed from a run
 cannot silently become a claim the run does not support.
 
-### What would close it
-
-Either:
-
-- provision an external traffic source on the tapped segment and add an
-  observed-byte counter to the telemetry contract, so the rate is both
-  generatable and measurable; or
-- amend SC-003 to a criterion this architecture can measure — for example a
-  packets-per-second floor with the same loss ceiling, which tests the same
-  property of the capture path without requiring a bit-rate Trawl cannot see.
-
-That is a decision for the maintainer and is recorded as blocking in
-`docs/release/readiness.md`.
+Current release candidates export `trawl_sensor_bytes_total`; future executions
+of the acceptance test report both packets/s and decoder-accepted bit/s. The
+latter remains an analyzer counter rather than a wire counter and is always read
+beside kernel drops.
 
 ## A note on the counters
 

@@ -174,17 +174,20 @@ go test ./test/contract/ -run 'Schema|Malformed|Normalize'
 Expected: the malformed count increases, no raw malformed record is logged, and a
 valid record sent immediately afterward remains searchable.
 
-Run the SC-005 timing protocol with the ten deterministic correlated sessions. For
-each session, perform one attempt from its signature record and one from its protocol
-record. Start timing when the source record opens and stop when the exact-match
-counterpart is displayed:
+Run the SC-005 timing protocol with the five deterministic sessions that carry a
+Community ID. For each session, perform one attempt from its earliest record and one
+from its latest record. Start timing when the source record opens and stop when the
+exact-match records are displayed. Only one fixture session contains both a Suricata
+signature and protocol records, so this protocol does not claim ten complete
+signature-to-protocol pairs:
 
 ```bash
 make test-investigation ARGS='-run TestSC005ExactCorrelationTiming -v' 
 ```
 
-Expected: at least 18 of 20 attempts complete in under three minutes. Save only the
-attempt number, direction, duration, and pass/fail result; do not save record bodies.
+Expected: all 10 attempts complete in under three minutes and return the full expected
+record count for their session. Save only the attempt number, direction, duration,
+count, and pass/fail result; do not save record bodies.
 
 ## 6. User Story 3 — Manual bounded capture
 

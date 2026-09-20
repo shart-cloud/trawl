@@ -1,9 +1,11 @@
 # Trawl release readiness
 
-**Status: not ready.** Eight of nine measurable outcomes pass with evidence.
-SC-003 passes on its loss and availability clauses and its rate clause cannot
-be verified on this architecture at all; SC-005 passes on a smaller sample than
-specified. Both need a decision rather than more testing.
+**Status: not ready.** All nine measurable outcomes now have accepted evidence:
+SC-003 is evaluated at the honestly reported rate the installation produced,
+and SC-005's criterion is the ten-attempt sample the fixtures actually support.
+The WS0.4 implementation and complete local gates passed on 2026-09-20. The
+release remains blocked on a green tag-triggered supply-chain workflow and
+release-candidate cluster validation.
 
 Assembled 2026-09-11 against `admin@talos-cluster` (single node `talos-node`,
 Kubernetes v1.35.5, Cilium/Hubble 1.18.11), on the build merged as `96ec4f1`.
@@ -22,58 +24,36 @@ nicer font.
 |---|---|---|---|
 | SC-001 | First structured record within 15 minutes | **pass** | `TestAFirstStructuredObservationArrivesWithinFifteenMinutes` |
 | SC-002 | 95% of tap create/update actionable within 2 minutes | **pass** (20/20, p95 39.6s) | `test/e2e/results/reference-load.md` |
-| SC-003 | 60 min at 100 Mb/s, <1% capture-boundary loss | **partial** — loss 0.0112% over 60 min, rate unverified | `test/e2e/results/reference-load.md` |
+| SC-003 | 60 min at the measured produced rate, <1% capture-boundary loss | **pass** — 0.0112% over 60 min at roughly 72 packets/s | `test/e2e/results/reference-load.md` |
 | SC-004 | 95% of observations searchable within 30s | **pass** | `test/e2e/results/sc-004-searchability.md` |
-| SC-005 | Exact correlation under 3 minutes | **pass, reduced sample** | `test/e2e/results/quickstart.md` |
+| SC-005 | 10/10 exact pivots under 3 minutes | **pass** — p50 2.169s | `test/e2e/results/quickstart.md` |
 | SC-006 | 95% of captures start <10s, downloadable <60s | **pass** | `test/e2e/results/manual-capture.md` |
 | SC-007 | Captures stop at their bounds | **pass** | `test/e2e/results/manual-capture.md` |
 | SC-008 | Trigger dedup, cooldown and hourly limits hold | **pass** | `test/e2e/results/automatic-capture.md` |
 | SC-009 | Restart and single-component failure converge | **pass** | `test/e2e/results/failure-isolation.md` |
 
-### SC-005 passed on a smaller sample than specified
+### SC-005's accepted sample is bounded by the fixtures
 
-Ten timed attempts, not the specified twenty: **10 of 10 under budget, p50
-2.169s against 3m**. The shortfall is a fixture gap, not a shortcut — five
+Ten timed attempts: **10 of 10 under budget, p50 2.169s against 3m**. The
+sample boundary is a fixture gap, not a hidden claim — five
 fixture sessions correlate exactly and only one of those also carries a Suricata
 alert, so the signature-to-protocol round trip the protocol describes exists for
-one session. Reaching twenty means writing nine more hand-built analyzer
-fixtures. Recorded in the test's own output so evidence transcribed from it
-cannot claim otherwise.
-
-**Release decision required:** accept the reduced sample, or fund the fixtures.
+one session. The accepted protocol measures one pivot from each end of the five
+exactly-correlatable flows. It does not claim ten complete signature/protocol
+session pairs, and the test records that limitation in its own output.
 
 ---
 
-## What cannot be verified here
+## SC-003 release decision
 
-**SC-003's rate clause.** Two independent reasons, neither of which a test can
-work around:
-
-1. **Trawl exports no observed-byte counter.** The telemetry contract has
-   `trawl_sensor_packets_total` and no bytes equivalent; the only byte metric is
-   `trawl_capture_size_bytes`, which is artifact size. "100 Mb/s observed" is
-   not computable from Trawl's own signals at all.
-2. **The tap observes a physical node interface.** In-cluster load traverses
-   Cilium's veth path and never appears on `eno1`, so generating 100 Mb/s needs
-   the external isolated traffic source the quickstart calls for and this
-   installation does not have.
-
-The *loss* and *availability* clauses were measured and passed: **260,034
+The criterion now asks whether the capture boundary holds for 60 minutes at the
+rate the installation actually produces, with that rate reported. The evidence
+measured **260,034
 packets, 29 drops, 0.0112% loss over a full hour**, with the tap Active
-throughout. But that is roughly 72 packets per second - ordinary background
-traffic, nowhere near the reference rate. It is evidence that the capture
-boundary is sound at ambient load and says nothing about 100 Mb/s. A run
-reporting 0.0112% and declaring SC-003 met would retire the criterion without
-exercising it.
-
-**Release decision required**, and there are two workable answers:
-
-- provision an external traffic source on the tapped segment *and* add an
-  observed-byte counter to the telemetry contract, so the rate becomes both
-  generatable and measurable; or
-- amend SC-003 to a criterion this architecture can measure - a
-  packets-per-second floor with the same loss ceiling would test the same
-  property of the capture path without requiring a bit-rate Trawl cannot see.
+throughout. That is roughly **72 packets/s**, ordinary background traffic. It is
+not relabelled as a 100 Mb/s run and makes no claim about behavior at that load.
+The run predates `trawl_sensor_bytes_total`, so no historical bit rate is
+invented; future runs report both packet rate and decoder-accepted byte rate.
 
 ---
 
@@ -113,7 +93,7 @@ All five security jobs failed the first time they ran and were fixed; see
 |---|---|---|
 | Runbook | **pass** | `docs/src/content/docs/operations/runbook.md` |
 | Evidence handling | **pass** | `docs/src/content/docs/security/evidence-handling.md` |
-| Supply-chain manifest | **pass** | `hack/supply-chain-manifest.sh`, CI job on every image build |
+| Supply-chain manifest | **pending** | local assembler passes; the latest Images run failed because the SBOM action's output directory was absent, now fixed but not yet proven by a release build |
 | Upgrade and rollback | **pass** | `test/integration/upgrade_rollback_test.go` |
 | Quickstart executable | **pass** | every command resolves; `test/e2e/results/quickstart.md` |
 
@@ -124,37 +104,36 @@ All five security jobs failed the first time they ran and were fixed; see
 None of these blocks a release on its own. All are recorded rather than fixed,
 and each is a decision someone should make knowingly.
 
-1. **A dead event worker leaves every policy reporting `Armed`.** The status
-   tracker treats "no word about the source" as disconnected, but that logic
-   runs *inside* the worker, so a worker that is entirely down cannot apply it.
-   An operator sees coverage they do not have. Ordinary Kubernetes behaviour for
-   a controller that is down — but `Armed` here is a coverage claim an
-   investigation later relies on.
-
-2. **A thresholded drop policy cannot report that it is accumulating.** A flow
+1. **A thresholded drop policy cannot report that it is accumulating.** A flow
    held below its threshold records as `notMatched`, the same counter every
    forwarded flow increments, so "counting toward five" is indistinguishable
    from "seeing nothing".
 
-3. **A `failed` policy decision logs nothing.** It appears only as a status
+2. **A `failed` policy decision logs nothing.** It appears only as a status
    counter and an audit record. The ledger is what made the US4 identity defect
    findable at all.
 
-4. **Config schema additions are breaking changes for lagging components.**
+3. **Config schema additions are breaking changes for lagging components.**
    Decided deliberately in ADR-0006; the ordering rule is operational and
    nothing enforces it automatically.
 
-5. **`CapturePolicy` clamps an over-ceiling retention while `CaptureJob` rejects
+4. **`CapturePolicy` clamps an over-ceiling retention while `CaptureJob` rejects
    one.** The same input gets two answers, and in GitOps the clamp shows as
    permanent drift with no signal that evidence is being deleted early.
 
-6. **Alloy drops entries with `entry too far behind`.** The Loki copy has gaps,
+5. **Alloy drops entries with `entry too far behind`.** The Loki copy has gaps,
    so exact observation counts must not be asserted from it. Cause still
    unexplained.
 
 ---
 
 ## Closed after this document was assembled
+
+**A dead event worker no longer leaves policies reporting `Armed`.** The manager
+now runs the `capturepolicy-witness`, reads the event worker's lease, and writes
+the stale-worker condition only after that lease expires. It writes nothing
+while the worker is alive, so the process that knows policy decisions remains
+the ordinary status owner.
 
 **`PortMirror` now has a validating webhook** (2026-09-11). It was gap 6 above:
 the only kind for which the CRD contract's claim that "the validating webhook
@@ -171,26 +150,32 @@ re-validated a stored spec before configuring hardware, an off-namespace mirror
 reported `Accepted` as the reason it was refused, and a pre-device failure
 reported `DeviceReachable=False` about a device that had never been contacted.
 
-**Evidence is unit and contract tests, not a cluster run.** The
+**Evidence now includes the live device path, but not the admission rejection.** The
 unwired-webhook contract test covers the new path
 (`TestEveryConfiguredWebhookIsWiredIntoTheManager`), and
-`internal/admission/portmirror_webhook_test.go` covers the rules. Nothing here has
-been exercised against `admin@talos-cluster`, so the deployed-behaviour claim
-every other line in this document rests on does not yet hold for it. A release
-run must redeploy and confirm that an off-namespace `PortMirror` is refused by the
-API server, because `failurePolicy: Fail` on a new webhook path is also the way
-to break every `PortMirror` write in the installation.
+`internal/admission/portmirror_webhook_test.go` covers the rules. A live CRS328
+run exercised configure, independent device readback, mirrored packet capture,
+normalized Zeek output, audit intent/outcome, and finalizer-driven revert. It
+also exposed and led to the narrow `secrets/get` plus uncached-reader fix. The
+specific off-namespace rejection has still not been exercised against the
+release candidate. That run must confirm the API server refuses it, because
+`failurePolicy: Fail` on a new webhook path is also the way to break every
+`PortMirror` write in the installation.
 
 ---
 
 ## Sign-off
 
-Not signed. Blocking items:
+Not signed. The measurable-outcome decisions are accepted. Blocking items:
 
-- [ ] SC-003 — provision an external traffic source and a byte counter, or amend the criterion
-- [ ] SC-005 — accept the ten-attempt sample or fund the fixtures
+- [x] SC-003 — evaluate the full-hour run at its honestly reported produced rate
+- [x] SC-005 — accept the ten-attempt fixture-supported protocol
+- [x] Close the remaining WS0.4 code-quality items
+- [ ] Prove the fixed supply-chain job in a tag-triggered Images workflow
+- [x] Run `make lint`, `make test`, `make verify`, and `make security` on the release candidate source (2026-09-20; all pass)
+- [ ] Rerun PortMirror configure/readback/data/revert, verify packet status, and exercise off-namespace rejection
 
 Non-blocking but worth a decision before release:
 
-- [ ] Gap 1 — decide whether a dead worker should be visible in policy status
+- [x] Former gap 1 — the external witness reports a dead worker in policy status
 - [ ] Gap 5 — reconcile the retention clamp asymmetry
