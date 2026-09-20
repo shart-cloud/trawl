@@ -78,7 +78,7 @@ type NetworkTapReconciler struct {
 // +kubebuilder:rbac:groups=trawl.cloud,resources=networktaps/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments;daemonsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=configmaps;serviceaccounts,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
@@ -351,7 +351,7 @@ func (r *NetworkTapReconciler) updateStatus(ctx context.Context, tap *trawlv1alp
 	tap.Status.ReadyTargets = ready
 	tap.Status.LastPacketTime = lastPacket
 
-	workloadReady, workloadReason := r.workloadReady(ctx, tap)
+	workloadReady, workloadReason, workloadErr := r.workloadReady(ctx, tap)
 
 	status.Set(&tap.Status.Conditions, status.New(status.TypeAccepted,
 		metav1.ConditionTrue, status.ReasonAccepted, "spec accepted", gen))
@@ -361,7 +361,7 @@ func (r *NetworkTapReconciler) updateStatus(ctx context.Context, tap *trawlv1alp
 		fmt.Sprintf("%d eligible node(s)", matched), gen))
 
 	status.Set(&tap.Status.Conditions, status.New(status.TypeWorkloadReady,
-		boolCondition(workloadReady), workloadReasonEnum(workloadReady), workloadReason, gen))
+		workloadReady, workloadReasonEnum(workloadReady), workloadReason, gen))
 
 	analyzersHealthy, analyzerReason := r.analyzersHealthy(tap)
 	status.Set(&tap.Status.Conditions, status.New(status.TypeAnalyzersHealthy,
@@ -380,7 +380,7 @@ func (r *NetworkTapReconciler) updateStatus(ctx context.Context, tap *trawlv1alp
 		}
 		return err
 	}
-	return nil
+	return workloadErr
 }
 
 // summarizeTargets counts healthy targets and finds the most recent packet.
@@ -444,8 +444,10 @@ func (r *NetworkTapReconciler) analyzersHealthy(tap *trawlv1alpha1.NetworkTap) (
 	return metav1.ConditionFalse, sanitize.String(fmt.Sprintf("unhealthy: %v", unhealthy))
 }
 
-// workloadReady reports whether the rendered workload has available replicas.
-func (r *NetworkTapReconciler) workloadReady(ctx context.Context, tap *trawlv1alpha1.NetworkTap) (bool, string) {
+// workloadReady reports whether the rendered workload's current generation has
+// available replicas. An API failure is Unknown: it proves neither readiness
+// nor absence, and the returned error keeps reconciliation retrying.
+func (r *NetworkTapReconciler) workloadReady(ctx context.Context, tap *trawlv1alpha1.NetworkTap) (metav1.ConditionStatus, string, error) {
 	name, _, _, _ := Names(tap)
 	key := client.ObjectKey{Namespace: tap.Namespace, Name: name}
 	reader := r.APIReader
@@ -458,22 +460,44 @@ func (r *NetworkTapReconciler) workloadReady(ctx context.Context, tap *trawlv1al
 	if tap.Spec.Type == trawlv1alpha1.TapSourceMirrorInterface {
 		var d appsv1.Deployment
 		if err := reader.Get(ctx, key, &d); err != nil {
-			return false, "workload not created yet"
+			if apierrors.IsNotFound(err) {
+				return metav1.ConditionFalse, "workload not created yet", nil
+			}
+			return metav1.ConditionUnknown, sanitize.String(fmt.Sprintf("could not read workload: %v", err)), err
+		}
+		if d.Status.ObservedGeneration != d.Generation {
+			return metav1.ConditionFalse,
+				fmt.Sprintf("controller has observed generation %d of %d", d.Status.ObservedGeneration, d.Generation), nil
+		}
+		if d.Status.UpdatedReplicas < d.Status.Replicas {
+			return metav1.ConditionFalse,
+				fmt.Sprintf("%d/%d replicas updated", d.Status.UpdatedReplicas, d.Status.Replicas), nil
 		}
 		if d.Status.ReadyReplicas < 1 {
-			return false, fmt.Sprintf("%d/%d replicas ready", d.Status.ReadyReplicas, d.Status.Replicas)
+			return metav1.ConditionFalse, fmt.Sprintf("%d/%d replicas ready", d.Status.ReadyReplicas, d.Status.Replicas), nil
 		}
-		return true, workloadReadyMessage
+		return metav1.ConditionTrue, workloadReadyMessage, nil
 	}
 
 	var ds appsv1.DaemonSet
 	if err := reader.Get(ctx, key, &ds); err != nil {
-		return false, "workload not created yet"
+		if apierrors.IsNotFound(err) {
+			return metav1.ConditionFalse, "workload not created yet", nil
+		}
+		return metav1.ConditionUnknown, sanitize.String(fmt.Sprintf("could not read workload: %v", err)), err
+	}
+	if ds.Status.ObservedGeneration != ds.Generation {
+		return metav1.ConditionFalse,
+			fmt.Sprintf("controller has observed generation %d of %d", ds.Status.ObservedGeneration, ds.Generation), nil
+	}
+	if ds.Status.UpdatedNumberScheduled < ds.Status.DesiredNumberScheduled {
+		return metav1.ConditionFalse,
+			fmt.Sprintf("%d/%d nodes updated", ds.Status.UpdatedNumberScheduled, ds.Status.DesiredNumberScheduled), nil
 	}
 	if ds.Status.NumberReady < ds.Status.DesiredNumberScheduled || ds.Status.DesiredNumberScheduled == 0 {
-		return false, fmt.Sprintf("%d/%d nodes ready", ds.Status.NumberReady, ds.Status.DesiredNumberScheduled)
+		return metav1.ConditionFalse, fmt.Sprintf("%d/%d nodes ready", ds.Status.NumberReady, ds.Status.DesiredNumberScheduled), nil
 	}
-	return true, workloadReadyMessage
+	return metav1.ConditionTrue, workloadReadyMessage, nil
 }
 
 // derivePhase aggregates the tap's state.
@@ -481,11 +505,11 @@ func (r *NetworkTapReconciler) workloadReady(ctx context.Context, tap *trawlv1al
 // Active is deliberately the strictest outcome: it requires every matched
 // target ready and every analyzer healthy. An analyst reading Active must be
 // able to trust that the evidence is complete, so partial health is Degraded.
-func derivePhase(matched int, ready int32, workloadReady bool, analyzers metav1.ConditionStatus) trawlv1alpha1.TapPhase {
+func derivePhase(matched int, ready int32, workloadReady metav1.ConditionStatus, analyzers metav1.ConditionStatus) trawlv1alpha1.TapPhase {
 	switch {
 	case matched == 0:
 		return trawlv1alpha1.TapPhaseError
-	case !workloadReady, analyzers == metav1.ConditionUnknown, ready == 0:
+	case workloadReady != metav1.ConditionTrue, analyzers == metav1.ConditionUnknown, ready == 0:
 		return trawlv1alpha1.TapPhasePending
 	case int(ready) < matched, analyzers == metav1.ConditionFalse:
 		return trawlv1alpha1.TapPhaseDegraded
@@ -700,11 +724,15 @@ func targetsReason(matched int) string {
 	return status.ReasonNoEligibleTargets
 }
 
-func workloadReasonEnum(ready bool) string {
-	if ready {
+func workloadReasonEnum(ready metav1.ConditionStatus) string {
+	switch ready {
+	case metav1.ConditionTrue:
 		return status.ReasonWorkloadReady
+	case metav1.ConditionUnknown:
+		return status.ReasonDependencyUnavailable
+	default:
+		return status.ReasonWorkloadProgressing
 	}
-	return status.ReasonWorkloadProgressing
 }
 
 func analyzerReasonEnum(s metav1.ConditionStatus) string {

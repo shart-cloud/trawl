@@ -436,6 +436,27 @@ func (a *acceptance) applyCapture(t *testing.T, name string, opts captureOptions
 // already does.
 func (a *acceptance) productionTap(t *testing.T) string {
 	t.Helper()
+	tap, ok := a.activeProductionTap(t)
+	if !ok {
+		t.Skip("no Active NetworkTap to capture through; US3 needs one running")
+	}
+	return tap
+}
+
+// requiredProductionTap is for an opted-in release criterion whose subject is
+// availability itself. Once that operator opt-in is present, no Active tap is
+// a failed claim rather than an inapplicable environment.
+func (a *acceptance) requiredProductionTap(t *testing.T) string {
+	t.Helper()
+	tap, ok := a.activeProductionTap(t)
+	if !ok {
+		t.Fatal("no Active NetworkTap exists, so the required availability check cannot run")
+	}
+	return tap
+}
+
+func (a *acceptance) activeProductionTap(t *testing.T) (string, bool) {
+	t.Helper()
 	out, err := kubectlOut("get", "networktap", "-n", a.namespace,
 		"-o", "jsonpath={range .items[?(@.status.phase=='Active')]}{.metadata.name}{'\\n'}{end}")
 	if err != nil {
@@ -443,11 +464,10 @@ func (a *acceptance) productionTap(t *testing.T) string {
 	}
 	for name := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
 		if name = strings.TrimSpace(name); name != "" {
-			return name
+			return name, true
 		}
 	}
-	t.Skip("no Active NetworkTap to capture through; US3 needs one running")
-	return ""
+	return "", false
 }
 
 func (a *acceptance) captureStatus(t *testing.T, name string) (trawlv1alpha1.CaptureJobStatus, bool) {
@@ -771,6 +791,25 @@ func TestAnInvalidFilterFailsWithoutCapturing(t *testing.T) {
 	}
 	if conditionTrue(status.Conditions, "CaptureStarted") {
 		t.Error("CaptureStarted is True for a filter that never compiled")
+	}
+}
+
+func TestInvalidCaptureBoundsAreRejectedBeforeTheyCanClaimCompletion(t *testing.T) {
+	a := requireAcceptanceCluster(t)
+	name := a.captureName(t, "badbounds")
+	opts := a.defaultCaptureOptions()
+	job := a.buildCapture(t, name, opts)
+	job.Spec.Duration = "0s"
+
+	err := applyObject(job)
+	if err == nil {
+		t.Fatal("a capture with a zero duration was admitted")
+	}
+	if !strings.Contains(err.Error(), "duration must be between 1s and 1h") {
+		t.Fatalf("invalid duration produced a non-actionable error: %v", err)
+	}
+	if _, exists := a.captureStatus(t, name); exists {
+		t.Fatal("the rejected invalid-bounds capture exists and could later claim Completed")
 	}
 }
 
