@@ -57,9 +57,9 @@ configuration, and Grafana dashboards.
 
 - First observation within 15 minutes of applying a valid tap.
 - 95% of valid tap reconciliations reach truthful status within 2 minutes.
-- Less than 1% capture-boundary packet loss at 100 Mb/s for 60 minutes.
+- Less than 1% capture-boundary packet loss for 60 minutes at the sustained rate the installation actually produces, with that rate reported.
 - 95% of valid observations searchable within 30 seconds.
-- At least 18 of 20 timed exact-correlation pivots complete within 3 minutes.
+- All ten timed exact-correlation pivots across the five supported fixture sessions complete within 3 minutes.
 - 95% of manual captures begin within 10 seconds and become downloadable within
   60 seconds after capture ends when storage is healthy.
 - Capture size overshoot no greater than 1 MiB and no duplicate execution within
@@ -83,8 +83,8 @@ configuration, and Grafana dashboards.
   access is required after init containers complete.
 
 **Scale/Scope**: One trusted homelab cluster, tens of nodes and taps rather than
-multi-tenant fleet scale, sustained observed traffic up to the 100 Mb/s reference
-load, three public CRD kinds, four user stories, and the analyzers/observation types
+multi-tenant fleet scale, sustained observed traffic at the rate the installation
+produces, four public CRD kinds, four user stories, and the analyzers/observation types
 listed in the feature specification.
 
 ## Constitution Check

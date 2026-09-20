@@ -16,8 +16,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// T126: the reference-load acceptance, and an honest account of the half of it
-// this installation cannot perform.
+// T126: the reference-load acceptance at the traffic rate the installation
+// actually produces.
 //
 // # SC-002 is measured here in full
 //
@@ -26,38 +26,22 @@ limitations under the License.
 // write to the terminal-or-actionable status. That is a real measurement and it
 // runs.
 //
-// # SC-003's loss clause is measured; its rate clause cannot be
+// # SC-003 is measured at the produced rate
 //
-// "During a 60-minute test at 100 Mb/s sustained observed traffic, active
-// sources remain available and report less than 1% packet loss at the capture
-// boundary."
+// "During a 60-minute test at whatever sustained traffic rate the installation
+// produces, active sources remain available and report less than 1% packet loss
+// at the capture boundary." The evidence must report that measured rate rather
+// than infer a reference load.
 //
 // The loss ratio is measurable and is measured: the sensor exports
 // `trawl_sensor_packets_total` and `trawl_sensor_kernel_drops_total`, and drops
 // over drops-plus-packets is exactly the capture-boundary loss the criterion
 // names. The availability clause is measurable and is measured.
 //
-// The *rate* clause is not, for two independent reasons, and neither is
-// something a test can paper over:
-//
-//  1. **Trawl exports no observed-byte counter.** The telemetry contract has
-//     `trawl_sensor_packets_total` and no bytes equivalent; the only byte metric
-//     in the contract is `trawl_capture_size_bytes`, which is artifact size. So
-//     "100 Mb/s observed" cannot be computed from Trawl's own signals at all. It
-//     would have to come from the node's NIC counters, which are outside what
-//     this suite may read.
-//
-//  2. **The tap observes a physical node interface.** Generating 100 Mb/s across
-//     `eno1` needs traffic that actually leaves the node. An in-cluster load
-//     generator's packets traverse Cilium's veth path and never appear on it, so
-//     the obvious approach measures nothing. A genuine run needs the external,
-//     isolated traffic source the quickstart calls for.
-//
-// So this file measures loss and availability over a sustained window at
-// whatever rate the interface really carries, and records that rate as
-// *unmeasured* rather than asserting a figure it cannot obtain. A test that
-// claimed SC-003 by running for an hour at four megabits would be worse than no
-// test: it would retire the criterion without having exercised it.
+// Packet rate is always computable from the same capture-boundary counter used
+// for loss. The sensor also exports decoder bytes; that is an analyzer-accepted
+// byte rate rather than a wire byte rate, so the output names it as such and it
+// must be read beside kernel drops rather than alone.
 package e2e
 
 import (
@@ -198,8 +182,9 @@ func TestReferenceLoadSC003LossStaysUnderOnePercent(t *testing.T) {
 		t.Skipf("the production tap is not Active, so there is no sustained observation to measure")
 	}
 
-	startPackets, startDrops := a.sensorCounters(t)
-	t.Logf("SC-003 window opening: packets=%d drops=%d", startPackets, startDrops)
+	startPackets, startDrops, startBytes := a.sensorCounters(t, tap)
+	t.Logf("SC-003 window opening: packets=%d drops=%d decoder_bytes=%d",
+		startPackets, startDrops, startBytes)
 
 	deadline := time.Now().Add(window)
 	var lostActive int
@@ -212,10 +197,12 @@ func TestReferenceLoadSC003LossStaysUnderOnePercent(t *testing.T) {
 		}
 	}
 
-	endPackets, endDrops := a.sensorCounters(t)
+	endPackets, endDrops, endBytes := a.sensorCounters(t, tap)
 	packets := endPackets - startPackets
 	drops := endDrops - startDrops
-	t.Logf("SC-003 window closed: packets=%d drops=%d over %s", packets, drops, window)
+	bytes := endBytes - startBytes
+	t.Logf("SC-003 window closed: packets=%d drops=%d decoder_bytes=%d over %s",
+		packets, drops, bytes, window)
 
 	if packets == 0 {
 		t.Fatalf("no packets were observed over %s, so a zero loss ratio would mean nothing", window)
@@ -224,20 +211,21 @@ func TestReferenceLoadSC003LossStaysUnderOnePercent(t *testing.T) {
 	// Loss at the capture boundary: what the kernel dropped before userspace
 	// drained the ring, over everything that reached the boundary.
 	loss := float64(drops) / float64(drops+packets)
-	t.Logf("SC-003: observed=%d dropped=%d loss=%.4f%% budget=%.2f%% availability=%s",
-		packets, drops, 100*loss, 100*sc003LossBudget,
+	packetRate := float64(packets) / window.Seconds()
+	decoderBitRate := float64(bytes) * 8 / window.Seconds()
+	t.Logf("SC-003: observed=%d dropped=%d loss=%.4f%% budget=%.2f%% "+
+		"measured_packet_rate=%.2f packets/s measured_decoder_rate=%.2f bit/s availability=%s",
+		packets, drops, 100*loss, 100*sc003LossBudget, packetRate, decoderBitRate,
 		map[bool]string{true: "held", false: "LOST"}[lostActive == 0])
 
 	if loss >= sc003LossBudget {
 		t.Errorf("capture-boundary loss was %.4f%%, over SC-003's %.2f%%", 100*loss, 100*sc003LossBudget)
 	}
 
-	// Said in the run's own output so evidence transcribed from it cannot
-	// silently become a claim that SC-003 was met.
-	t.Logf("NOTE: the rate clause of SC-003 is NOT verified by this run. Trawl exports no " +
-		"observed-byte counter, so throughput cannot be computed from its telemetry, and the tap " +
-		"observes a physical node interface that in-cluster load never traverses. This measures " +
-		"loss and availability at whatever rate the interface actually carried.")
+	// Said in the run's own output so an ambient run cannot silently become a
+	// claim that a reference load was generated.
+	t.Logf("SC-003 is evaluated at the measured produced rate above; this run makes no claim " +
+		"that the installation generated 100 Mb/s or any other unmeasured wire rate.")
 }
 
 // sensorCounters reads the sensor's packet and drop totals from the metrics the
@@ -255,11 +243,11 @@ func TestReferenceLoadSC003LossStaysUnderOnePercent(t *testing.T) {
 // on the host network and :9100 is node_exporter's. It is read off the pod's own
 // arguments rather than recomputed, because a spec that recomputed it would keep
 // passing against a sensor listening somewhere else.
-func (a *acceptance) sensorCounters(t *testing.T) (packets, drops int64) {
+func (a *acceptance) sensorCounters(t *testing.T, tap string) (packets, drops, bytes int64) {
 	t.Helper()
 
 	pods, err := kubectlOut("get", "pods", "-n", a.namespace,
-		"-l", "app.kubernetes.io/component=sensor",
+		"-l", "app.kubernetes.io/component=sensor,trawl.cloud/tap="+tap,
 		"-o", "jsonpath={range .items[*]}{.metadata.name}{\" \"}{end}")
 	if err != nil {
 		t.Fatalf("listing sensor pods: %v: %s", err, pods)
@@ -283,8 +271,9 @@ func (a *acceptance) sensorCounters(t *testing.T) (packets, drops int64) {
 		body := a.scrapeSensor(t, pod, port, 32000+i)
 		packets += metricValue(t, body, "trawl_sensor_packets_total")
 		drops += metricValue(t, body, "trawl_sensor_kernel_drops_total")
+		bytes += metricValue(t, body, "trawl_sensor_bytes_total")
 	}
-	return packets, drops
+	return packets, drops, bytes
 }
 
 // scrapeSensor port-forwards one sensor's probe port and returns its metrics.
@@ -335,8 +324,9 @@ func probeAddrPort(args string) string {
 func metricValue(t *testing.T, body, name string) int64 {
 	t.Helper()
 	var total int64
+	var found bool
 	for line := range strings.SplitSeq(body, "\n") {
-		if !strings.HasPrefix(line, name) {
+		if !strings.HasPrefix(line, name+"{") && !strings.HasPrefix(line, name+" ") {
 			continue
 		}
 		fields := strings.Fields(line)
@@ -347,7 +337,11 @@ func metricValue(t *testing.T, body, name string) int64 {
 		if err != nil {
 			continue
 		}
+		found = true
 		total += int64(v)
+	}
+	if !found {
+		t.Fatalf("required metric %s is absent from the sensor exposition", name)
 	}
 	return total
 }

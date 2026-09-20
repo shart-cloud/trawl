@@ -133,12 +133,13 @@ than its documentation. Suricata reports bytes from its decoder alone, so
 `packetReading`'s kernel-first rule has no byte analogue and the counter carries
 that caveat.
 
-**Still open:** this does not by itself make SC-003 verifiable, because the
-second half of that gap is the absence of a traffic source that traverses the
-tapped interface at the reference rate. That is a decision (acquire a generator,
-or restate the criterion), not an implementation. See open question 3.
+**Release decision accepted:** SC-003 now measures a full hour at whatever
+sustained rate the installation produces and requires the evidence to report
+that rate. The existing run remains exactly what it was—roughly 72 packets/s,
+not a 100 Mb/s test—and future runs also report decoder-accepted byte rate from
+the counter above.
 
-### 0.4 The smaller ones — **open**
+### 0.4 The smaller ones — **closed**
 
 - `requireReachableObjectStore` needs a host-level `/etc/hosts` entry, and six
   e2e specs skipped silently without it — every download path, the expiry
@@ -197,13 +198,37 @@ or restate the criterion), not an implementation. See open question 3.
   about a device that had never been contacted, and a reconciler that never
   re-validated a stored spec before configuring hardware. No mutating webhook,
   deliberately: the type's only default is structural.
-- Known code issues from the code-quality assessment: ~~hand-rolled `itoa32`
-  with a `MinInt32` edge case in `correlation.go`~~ (closed — deleted in favour
-  of `strconv`, with a test that pins every extreme of the range); forward-defined status conditions
-  for unimplemented CRDs; informer cache lag in `workloadReady`;
-  get-then-update on owned resources instead of server-side apply;
-  `sourceOf` nil dereference risk after re-validation; controller unit coverage
-  leaning on e2e; misassociated godoc on `Counters()`.
+- Known code issues from the code-quality assessment:
+  - ~~Hand-rolled `itoa32` with a `MinInt32` edge case in `correlation.go`.~~
+    **Closed** — deleted in favour of `strconv`, with a test that pins every
+    extreme of the range.
+  - ~~Forward-defined status conditions for unimplemented CRDs.~~ **Closed by
+    audit** — every condition type in `internal/status` has a current production
+    writer across the four implemented CRDs; the stale `CaptureJob`/`PortMirror`
+    grouping comment was corrected rather than leaving a future-looking block.
+  - ~~Informer cache lag in `workloadReady`.~~ **Closed** — the manager supplies
+    its uncached API reader for the readiness read. The unit regression keeps a
+    stale Deployment in the cached client and the current one in the direct
+    reader.
+  - ~~Get-then-update on owned resources.~~ **Closed** — owned resources use
+    server-side apply under `trawl-networktap-controller`; envtest proves a field
+    owned elsewhere survives reconciliation.
+  - ~~`sourceOf` nil dereference risk after re-validation.~~ **Closed** — the
+    discriminated-union helper returns a safe value for an absent source, while
+    reconcile still rejects the object as `InvalidSpec` before rendering. The
+    unit regression reaches the old panic seam directly.
+  - ~~Controller unit coverage leaning on e2e.~~ **Closed for the assessed
+    gap** — phase derivation, target health, stale-heartbeat summarization,
+    uncached readiness, and invalid-source handling now have unit tests; API
+    ownership and status-subresource behaviour remain in envtest where those
+    semantics belong.
+  - ~~Misassociated godoc on `Counters()`.~~ **Closed** — `LastRecord` and
+    `Counters` now each describe the method immediately below them.
+
+The remaining release work is validation rather than an unimplemented 0.4
+item: run the complete gates, prove the tag-only image workflow and SBOM output,
+then repeat the live PortMirror exercise against the release candidate,
+including packet status and off-namespace rejection.
 
 ## Workstream 1 — The observation time model
 
@@ -715,13 +740,13 @@ Following ADR-0001 through 0007, the next numbers:
 2. **Does Suricata's unix-socket runmode retain flow state across submitted pcap
    files in 8.x?** If yes, boundary splitting is Zeek-only and the offline
    design simplifies. Test this early; it changes the design.
-3. **SC-003.** Acquire a traffic generator that traverses the tapped interface
-   at the reference rate, or restate the criterion as something this
-   architecture can actually measure? A criterion that cannot be verified should
-   not survive into the next release as though it can.
-4. **SC-005 fixtures.** Nine more hand-built analyzer fixtures carrying both a
-   Community ID and a Suricata alert, or a restated protocol? Currently one
-   session supports the full round trip.
+3. **SC-003 — resolved for the alpha.** The criterion uses the installation's
+   honestly reported produced rate. The 72 packets/s evidence stays labelled as
+   ambient traffic and is not promoted into a 100 Mb/s claim.
+4. **SC-005 fixtures — resolved for the alpha.** The criterion names the ten
+   bidirectional Community ID pivots the five exactly-correlatable fixtures
+   support. Only one fixture supports the complete signature/protocol round
+   trip, and the evidence continues to say so.
 5. **Cost model for cloud mirroring.** Is spend visibility in scope for
    `PortMirror` status, or explicitly out of scope?
 6. **Who is this for?** Coursework depth, portfolio and conference artifact, or
