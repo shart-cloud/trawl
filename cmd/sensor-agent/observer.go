@@ -43,6 +43,7 @@ func (o *analyzerObserver) Healthy() (bool, string) {
 	return true, ""
 }
 
+// LastRecord reports the newest record time across this analyzer's tailers.
 func (o *analyzerObserver) LastRecord() (time.Time, bool) {
 	var latest time.Time
 	var found bool
@@ -54,6 +55,7 @@ func (o *analyzerObserver) LastRecord() (time.Time, bool) {
 	return latest, found
 }
 
+// Counters returns the sum of this analyzer's per-file tailer outcomes.
 func (o *analyzerObserver) Counters() sensor.Counters {
 	var total sensor.Counters
 	for _, t := range o.tailers {
