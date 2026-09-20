@@ -165,21 +165,15 @@ func TestReferenceLoadSC003LossStaysUnderOnePercent(t *testing.T) {
 			"the configured window")
 	}
 
-	// Default one hour, overridable so the spec can be exercised quickly
-	// without pretending a short run satisfies SC-003.
-	window := time.Hour
-	if raw := os.Getenv("TRAWL_E2E_LOAD_WINDOW"); raw != "" {
-		parsed, err := time.ParseDuration(raw)
-		if err != nil {
-			t.Fatalf("TRAWL_E2E_LOAD_WINDOW=%q is not a duration: %v", raw, err)
-		}
-		window = parsed
-	}
+	// This is the criterion, not a smoke test. A shorter configurable window
+	// once let the opted-in release gate pass without measuring the required
+	// hour, even though its log cautioned against interpreting that as SC-003.
+	const window = time.Hour
 
-	tap := a.productionTap(t)
+	tap := a.requiredProductionTap(t)
 	before, ok := a.tapStatus(t, tap)
 	if !ok || !isActive(before) {
-		t.Skipf("the production tap is not Active, so there is no sustained observation to measure")
+		t.Fatalf("the production tap is not Active, so SC-003 availability cannot be verified")
 	}
 
 	startPackets, startDrops, startBytes := a.sensorCounters(t, tap)
@@ -222,8 +216,8 @@ func TestReferenceLoadSC003LossStaysUnderOnePercent(t *testing.T) {
 		t.Errorf("capture-boundary loss was %.4f%%, over SC-003's %.2f%%", 100*loss, 100*sc003LossBudget)
 	}
 
-	// Said in the run's own output so an ambient run cannot silently become a
-	// claim that a reference load was generated.
+	// Said in the run's own output so the alpha's produced-rate reference load
+	// cannot silently become a claim about a fixed wire rate that was not made.
 	t.Logf("SC-003 is evaluated at the measured produced rate above; this run makes no claim " +
 		"that the installation generated 100 Mb/s or any other unmeasured wire rate.")
 }

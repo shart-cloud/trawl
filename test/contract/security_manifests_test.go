@@ -46,12 +46,14 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
 	admissionv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 )
 
@@ -206,6 +208,49 @@ func TestEveryServiceAccountWithoutABindingRefusesATokenMount(t *testing.T) {
 				"token; set automountServiceAccountToken: false, or bind it and say what it needs",
 				name)
 		}
+	}
+}
+
+func TestDeviceCredentialsAreReadableOnlyThroughANamespacedGetRole(t *testing.T) {
+	// PortMirror names its credential dynamically, so resourceNames cannot
+	// narrow this grant. Namespace scope and a single get verb are the remaining
+	// enforceable boundary. In particular, the generated manager ClusterRole
+	// must not inherit Secret access merely because that is where controller-gen
+	// normally collects markers.
+	rendered := renderDefault(t)
+
+	secretRoles := 0
+	for _, doc := range manifestDocs(rendered) {
+		kind := docKind(doc)
+		if kind != "Role" && kind != "ClusterRole" {
+			continue
+		}
+		var role struct {
+			Metadata metav1.ObjectMeta   `json:"metadata"`
+			Rules    []rbacv1.PolicyRule `json:"rules"`
+		}
+		if err := yaml.Unmarshal([]byte(doc), &role); err != nil {
+			t.Fatalf("decoding %s: %v", kind, err)
+		}
+		for _, rule := range role.Rules {
+			if !slices.Contains(rule.Resources, "secrets") {
+				continue
+			}
+			if kind == "ClusterRole" {
+				t.Errorf("ClusterRole %q can read Secrets cluster-wide", role.Metadata.Name)
+				continue
+			}
+			secretRoles++
+			if role.Metadata.Namespace != "trawl-system" {
+				t.Errorf("Secret Role %q is in namespace %q, want trawl-system", role.Metadata.Name, role.Metadata.Namespace)
+			}
+			if !slices.Equal(rule.Verbs, []string{"get"}) {
+				t.Errorf("Secret Role %q verbs = %v, want only get", role.Metadata.Name, rule.Verbs)
+			}
+		}
+	}
+	if secretRoles != 1 {
+		t.Errorf("rendered install has %d namespaced Secret grants, want exactly one", secretRoles)
 	}
 }
 

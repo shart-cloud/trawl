@@ -869,6 +869,25 @@ func TestATapOnAMissingInterfaceNeverReportsActive(t *testing.T) {
 		condition(t, status, "WorkloadReady").Message)
 }
 
+func TestAnInvalidSourceDefinitionIsRejectedRatherThanBecomingAHealthClaim(t *testing.T) {
+	a := requireAcceptanceCluster(t)
+	name := a.tapName(t)
+	tap := a.buildTap(name, defaultTapOptions())
+	tap.Spec.NodeInterface = nil
+	t.Cleanup(func() { _ = kubectl("delete", "networktap", name, "-n", a.namespace, "--ignore-not-found") })
+
+	err := applyObject(tap)
+	if err == nil {
+		t.Fatal("a NodeInterface tap without its source definition was admitted")
+	}
+	if !strings.Contains(err.Error(), "type NodeInterface requires nodeInterface") {
+		t.Fatalf("invalid source produced a non-actionable error: %v", err)
+	}
+	if _, exists := a.tapStatus(t, name); exists {
+		t.Fatal("the rejected invalid-source tap exists and could later claim Active")
+	}
+}
+
 // A target that stops matching is reported as gone, and returns when it does.
 //
 // This is the disappearing-target and recovery pair. It moves a label rather

@@ -395,6 +395,9 @@ tests with real Suricata, Zeek, dumpcap, Loki-compatible ingestion, Hubble gRPC
 fixtures, and separate MinIO artifact/audit buckets; and a disposable representative
 Kubernetes cluster for the four user stories, restart recovery, failure isolation,
 authorization, audit replay, retention, and the produced-rate / packet-loss goals.
+For the alpha, the full-hour measured sustained rate is the active specification's
+reference load; evidence cannot relabel it as a fixed wire rate the installation
+did not generate.
 
 Generated CRDs, RBAC, examples, dashboards, and documentation are regenerated and
 diff-checked in CI. Tests use synthetic traffic and non-sensitive fixtures only.

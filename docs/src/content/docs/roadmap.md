@@ -706,7 +706,7 @@ WS5  Cloud fabric providers  ──── independent, needs only WS0.2
 
 **Recommended order:**
 
-1. **WS0** — carried gaps. 0.1, 0.2 and 0.3 are closed; 0.4 remains.
+1. **WS0** — carried gaps. 0.1 through 0.4 are closed.
 2. **WS1** — event time versus ingest time. Small now, a migration later.
 3. **WS2** — ring buffer and AnalysisJob as one increment. The headline.
 4. **WS3** — storage interface revision, then the second backend.

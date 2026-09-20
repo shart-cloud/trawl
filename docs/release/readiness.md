@@ -1,11 +1,13 @@
 # Trawl release readiness
 
-**Status: not ready.** All nine measurable outcomes now have accepted evidence:
-SC-003 is evaluated at the honestly reported rate the installation produced,
-and SC-005's criterion is the ten-attempt sample the fixtures actually support.
-The WS0.4 implementation and complete local gates passed on 2026-09-20. The
-release remains blocked on a green tag-triggered supply-chain workflow and
-release-candidate cluster validation.
+**Status: not ready.** Ten of eleven measurable outcomes have accepted evidence;
+SC-011's existing failure-path evidence is incomplete until the new invalid-source
+and invalid-bounds acceptance checks run against the release candidate. SC-003 is
+evaluated at the honestly reported rate the installation produced, and SC-005's
+criterion is the ten-attempt sample the fixtures actually support.
+The WS0.4 implementation and its review corrections passed the complete local
+gates on 2026-09-20. The release remains blocked on a green tag-triggered
+supply-chain workflow and release-candidate cluster validation.
 
 Assembled 2026-09-11 against `admin@talos-cluster` (single node `talos-node`,
 Kubernetes v1.35.5, Cilium/Hubble 1.18.11), on the build merged as `96ec4f1`.
@@ -31,6 +33,8 @@ nicer font.
 | SC-007 | Captures stop at their bounds | **pass** | `test/e2e/results/manual-capture.md` |
 | SC-008 | Trigger dedup, cooldown and hourly limits hold | **pass** | `test/e2e/results/automatic-capture.md` |
 | SC-009 | Restart and single-component failure converge | **pass** | `test/e2e/results/failure-isolation.md` |
+| SC-010 | Expired artifacts are refused at the deadline and removed within 24h | **pass** — refused and absent within 15s | `test/e2e/results/manual-capture.md`, `test/e2e/results/retention.md` |
+| SC-011 | Invalid inputs and unavailable dependencies never claim false health | **partial** — existing filter, target, interface, and dependency paths pass; invalid source and bounds checks await the release-candidate run | `test/e2e/results/manual-capture.md`, `test/e2e/results/failure-isolation.md`, `test/e2e/results/t092-security-review.md` |
 
 ### SC-005's accepted sample is bounded by the fixtures
 
@@ -65,7 +69,7 @@ invented; future runs report both packet rate and decoder-accepted byte rate.
 | II. Declarative control and truthful state | **pass, one caveat** | conditions and phases asserted throughout; see "Known gaps" |
 | III. Evidence integrity and least privilege | **pass** | `test/contract/security_manifests_test.go`, `test/integration/audit_test.go` |
 | IV. Observable and correlatable by design | **pass** | SC-004 and SC-005 above |
-| V. Verification at every boundary | **pass** | contract, integration, acceptance and investigation suites all run in CI or are gated and executed |
+| V. Verification at every boundary | **partial** | local contract and integration gates pass; the new SC-011 acceptance checks and release-candidate cluster validation remain open |
 | VI. Small, phased, reversible delivery | **pass** | `make undeploy` leaves evidence intact (T122); CRD removal is deliberate |
 
 ---
@@ -171,8 +175,9 @@ Not signed. The measurable-outcome decisions are accepted. Blocking items:
 - [x] SC-003 — evaluate the full-hour run at its honestly reported produced rate
 - [x] SC-005 — accept the ten-attempt fixture-supported protocol
 - [x] Close the remaining WS0.4 code-quality items
+- [ ] Run the invalid-source and invalid-bounds SC-011 checks against the release candidate
 - [ ] Prove the fixed supply-chain job in a tag-triggered Images workflow
-- [x] Run `make lint`, `make test`, `make verify`, and `make security` on the release candidate source (2026-09-20; all pass)
+- [x] Rerun `make lint`, `make test`, `make verify`, and `make security` after review corrections (2026-09-20; all pass)
 - [ ] Rerun PortMirror configure/readback/data/revert, verify packet status, and exercise off-namespace rejection
 
 Non-blocking but worth a decision before release:
