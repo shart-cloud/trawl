@@ -257,6 +257,7 @@ jobs:
     if: always() && needs.digests.result == 'success'
     permissions:
       contents: read
+      packages: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -271,25 +272,52 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: image-digests
-          path: ci-digests
+          path: ${{ runner.temp }}/trawl-image-digests
 
-      - name: Create the supply-chain output directory
-        run: mkdir -p dist/supply-chain
-
-      - uses: anchore/sbom-action@f325610c9f50a54015d37c8d16cb3b0e2c8f4de0 # v0.18.0
+      - uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
         with:
-          path: .
-          format: spdx-json
-          output-file: dist/supply-chain/source.spdx.json
-          upload-artifact: false
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: anchore/sbom-action/download-syft@f325610c9f50a54015d37c8d16cb3b0e2c8f4de0 # v0.18.0
+        id: syft
+
+      - name: Export the committed source tree
+        run: |
+          mkdir -p "${{ runner.temp }}/trawl-source"
+          git archive HEAD | tar -x -C "${{ runner.temp }}/trawl-source"
+
+      - name: Generate source and image SBOMs
+        env:
+          DIGESTS_FILE: ${{ runner.temp }}/trawl-image-digests/digests.txt
+          OUT_DIR: ${{ runner.temp }}/trawl-supply-chain
+          SOURCE_DIR: ${{ runner.temp }}/trawl-source
+          SYFT: ${{ steps.syft.outputs.cmd }}
+        run: hack/generate-sboms.sh
 
       - name: Assemble the manifest
-        run: DIGESTS_FILE=ci-digests/digests.txt hack/supply-chain-manifest.sh
+        env:
+          DIGESTS_FILE: ${{ runner.temp }}/trawl-image-digests/digests.txt
+          OUT_DIR: ${{ runner.temp }}/trawl-supply-chain
+        run: hack/supply-chain-manifest.sh
+
+      - name: Refuse an incomplete supply-chain record
+        env:
+          MANIFEST: ${{ runner.temp }}/trawl-supply-chain/manifest.json
+        run: >-
+          jq -e
+          '.build.cleanTree == true and
+           .imageDigests.status == "present" and
+           .goVulnerabilities.status == "present" and
+           .sbom.status == "present" and
+           .provenance.status == "present"'
+          "$MANIFEST" >/dev/null
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: supply-chain-manifest
-          path: dist/supply-chain/
+          path: ${{ runner.temp }}/trawl-supply-chain/
           if-no-files-found: error
 
   # Zeek and Suricata are compiled from verified upstream source, so these are
@@ -374,13 +402,20 @@ jobs:
           set -euo pipefail
           version="${{ needs.meta.outputs.version }}"
           : > digests.txt
+          missing=0
           for image in controller-manager sensor-agent event-worker capture-runner \
-                       capture-reporter content-init zeek suricata; do
+                       capture-reporter artifact-gateway content-init zeek suricata; do
             ref="${REGISTRY}/${NAMESPACE}/${image}:${version}"
-            if digest="$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"')"; then
+            digest="$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"')" || digest=""
+            if [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
               echo "${image}=${REGISTRY}/${NAMESPACE}/${image}@${digest}" | tee -a digests.txt
-            else
+            elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && \
+                 [ "${{ inputs.analyzers }}" != "true" ] && \
+                 { [ "$image" = "zeek" ] || [ "$image" = "suricata" ]; }; then
               echo "${image}=<not built in this run>" | tee -a digests.txt
+            else
+              echo "::error::${ref} was required but its digest did not resolve"
+              missing=1
             fi
           done
           {
@@ -390,6 +425,7 @@ jobs:
             cat digests.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          exit "$missing"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
