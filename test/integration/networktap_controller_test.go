@@ -28,6 +28,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -64,11 +65,12 @@ func reconcilerFor(t *testing.T, namespace string) *controller.NetworkTapReconci
 		},
 	}
 	return &controller.NetworkTapReconciler{
-		Client:   Client(),
-		Scheme:   Scheme(),
-		Config:   cfg,
-		Renderer: &controller.WorkloadRenderer{Config: cfg},
-		Metrics:  telemetry.NewMetrics(),
+		Client:    Client(),
+		APIReader: Client(),
+		Scheme:    Scheme(),
+		Config:    cfg,
+		Renderer:  &controller.WorkloadRenderer{Config: cfg},
+		Metrics:   telemetry.NewMetrics(),
 	}
 }
 
@@ -209,6 +211,48 @@ func TestReconcileIsIdempotent(t *testing.T) {
 	}
 	if first.UID != third.UID {
 		t.Error("the deployment was replaced rather than updated in place")
+	}
+}
+
+func TestReconcilePreservesFieldsOwnedBySomeoneElse(t *testing.T) {
+	// A get-then-Update reconciliation replaced the entire object read before
+	// rendering. An admission injector or another controller could add a field
+	// after that read and have it silently erased. Server-side apply must leave
+	// fields outside this controller's ownership alone.
+	ns := NewNamespace(t)
+	createNode(t, "recon-node-fields", map[string]string{"trawl-test": "recon-fields"})
+
+	tap := mirrorTap(ns, "preserves-foreign-fields")
+	tap.Spec.MirrorInterface.NodeSelector = metav1.LabelSelector{
+		MatchLabels: map[string]string{"trawl-test": "recon-fields"},
+	}
+	if err := Client().Create(t.Context(), tap); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	r := reconcilerFor(t, ns)
+	reconcile(t, r, tap)
+
+	name, _, _, _ := controller.Names(reload(t, tap))
+	var deployment appsv1.Deployment
+	key := client.ObjectKey{Namespace: ns, Name: name}
+	if err := Client().Get(t.Context(), key, &deployment); err != nil {
+		t.Fatalf("get deployment: %v", err)
+	}
+	if deployment.Annotations == nil {
+		deployment.Annotations = map[string]string{}
+	}
+	deployment.Annotations["example.test/injected"] = "keep-me"
+	if err := Client().Update(t.Context(), &deployment); err != nil {
+		t.Fatalf("injecting a foreign annotation: %v", err)
+	}
+
+	reconcile(t, r, reload(t, tap))
+	if err := Client().Get(t.Context(), key, &deployment); err != nil {
+		t.Fatalf("reload deployment: %v", err)
+	}
+	if got := deployment.Annotations["example.test/injected"]; got != "keep-me" {
+		t.Errorf("foreign annotation = %q, want keep-me", got)
 	}
 }
 
@@ -686,9 +730,9 @@ func TestAnInvalidTapDoesNotOccupyAProbePort(t *testing.T) {
 // status was written.
 type faultyClient struct {
 	client.Client
-	failList   func(client.ObjectList) error
-	failCreate func(client.Object) error
-	afterGet   func(client.Object)
+	failList  func(client.ObjectList) error
+	failApply func() error
+	afterGet  func(client.Object)
 }
 
 // Get can rewrite what the apiserver returned, which is the only way to put an
@@ -715,13 +759,15 @@ func (c *faultyClient) List(ctx context.Context, list client.ObjectList, opts ..
 	return c.Client.List(ctx, list, opts...)
 }
 
-func (c *faultyClient) Create(ctx context.Context, obj client.Object, opts ...client.CreateOption) error {
-	if c.failCreate != nil {
-		if err := c.failCreate(obj); err != nil {
+func (c *faultyClient) Apply(
+	ctx context.Context, obj runtime.ApplyConfiguration, opts ...client.ApplyOption,
+) error {
+	if c.failApply != nil {
+		if err := c.failApply(); err != nil {
 			return err
 		}
 	}
-	return c.Client.Create(ctx, obj, opts...)
+	return c.Client.Apply(ctx, obj, opts...)
 }
 
 func TestATapWhoseNodesCannotBeListedSaysSoInStatus(t *testing.T) {
@@ -788,12 +834,8 @@ func TestATapWhoseWorkloadCannotBeAppliedSaysSoInStatus(t *testing.T) {
 	}
 
 	r := reconcilerFor(t, ns)
-	r.Client = &faultyClient{Client: Client(), failCreate: func(obj client.Object) error {
-		switch obj.(type) {
-		case *appsv1.DaemonSet, *appsv1.Deployment:
-			return fmt.Errorf("the apps API is unavailable")
-		}
-		return nil
+	r.Client = &faultyClient{Client: Client(), failApply: func() error {
+		return fmt.Errorf("the apps API is unavailable")
 	}}
 
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{

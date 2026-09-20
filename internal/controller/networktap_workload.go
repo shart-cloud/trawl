@@ -206,11 +206,21 @@ func sourceTypeLabel(tap *trawlv1alpha1.NetworkTap) string {
 	return telemetry.SourceTypeNodeInterface
 }
 
-func sourceOf(tap *trawlv1alpha1.NetworkTap) *trawlv1alpha1.InterfaceSource {
+func sourceOf(tap *trawlv1alpha1.NetworkTap) trawlv1alpha1.InterfaceSource {
+	var source *trawlv1alpha1.InterfaceSource
 	if tap.Spec.Type == trawlv1alpha1.TapSourceMirrorInterface {
-		return tap.Spec.MirrorInterface
+		source = tap.Spec.MirrorInterface
+	} else {
+		source = tap.Spec.NodeInterface
 	}
-	return tap.Spec.NodeInterface
+	if source == nil {
+		// Reconcile validates the discriminated union before rendering or
+		// selecting nodes. Returning the zero value as a final defence keeps a
+		// future caller from turning an invalid restored object into a process
+		// crash before that validation can report InvalidSpec.
+		return trawlv1alpha1.InterfaceSource{}
+	}
+	return *source
 }
 
 // sensorProbePort is the node port this tap's sensor serves probes and metrics
@@ -274,7 +284,7 @@ func (r *WorkloadRenderer) PodSpec(tap *trawlv1alpha1.NetworkTap) corev1.PodSpec
 		AutomountServiceAccountToken: ptr.To(false),
 		Volumes:                      r.volumes(configMapName),
 		InitContainers:               r.contentInitContainers(tap),
-		Containers:                   r.containers(tap, src),
+		Containers:                   r.containers(tap, &src),
 		NodeSelector:                 nil,
 		Tolerations: []corev1.Toleration{{
 			// A sensor on a tainted node is still expected to observe it;

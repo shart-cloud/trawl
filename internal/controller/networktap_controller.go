@@ -25,10 +25,12 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -48,6 +50,11 @@ import (
 // disappears.
 const finalizer = "trawl.cloud/networktap-cleanup"
 
+const (
+	ownedResourceFieldOwner = "trawl-networktap-controller"
+	workloadReadyMessage    = "workload ready"
+)
+
 // staleHeartbeat is the shared target-eligibility window. It is defined in
 // internal/capture because the policy engine decides the same question with it.
 const staleHeartbeat = capture.StaleHeartbeat
@@ -55,10 +62,15 @@ const staleHeartbeat = capture.StaleHeartbeat
 // NetworkTapReconciler reconciles NetworkTap resources.
 type NetworkTapReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	Config   *config.Config
-	Renderer *WorkloadRenderer
-	Metrics  *telemetry.Metrics
+	// APIReader bypasses controller-runtime's informer cache for the workload
+	// status read that backs WorkloadReady. Reconciliation has just applied that
+	// workload, so a cached read can lag the API server and publish an answer
+	// about an older resource version.
+	APIReader client.Reader
+	Scheme    *runtime.Scheme
+	Config    *config.Config
+	Renderer  *WorkloadRenderer
+	Metrics   *telemetry.Metrics
 }
 
 // +kubebuilder:rbac:groups=trawl.cloud,resources=networktaps,verbs=get;list;watch;update;patch
@@ -73,9 +85,10 @@ type NetworkTapReconciler struct {
 
 // Reconcile converges a tap's workloads and status.
 //
-// It is idempotent and safe to retry: every write is a create-or-update keyed by
-// a deterministic name, and status is derived from observation rather than
-// accumulated, so a repeat pass reaches the same result.
+// It is idempotent and safe to retry: every owned-resource write is a
+// server-side apply keyed by a deterministic name, and status is derived from
+// observation rather than accumulated, so a repeat pass reaches the same
+// result.
 func (r *NetworkTapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	start := time.Now()
 	result := telemetry.ReconcileSuccess
@@ -295,33 +308,33 @@ func (r *NetworkTapReconciler) applyOwnedResources(ctx context.Context, tap *tra
 	}
 }
 
-// applyOwned creates the object or updates it in place, preserving ownership.
+// applyOwned declares the fields the NetworkTap controller owns.
+//
+// Server-side apply matters here for more than convenience. A whole-object
+// Update makes the value read before reconciliation authoritative for fields
+// this controller does not own, so an admission injector or another controller
+// can lose a concurrent annotation or default. Field ownership lets those
+// changes coexist while this controller remains authoritative for the rendered
+// workload and its owner reference.
 func (r *NetworkTapReconciler) applyOwned(ctx context.Context, tap *trawlv1alpha1.NetworkTap, desired client.Object) error {
 	if err := controllerutil.SetControllerReference(tap, desired, r.Scheme); err != nil {
 		return sanitize.Errorf("setting owner reference: %v", err)
 	}
-
-	existing, ok := desired.DeepCopyObject().(client.Object)
-	if !ok {
-		return fmt.Errorf("unexpected object type %T", desired)
+	gvk, err := apiutil.GVKForObject(desired, r.Scheme)
+	if err != nil {
+		return sanitize.Errorf("resolving owned resource kind: %v", err)
 	}
-	err := r.Get(ctx, client.ObjectKeyFromObject(desired), existing)
-	switch {
-	case apierrors.IsNotFound(err):
-		if err := r.Create(ctx, desired); err != nil && !apierrors.IsAlreadyExists(err) {
-			return sanitize.Errorf("creating owned resource: %v", err)
-		}
-		return nil
-	case err != nil:
-		return sanitize.Errorf("reading owned resource: %v", err)
+	// Apply patches are encoded from the object itself rather than from the
+	// request URL, so the type must be explicit even when the Go value is known.
+	desired.GetObjectKind().SetGroupVersionKind(gvk)
+	content, err := runtime.DefaultUnstructuredConverter.ToUnstructured(desired)
+	if err != nil {
+		return sanitize.Errorf("encoding owned resource for apply: %v", err)
 	}
-
-	// Carry the resourceVersion so the update is a compare-and-swap: a
-	// concurrent writer causes a conflict and a retry rather than a silent
-	// overwrite.
-	desired.SetResourceVersion(existing.GetResourceVersion())
-	if err := r.Update(ctx, desired); err != nil {
-		return sanitize.Errorf("updating owned resource: %v", err)
+	apply := client.ApplyConfigurationFromUnstructured(&unstructured.Unstructured{Object: content})
+	if err := r.Apply(ctx, apply,
+		client.FieldOwner(ownedResourceFieldOwner), client.ForceOwnership); err != nil {
+		return sanitize.Errorf("applying owned resource: %v", err)
 	}
 	return nil
 }
@@ -435,26 +448,32 @@ func (r *NetworkTapReconciler) analyzersHealthy(tap *trawlv1alpha1.NetworkTap) (
 func (r *NetworkTapReconciler) workloadReady(ctx context.Context, tap *trawlv1alpha1.NetworkTap) (bool, string) {
 	name, _, _, _ := Names(tap)
 	key := client.ObjectKey{Namespace: tap.Namespace, Name: name}
+	reader := r.APIReader
+	if reader == nil {
+		// Unit tests and direct callers do not necessarily have a manager. The
+		// production wiring always supplies the uncached API reader.
+		reader = r.Client
+	}
 
 	if tap.Spec.Type == trawlv1alpha1.TapSourceMirrorInterface {
 		var d appsv1.Deployment
-		if err := r.Get(ctx, key, &d); err != nil {
+		if err := reader.Get(ctx, key, &d); err != nil {
 			return false, "workload not created yet"
 		}
 		if d.Status.ReadyReplicas < 1 {
 			return false, fmt.Sprintf("%d/%d replicas ready", d.Status.ReadyReplicas, d.Status.Replicas)
 		}
-		return true, "workload ready"
+		return true, workloadReadyMessage
 	}
 
 	var ds appsv1.DaemonSet
-	if err := r.Get(ctx, key, &ds); err != nil {
+	if err := reader.Get(ctx, key, &ds); err != nil {
 		return false, "workload not created yet"
 	}
 	if ds.Status.NumberReady < ds.Status.DesiredNumberScheduled || ds.Status.DesiredNumberScheduled == 0 {
 		return false, fmt.Sprintf("%d/%d nodes ready", ds.Status.NumberReady, ds.Status.DesiredNumberScheduled)
 	}
-	return true, "workload ready"
+	return true, workloadReadyMessage
 }
 
 // derivePhase aggregates the tap's state.

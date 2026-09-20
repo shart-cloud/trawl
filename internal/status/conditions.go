@@ -58,19 +58,19 @@ const (
 	TypeReady           = "Ready"
 
 	// CaptureJob.
-	// PortMirror. DeviceReachable and MirrorConfigured are separate because
-	// they fail for different reasons and want different fixes: one is a
-	// credential or a network path, the other is a port name or a device that
-	// refused the configuration.
-	TypeDeviceReachable  = "DeviceReachable"
-	TypeMirrorConfigured = "MirrorConfigured"
-
 	TypeTargetReady       = "TargetReady"
 	TypeFilterValid       = "FilterValid"
 	TypeCaptureStarted    = "CaptureStarted"
 	TypeArtifactVerified  = "ArtifactVerified"
 	TypeDownloadable      = "Downloadable"
 	TypeRetentionEnforced = "RetentionEnforced"
+
+	// PortMirror. DeviceReachable and MirrorConfigured are separate because
+	// they fail for different reasons and want different fixes: one is a
+	// credential or a network path, the other is a port name or a device that
+	// refused the configuration.
+	TypeDeviceReachable  = "DeviceReachable"
+	TypeMirrorConfigured = "MirrorConfigured"
 )
 
 // Reasons. PascalCase, no separators, bounded length: these are consumed as

@@ -17,14 +17,17 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	trawlv1alpha1 "trawl.cloud/trawl/api/v1alpha1"
 	"trawl.cloud/trawl/internal/config"
@@ -101,6 +104,37 @@ func containerByName(spec corev1.PodSpec, name string) *corev1.Container {
 		}
 	}
 	return nil
+}
+
+func TestWorkloadReadinessUsesTheUncachedAPIReader(t *testing.T) {
+	tap := testTap()
+	name, _, _, _ := Names(tap)
+	stale := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: tap.Namespace}}
+	fresh := stale.DeepCopy()
+	fresh.Status.Replicas = 1
+	fresh.Status.ReadyReplicas = 1
+
+	cached := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(stale).Build()
+	direct := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(fresh).Build()
+	r := &NetworkTapReconciler{Client: cached, APIReader: direct}
+
+	ready, reason := r.workloadReady(context.Background(), tap)
+	if !ready || reason != workloadReadyMessage {
+		t.Fatalf("workloadReady = %v, %q, want true from the uncached object", ready, reason)
+	}
+}
+
+func TestAnAbsentActiveSourceCannotPanicTheRenderer(t *testing.T) {
+	// Reconcile rejects this as InvalidSpec before rendering. sourceOf still
+	// must not expose a nil pointer to a future caller that reaches the helper
+	// before validation and takes the controller process down.
+	tap := testTap()
+	tap.Spec.MirrorInterface = nil
+
+	cm := renderer().ConfigMap(tap)
+	if got := cm.Data["interface"]; got != "" {
+		t.Errorf("interface = %q, want the safe zero value for an invalid source", got)
+	}
 }
 
 func TestAnalyzerContainersGetExactlyTwoCapabilities(t *testing.T) {

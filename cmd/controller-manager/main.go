@@ -264,11 +264,12 @@ func main() {
 	// listening. The reconciler and the webhook were both implemented and unit
 	// tested; only this registration was missing.
 	if err := (&controller.NetworkTapReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Config:   installCfg,
-		Renderer: &controller.WorkloadRenderer{Config: installCfg},
-		Metrics:  trawlMetrics,
+		Client:    mgr.GetClient(),
+		APIReader: mgr.GetAPIReader(),
+		Scheme:    mgr.GetScheme(),
+		Config:    installCfg,
+		Renderer:  &controller.WorkloadRenderer{Config: installCfg},
+		Metrics:   trawlMetrics,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to set up the NetworkTap controller")
 		os.Exit(1)
