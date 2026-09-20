@@ -57,7 +57,7 @@ configuration, and Grafana dashboards.
 
 - First observation within 15 minutes of applying a valid tap.
 - 95% of valid tap reconciliations reach truthful status within 2 minutes.
-- Less than 1% capture-boundary packet loss for 60 minutes at the sustained rate the installation actually produces, with that rate reported.
+- Less than 1% capture-boundary packet loss for 60 minutes at the sustained rate the installation actually produces, with that rate reported. For this alpha, that measured sustained rate is the reference load; it is not a claim about an ungenerated fixed wire rate.
 - 95% of valid observations searchable within 30 seconds.
 - All ten timed exact-correlation pivots across the five supported fixture sessions complete within 3 minutes.
 - 95% of manual captures begin within 10 seconds and become downloadable within

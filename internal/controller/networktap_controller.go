@@ -460,22 +460,44 @@ func (r *NetworkTapReconciler) workloadReady(ctx context.Context, tap *trawlv1al
 	if tap.Spec.Type == trawlv1alpha1.TapSourceMirrorInterface {
 		var d appsv1.Deployment
 		if err := reader.Get(ctx, key, &d); err != nil {
-			return false, "workload not created yet"
+			if apierrors.IsNotFound(err) {
+				return metav1.ConditionFalse, "workload not created yet", nil
+			}
+			return metav1.ConditionUnknown, sanitize.String(fmt.Sprintf("could not read workload: %v", err)), err
+		}
+		if d.Status.ObservedGeneration != d.Generation {
+			return metav1.ConditionFalse,
+				fmt.Sprintf("controller has observed generation %d of %d", d.Status.ObservedGeneration, d.Generation), nil
+		}
+		if d.Status.UpdatedReplicas < d.Status.Replicas {
+			return metav1.ConditionFalse,
+				fmt.Sprintf("%d/%d replicas updated", d.Status.UpdatedReplicas, d.Status.Replicas), nil
 		}
 		if d.Status.ReadyReplicas < 1 {
 			return metav1.ConditionFalse, fmt.Sprintf("%d/%d replicas ready", d.Status.ReadyReplicas, d.Status.Replicas), nil
 		}
-		return true, workloadReadyMessage
+		return metav1.ConditionTrue, workloadReadyMessage, nil
 	}
 
 	var ds appsv1.DaemonSet
 	if err := reader.Get(ctx, key, &ds); err != nil {
-		return false, "workload not created yet"
+		if apierrors.IsNotFound(err) {
+			return metav1.ConditionFalse, "workload not created yet", nil
+		}
+		return metav1.ConditionUnknown, sanitize.String(fmt.Sprintf("could not read workload: %v", err)), err
+	}
+	if ds.Status.ObservedGeneration != ds.Generation {
+		return metav1.ConditionFalse,
+			fmt.Sprintf("controller has observed generation %d of %d", ds.Status.ObservedGeneration, ds.Generation), nil
+	}
+	if ds.Status.UpdatedNumberScheduled < ds.Status.DesiredNumberScheduled {
+		return metav1.ConditionFalse,
+			fmt.Sprintf("%d/%d nodes updated", ds.Status.UpdatedNumberScheduled, ds.Status.DesiredNumberScheduled), nil
 	}
 	if ds.Status.NumberReady < ds.Status.DesiredNumberScheduled || ds.Status.DesiredNumberScheduled == 0 {
 		return metav1.ConditionFalse, fmt.Sprintf("%d/%d nodes ready", ds.Status.NumberReady, ds.Status.DesiredNumberScheduled), nil
 	}
-	return true, workloadReadyMessage
+	return metav1.ConditionTrue, workloadReadyMessage, nil
 }
 
 // derivePhase aggregates the tap's state.

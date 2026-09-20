@@ -216,8 +216,8 @@ func TestReferenceLoadSC003LossStaysUnderOnePercent(t *testing.T) {
 		t.Errorf("capture-boundary loss was %.4f%%, over SC-003's %.2f%%", 100*loss, 100*sc003LossBudget)
 	}
 
-	// Said in the run's own output so an ambient run cannot silently become a
-	// claim that a reference load was generated.
+	// Said in the run's own output so the alpha's produced-rate reference load
+	// cannot silently become a claim about a fixed wire rate that was not made.
 	t.Logf("SC-003 is evaluated at the measured produced rate above; this run makes no claim " +
 		"that the installation generated 100 Mb/s or any other unmeasured wire rate.")
 }
