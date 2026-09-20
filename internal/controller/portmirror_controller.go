@@ -60,9 +60,8 @@ type PortMirrorReconciler struct {
 
 	// APIReader bypasses controller-runtime's shared cache for credential
 	// Secrets. A cached Get starts a list/watch for the entire Secret kind,
-	// which would require list/watch permission. The direct read needs only the
-	// get-only Role in the system namespace where this controller runs.
-	// Production must wire the manager's API reader here.
+	// which would require broader permission than resolving one named device
+	// credential. Production must wire the manager's API reader here.
 	APIReader client.Reader
 
 	// Providers holds the device drivers this binary was built with.
@@ -84,6 +83,7 @@ type PortMirrorReconciler struct {
 // +kubebuilder:rbac:groups=trawl.cloud,resources=portmirrors,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=trawl.cloud,resources=portmirrors/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=trawl.cloud,resources=portmirrors/finalizers,verbs=update
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 
 // Reconcile drives one PortMirror toward the device.
 func (r *PortMirrorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
