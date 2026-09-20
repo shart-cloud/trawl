@@ -274,7 +274,10 @@ jobs:
           name: image-digests
           path: ${{ runner.temp }}/trawl-image-digests
 
-      - uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
+      - name: Create the supply-chain output directory
+        run: mkdir -p dist/supply-chain
+
+      - uses: anchore/sbom-action@f325610c9f50a54015d37c8d16cb3b0e2c8f4de0 # v0.18.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
