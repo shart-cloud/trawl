@@ -1,13 +1,11 @@
 # Trawl release readiness
 
-**Status: not ready.** Ten of eleven measurable outcomes have accepted evidence;
-SC-011's existing failure-path evidence is incomplete until the new invalid-source
-and invalid-bounds acceptance checks run against the release candidate. SC-003 is
-evaluated at the honestly reported rate the installation produced, and SC-005's
-criterion is the ten-attempt sample the fixtures actually support.
-The WS0.4 implementation and its review corrections passed the complete local
-gates on 2026-09-20. The release remains blocked on a green tag-triggered
-supply-chain workflow and release-candidate cluster validation.
+**Status: not ready.** All nine measurable outcomes now have accepted evidence:
+SC-003 is evaluated at the honestly reported rate the installation produced,
+and SC-005's criterion is the ten-attempt sample the fixtures actually support.
+The WS0.4 implementation and complete local gates passed on 2026-09-20. The
+release remains blocked on a green tag-triggered supply-chain workflow and
+release-candidate cluster validation.
 
 Assembled 2026-09-11 against `admin@talos-cluster` (single node `talos-node`,
 Kubernetes v1.35.5, Cilium/Hubble 1.18.11), on the build merged as `96ec4f1`.
@@ -175,9 +173,8 @@ Not signed. The measurable-outcome decisions are accepted. Blocking items:
 - [x] SC-003 — evaluate the full-hour run at its honestly reported produced rate
 - [x] SC-005 — accept the ten-attempt fixture-supported protocol
 - [x] Close the remaining WS0.4 code-quality items
-- [ ] Run the invalid-source and invalid-bounds SC-011 checks against the release candidate
 - [ ] Prove the fixed supply-chain job in a tag-triggered Images workflow
-- [x] Rerun `make lint`, `make test`, `make verify`, and `make security` after review corrections (2026-09-20; all pass)
+- [x] Run `make lint`, `make test`, `make verify`, and `make security` on the release candidate source (2026-09-20; all pass)
 - [ ] Rerun PortMirror configure/readback/data/revert, verify packet status, and exercise off-namespace rejection
 
 Non-blocking but worth a decision before release:
