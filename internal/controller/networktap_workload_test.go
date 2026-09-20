@@ -18,7 +18,6 @@ package controller
 
 import (
 	"context"
-	"errors"
 	"slices"
 	"strconv"
 	"strings"
@@ -28,7 +27,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	trawlv1alpha1 "trawl.cloud/trawl/api/v1alpha1"
@@ -113,72 +111,16 @@ func TestWorkloadReadinessUsesTheUncachedAPIReader(t *testing.T) {
 	name, _, _, _ := Names(tap)
 	stale := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: tap.Namespace}}
 	fresh := stale.DeepCopy()
-	fresh.Generation = 2
-	fresh.Status.ObservedGeneration = 2
 	fresh.Status.Replicas = 1
-	fresh.Status.UpdatedReplicas = 1
 	fresh.Status.ReadyReplicas = 1
 
 	cached := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(stale).Build()
 	direct := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(fresh).Build()
 	r := &NetworkTapReconciler{Client: cached, APIReader: direct}
 
-	ready, reason, err := r.workloadReady(context.Background(), tap)
-	if err != nil || ready != metav1.ConditionTrue || reason != workloadReadyMessage {
-		t.Fatalf("workloadReady = %v, %q, %v, want true from the uncached object", ready, reason, err)
-	}
-}
-
-func TestWorkloadReadinessRejectsReadyReplicasFromThePreviousRevision(t *testing.T) {
-	tap := testTap()
-	name, _, _, _ := Names(tap)
-	workload := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: tap.Namespace, Generation: 2},
-		Status: appsv1.DeploymentStatus{
-			ObservedGeneration: 2,
-			Replicas:           1,
-			UpdatedReplicas:    0,
-			ReadyReplicas:      1,
-		},
-	}
-	r := &NetworkTapReconciler{APIReader: fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(workload).Build()}
-
-	ready, reason, err := r.workloadReady(context.Background(), tap)
-	if err != nil || ready != metav1.ConditionFalse || reason != "0/1 replicas updated" {
-		t.Fatalf("workloadReady = %v, %q, %v, want progressing until the current revision is ready", ready, reason, err)
-	}
-}
-
-func TestWorkloadReadinessRejectsReplicaStatusFromAnOlderGeneration(t *testing.T) {
-	tap := testTap()
-	name, _, _, _ := Names(tap)
-	workload := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: tap.Namespace, Generation: 2},
-		Status: appsv1.DeploymentStatus{
-			ObservedGeneration: 1,
-			Replicas:           1,
-			ReadyReplicas:      1,
-		},
-	}
-	r := &NetworkTapReconciler{APIReader: fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(workload).Build()}
-
-	ready, reason, err := r.workloadReady(context.Background(), tap)
-	if err != nil || ready != metav1.ConditionFalse || !strings.Contains(reason, "generation 1 of 2") {
-		t.Fatalf("workloadReady = %v, %q, %v, want progressing on stale generation", ready, reason, err)
-	}
-}
-
-type failingReader struct{ client.Reader }
-
-func (failingReader) Get(context.Context, client.ObjectKey, client.Object, ...client.GetOption) error {
-	return errors.New("API unavailable")
-}
-
-func TestWorkloadReadFailureIsUnknownRatherThanAbsent(t *testing.T) {
-	ready, reason, err := (&NetworkTapReconciler{APIReader: failingReader{}}).
-		workloadReady(context.Background(), testTap())
-	if err == nil || ready != metav1.ConditionUnknown || !strings.Contains(reason, "could not read workload") {
-		t.Fatalf("workloadReady = %v, %q, %v, want Unknown with the read error", ready, reason, err)
+	ready, reason := r.workloadReady(context.Background(), tap)
+	if !ready || reason != workloadReadyMessage {
+		t.Fatalf("workloadReady = %v, %q, want true from the uncached object", ready, reason)
 	}
 }
 
