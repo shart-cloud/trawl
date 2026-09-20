@@ -2,7 +2,6 @@ name: Images
 
 on:
   push:
-    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
     inputs:
@@ -273,6 +272,9 @@ jobs:
         with:
           name: image-digests
           path: ci-digests
+
+      - name: Create the supply-chain output directory
+        run: mkdir -p dist/supply-chain
 
       - uses: anchore/sbom-action@f325610c9f50a54015d37c8d16cb3b0e2c8f4de0 # v0.18.0
         with:
