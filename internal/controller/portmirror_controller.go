@@ -58,6 +58,12 @@ const mirrorResyncInterval = 5 * time.Minute
 type PortMirrorReconciler struct {
 	client.Client
 
+	// APIReader bypasses controller-runtime's shared cache for credential
+	// Secrets. A cached Get starts a list/watch for the entire Secret kind,
+	// which would require broader permission than resolving one named device
+	// credential. Production must wire the manager's API reader here.
+	APIReader client.Reader
+
 	// Providers holds the device drivers this binary was built with.
 	Providers *fabric.Registry
 
@@ -77,6 +83,7 @@ type PortMirrorReconciler struct {
 // +kubebuilder:rbac:groups=trawl.cloud,resources=portmirrors,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=trawl.cloud,resources=portmirrors/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=trawl.cloud,resources=portmirrors/finalizers,verbs=update
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 
 // Reconcile drives one PortMirror toward the device.
 func (r *PortMirrorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -360,7 +367,14 @@ func olderClaim(other, mine metav1.Object) bool {
 func (r *PortMirrorReconciler) device(ctx context.Context, mirror *trawlv1alpha1.PortMirror) (fabric.Device, error) {
 	var secret corev1.Secret
 	key := client.ObjectKey{Namespace: mirror.Namespace, Name: mirror.Spec.DeviceRef.Name}
-	if err := r.Get(ctx, key, &secret); err != nil {
+	reader := r.APIReader
+	if reader == nil {
+		// Tests and other direct callers may use the reconciler without a
+		// manager. Falling back keeps that construction useful; the manager
+		// always supplies its uncached reader below.
+		reader = r.Client
+	}
+	if err := reader.Get(ctx, key, &secret); err != nil {
 		if apierrors.IsNotFound(err) {
 			return fabric.Device{}, fmt.Errorf("device Secret %q does not exist", sanitize.String(key.Name))
 		}

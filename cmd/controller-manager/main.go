@@ -334,6 +334,7 @@ func main() {
 	}
 	if err := (&controller.PortMirrorReconciler{
 		Client:          mgr.GetClient(),
+		APIReader:       mgr.GetAPIReader(),
 		Providers:       mirrorProviders,
 		Audit:           auditSink,
 		SystemNamespace: installCfg.SystemNamespace,
