@@ -4,21 +4,25 @@
 # repository, and dist/ is gitignored and nothing ever published one, so the
 # documented way to install Trawl did not exist. This is the missing half.
 #
-# The bundle is rendered from the tagged tree rather than built fresh. Every
-# image in config/manager is pinned by digest and refreshed for the commit being
-# deployed, so a release is a rendering of manifests that already name exactly
-# what will run. Nothing here resolves a tag to a digest, because by the time a
-# release is cut that has already happened and been committed - and a workflow
-# that re-resolved would be free to disagree with the tree it claims to install.
+# The bundle is rendered from the tagged tree, then pinned from the successful
+# Images run that triggered this workflow. Images embed the release tag in the
+# binary, so rendering the pre-tag candidate pins would publish a release whose
+# processes identify themselves as a development build. The downloaded
+# manifest is checked against both the tagged commit and the triggering run
+# before any asset is published.
 name: Release
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_run:
+    workflows: ["Images"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       tag:
         description: The existing tag to build the bundle for.
+        required: true
+      images_run_id:
+        description: The successful Images workflow run whose artifacts belong to the tag.
         required: true
 
 permissions: {}
@@ -31,19 +35,78 @@ jobs:
   installer:
     name: Install bundle
     runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
     permissions:
+      actions: read
       contents: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+          ref: ${{ inputs.tag || github.event.workflow_run.head_sha }}
       - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
           go-version-file: go.mod
 
       - name: Install pinned tools
         run: hack/verify-tools.sh --install
+
+      - name: Resolve the tag and source image run
+        id: release
+        env:
+          REQUESTED_RUN_ID: ${{ inputs.images_run_id }}
+          REQUESTED_TAG: ${{ inputs.tag }}
+          SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_run" ]; then
+            if [ "${SOURCE_CONCLUSION}" != "success" ]; then
+              echo "The tag's Images workflow concluded ${SOURCE_CONCLUSION}; no release may be published."
+              exit 1
+            fi
+            mapfile -t tags < <(git tag --points-at HEAD --list 'v*')
+            if [ "${#tags[@]}" -ne 1 ]; then
+              echo "Images completed for $(git rev-parse HEAD), but exactly one v* tag does not point there: ${tags[*]-none}"
+              exit 1
+            fi
+            tag="${tags[0]}"
+            run_id="${SOURCE_RUN_ID}"
+          else
+            tag="${REQUESTED_TAG}"
+            run_id="${REQUESTED_RUN_ID}"
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "run_id=${run_id}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: image-digests
+          path: ${{ runner.temp }}/trawl-image-digests
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ steps.release.outputs.run_id }}
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: supply-chain-manifest
+          path: ${{ runner.temp }}/trawl-supply-chain
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ steps.release.outputs.run_id }}
+
+      - name: Refuse artifacts from another revision or run
+        env:
+          MANIFEST: ${{ runner.temp }}/trawl-supply-chain/manifest.json
+          RUN_ID: ${{ steps.release.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse HEAD)"
+          jq -e --arg commit "$commit" --arg run_id "$RUN_ID" \
+            '.build.commit == $commit and .build.cleanTree == true and .provenance.runID == $run_id' \
+            "$MANIFEST" >/dev/null
 
       # build-installer regenerates before rendering, so a tree whose committed
       # CRDs or RBAC no longer match its source produces a bundle that differs
@@ -63,6 +126,11 @@ jobs:
             exit 1
           fi
 
+      - name: Pin the installer to the tag build
+        run: >-
+          hack/pin-installer-images.sh dist/install.yaml
+          "${{ runner.temp }}/trawl-image-digests/digests.txt"
+
       # The constitution forbids deploying by floating tag. install.yaml is the
       # one artifact where that rule is checkable after the fact and easiest to
       # break by accident: a single un-pinned image would be resolved at pull
@@ -80,20 +148,13 @@ jobs:
           echo "All images pinned by digest:"
           grep -E '^\s+image:' dist/install.yaml
 
-      # The supply-chain manifest describes what the bundle installs. Shipping
-      # it beside the bundle is the point: a consumer can answer "what is in
-      # this" without pulling every image first.
-      - name: Build the supply-chain manifest
-        run: make supply-chain
-
       - name: Collect the release assets
         run: |
           set -euo pipefail
           mkdir -p release-assets
           cp dist/install.yaml release-assets/install.yaml
-          if [ -d dist/supply-chain ]; then
-            tar -czf release-assets/supply-chain.tar.gz -C dist supply-chain
-          fi
+          tar -czf release-assets/supply-chain.tar.gz \
+            -C "${{ runner.temp }}/trawl-supply-chain" .
           sha256sum release-assets/* | sed 's#release-assets/##' > release-assets/SHA256SUMS
           cat release-assets/SHA256SUMS
 
@@ -101,7 +162,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ inputs.tag || github.ref_name }}
+          TAG: ${{ steps.release.outputs.tag }}
         run: |
           set -euo pipefail
           # --clobber so re-running a dispatch replaces the assets rather than

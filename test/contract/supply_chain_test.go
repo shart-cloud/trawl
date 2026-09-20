@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -203,5 +204,240 @@ func TestEveryUpstreamSourceIsPinnedByChecksumOrNamedAsNot(t *testing.T) {
 	if len(weak) > 0 && manifest.UpstreamSources.Warning == "" {
 		t.Errorf("%v are pinned by version with no checksum and the manifest carries no warning "+
 			"about it; they sit in the list looking as pinned as everything else", weak)
+	}
+}
+
+func TestEveryPublishedBinaryIsIncludedInTheDigestRecord(t *testing.T) {
+	root := repoRoot(t)
+	workflowPath := filepath.Join(root, ".github", "workflows", "images.yml")
+	raw, err := os.ReadFile(workflowPath) //nolint:gosec // Repository fixture.
+	if err != nil {
+		t.Fatalf("reading Images workflow: %v", err)
+	}
+	workflow := string(raw)
+	start := strings.Index(workflow, "      - name: Resolve digests")
+	if start < 0 {
+		t.Fatal("Images workflow has no digest-resolution step")
+	}
+	end := strings.Index(workflow[start:], "      - uses: actions/upload-artifact@")
+	if end < 0 {
+		t.Fatal("Images workflow does not upload its digest record")
+	}
+	resolver := workflow[start : start+end]
+
+	// These are every image published by the workflow. The gateway was once in
+	// the build matrix but absent here, so a green workflow published it without
+	// putting its immutable reference in the provenance document.
+	for _, image := range []string{
+		"controller-manager", "sensor-agent", "event-worker", "capture-runner",
+		"capture-reporter", "artifact-gateway", "content-init", "zeek", "suricata",
+	} {
+		if !strings.Contains(resolver, image) {
+			t.Errorf("the digest record omits %s", image)
+		}
+	}
+}
+
+func TestTheSBOMGeneratorScansEveryBuiltDigest(t *testing.T) {
+	root := repoRoot(t)
+	temp := t.TempDir()
+	out := filepath.Join(temp, "out")
+	digests := filepath.Join(temp, "digests.txt")
+	if err := os.WriteFile(digests, []byte(strings.Join([]string{
+		"controller-manager=ghcr.io/example/controller-manager@sha256:" + strings.Repeat("a", 64),
+		"artifact-gateway=ghcr.io/example/artifact-gateway@sha256:" + strings.Repeat("b", 64),
+		"zeek=<not built in this run>",
+	}, "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("writing digest fixture: %v", err)
+	}
+
+	log := filepath.Join(temp, "syft.log")
+	fakeSyft := filepath.Join(temp, "syft")
+	fake := `#!/bin/sh
+set -eu
+printf '%s\n' "$1" >> "$SYFT_LOG"
+output=${3#spdx-json=}
+printf '{"spdxVersion":"SPDX-2.3"}\n' > "$output"
+`
+	if err := os.WriteFile(fakeSyft, []byte(fake), 0o600); err != nil {
+		t.Fatalf("writing fake syft: %v", err)
+	}
+	if err := os.Chmod(fakeSyft, 0o700); err != nil { //nolint:gosec // Test helper must be executable.
+		t.Fatalf("making fake syft executable: %v", err)
+	}
+
+	generator := filepath.Join(root, "hack", "generate-sboms.sh")
+	cmd := exec.CommandContext(t.Context(), generator) //nolint:gosec // Repository script.
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(),
+		"SYFT="+fakeSyft,
+		"SYFT_LOG="+log,
+		"DIGESTS_FILE="+digests,
+		"OUT_DIR="+out,
+		"SOURCE_DIR="+root,
+	)
+	if combined, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("generating SBOM fixtures: %v\n%s", err, combined)
+	}
+
+	for _, name := range []string{"source", "controller-manager", "artifact-gateway"} {
+		if _, err := os.Stat(filepath.Join(out, name+".spdx.json")); err != nil {
+			t.Errorf("%s SBOM was not generated: %v", name, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(out, "zeek.spdx.json")); !os.IsNotExist(err) {
+		t.Errorf("an image explicitly absent from this run acquired an SBOM: %v", err)
+	}
+
+	logged, err := os.ReadFile(log) //nolint:gosec // Test-owned temporary file.
+	if err != nil {
+		t.Fatalf("reading fake syft log: %v", err)
+	}
+	for _, reference := range []string{"dir:" + root, "controller-manager@sha256:", "artifact-gateway@sha256:"} {
+		if !strings.Contains(string(logged), reference) {
+			t.Errorf("syft was not invoked for %q; calls were:\n%s", reference, logged)
+		}
+	}
+
+	manifestGenerator := filepath.Join(root, "hack", "supply-chain-manifest.sh")
+	manifestCmd := exec.CommandContext(t.Context(), manifestGenerator) //nolint:gosec // Repository script.
+	manifestCmd.Dir = root
+	manifestCmd.Env = append(os.Environ(),
+		"DIGESTS_FILE="+digests,
+		"OUT_DIR="+out,
+		"SUPPLY_CHAIN_SKIP_VULN=1",
+	)
+	if combined, err := manifestCmd.CombinedOutput(); err != nil {
+		t.Fatalf("assembling manifest from the generated SBOMs: %v\n%s", err, combined)
+	}
+	manifestRaw, err := os.ReadFile(filepath.Join(out, "manifest.json")) //nolint:gosec // Test-owned temporary file.
+	if err != nil {
+		t.Fatalf("reading generated manifest: %v", err)
+	}
+	var manifest struct {
+		SBOM struct {
+			Status  string `json:"status"`
+			Entries []struct {
+				Subject string `json:"subject"`
+			} `json:"entries"`
+		} `json:"sbom"`
+	}
+	if err := json.Unmarshal(manifestRaw, &manifest); err != nil {
+		t.Fatalf("decoding generated manifest: %v", err)
+	}
+	if manifest.SBOM.Status != "present" {
+		t.Errorf("complete generated SBOM set has status %q, want present", manifest.SBOM.Status)
+	}
+	if len(manifest.SBOM.Entries) != 3 {
+		t.Errorf("manifest records %d SBOMs, want source and two built images", len(manifest.SBOM.Entries))
+	}
+}
+
+func TestTheManifestCannotClaimAnSBOMThatDoesNotExist(t *testing.T) {
+	root := repoRoot(t)
+	out := t.TempDir()
+
+	manifestGenerator := filepath.Join(root, "hack", "supply-chain-manifest.sh")
+	cmd := exec.CommandContext(t.Context(), manifestGenerator) //nolint:gosec // Repository script.
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "OUT_DIR="+out, "SUPPLY_CHAIN_SKIP_VULN=1")
+	if combined, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("generating supply-chain manifest: %v\n%s", err, combined)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(out, "manifest.json")) //nolint:gosec // Test-owned temporary file.
+	if err != nil {
+		t.Fatalf("reading generated manifest: %v", err)
+	}
+	var manifest struct {
+		SBOM struct {
+			Status string `json:"status"`
+			Reason string `json:"reason"`
+		} `json:"sbom"`
+	}
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		t.Fatalf("decoding generated manifest: %v", err)
+	}
+	if manifest.SBOM.Status != "unavailable" {
+		t.Errorf("SBOM status = %q without an SBOM file, want unavailable", manifest.SBOM.Status)
+	}
+	if !strings.Contains(manifest.SBOM.Reason, "source") {
+		t.Errorf("missing source SBOM reason = %q, want the absent subject named", manifest.SBOM.Reason)
+	}
+}
+
+func TestTheInstallerUsesTheImagesBuiltForItsReleaseTag(t *testing.T) {
+	root := repoRoot(t)
+	temp := t.TempDir()
+	install := filepath.Join(temp, "install.yaml")
+	digests := filepath.Join(temp, "digests.txt")
+	oldDigest := strings.Repeat("0", 64)
+	managerDigest := strings.Repeat("a", 64)
+	gatewayDigest := strings.Repeat("b", 64)
+	fixture := strings.Join([]string{
+		"containers:",
+		"  image: ghcr.io/shart-cloud/trawl/controller-manager@sha256:" + oldDigest,
+		"  image: ghcr.io/shart-cloud/trawl/artifact-gateway@sha256:" + oldDigest,
+		"  image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z",
+	}, "\n") + "\n"
+	if err := os.WriteFile(install, []byte(fixture), 0o600); err != nil {
+		t.Fatalf("writing installer fixture: %v", err)
+	}
+	digestFixture := strings.Join([]string{
+		"controller-manager=ghcr.io/shart-cloud/trawl/controller-manager@sha256:" + managerDigest,
+		"artifact-gateway=ghcr.io/shart-cloud/trawl/artifact-gateway@sha256:" + gatewayDigest,
+		"zeek=<not built in this run>",
+	}, "\n") + "\n"
+	if err := os.WriteFile(digests, []byte(digestFixture), 0o600); err != nil {
+		t.Fatalf("writing digest fixture: %v", err)
+	}
+
+	pinner := filepath.Join(root, "hack", "pin-installer-images.sh")
+	cmd := exec.CommandContext(t.Context(), pinner, install, digests) //nolint:gosec // Repository script.
+	cmd.Dir = root
+	if combined, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("pinning installer fixture: %v\n%s", err, combined)
+	}
+
+	updated, err := os.ReadFile(install) //nolint:gosec // Test-owned temporary file.
+	if err != nil {
+		t.Fatalf("reading pinned installer: %v", err)
+	}
+	text := string(updated)
+	for _, digest := range []string{managerDigest, gatewayDigest} {
+		if !strings.Contains(text, "sha256:"+digest) {
+			t.Errorf("installer does not contain tag-build digest %s", digest)
+		}
+	}
+	if strings.Contains(text, "sha256:"+oldDigest) {
+		t.Error("installer retained a pre-tag candidate digest")
+	}
+	if !strings.Contains(text, "quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z") {
+		t.Error("pinning Trawl images changed an unrelated image")
+	}
+}
+
+func TestReleaseWaitsForAndConsumesTheTagImageBuild(t *testing.T) {
+	root := repoRoot(t)
+	path := filepath.Join(root, ".github", "workflows", "release.yml")
+	raw, err := os.ReadFile(path) //nolint:gosec // Repository fixture.
+	if err != nil {
+		t.Fatalf("reading Release workflow: %v", err)
+	}
+	workflow := string(raw)
+	for _, required := range []string{
+		"workflow_run:",
+		`workflows: ["Images"]`,
+		"run-id: ${{ steps.release.outputs.run_id }}",
+		"name: image-digests",
+		"name: supply-chain-manifest",
+		"hack/pin-installer-images.sh",
+	} {
+		if !strings.Contains(workflow, required) {
+			t.Errorf("Release workflow does not contain %q", required)
+		}
+	}
+	if strings.Contains(workflow, "tags: [\"v*\"]") {
+		t.Error("Release still starts concurrently on a tag instead of waiting for Images")
 	}
 }

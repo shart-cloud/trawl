@@ -38,7 +38,6 @@ import datetime
 import hashlib
 import json
 import os
-import shutil
 import subprocess
 import sys
 
@@ -248,17 +247,47 @@ else:
     manifest["goVulnerabilities"] = absent("bin/govulncheck not installed; run `make security`")
 
 # --- SBOMs ------------------------------------------------------------------
+#
+# The old check treated an installed syft binary as evidence that SBOM files
+# existed. The first successful workflow proved why that is not enough: it
+# uploaded one source SBOM, claimed per-image SBOMs were beside the manifest,
+# and had generated none. Record the files themselves, and require one for each
+# immutable image digest supplied by the build.
 
-if shutil.which("syft"):
+sbom_dir = os.path.dirname(out_path)
+expected_sboms = [("source", os.path.join(sbom_dir, "source.spdx.json"))]
+expected_sboms.extend(
+    (entry["image"], os.path.join(sbom_dir, entry["image"] + ".spdx.json"))
+    for entry in digests
+)
+
+sbom_entries = []
+missing_sboms = []
+for subject, path in expected_sboms:
+    if not os.path.isfile(path):
+        missing_sboms.append(subject)
+        continue
+    sbom_entries.append(
+        {
+            "subject": subject,
+            "path": os.path.basename(path),
+            "sha256": sha256_of(path),
+        }
+    )
+
+if missing_sboms:
+    manifest["sbom"] = {
+        "status": "unavailable",
+        "reason": "missing SPDX JSON for: " + ", ".join(missing_sboms),
+        "tool": "syft",
+        "entries": sbom_entries,
+    }
+else:
     manifest["sbom"] = {
         "status": "present",
         "tool": "syft",
-        "note": "per-image SBOMs are written beside this manifest",
+        "entries": sbom_entries,
     }
-else:
-    manifest["sbom"] = absent(
-        "syft is not installed; SBOMs are generated in CI where the images are built"
-    )
 
 # --- Provenance -------------------------------------------------------------
 
