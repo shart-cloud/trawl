@@ -42,7 +42,10 @@ import (
 // These tests pin the rule: the older claim keeps the device, the younger one
 // says so in status and touches nothing.
 
-const contendedDevice = "lab-switch"
+const (
+	contendedDevice    = "lab-switch"
+	testDeviceUsername = "trawl"
+)
 
 // countingProvider records whether the controller spoke to the device at all.
 //
@@ -110,7 +113,7 @@ func deviceSecret(name string) *corev1.Secret {
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
 		Data: map[string][]byte{
 			"address":            []byte("192.0.2.10"),
-			"username":           []byte("trawl"),
+			"username":           []byte(testDeviceUsername),
 			"password":           []byte("secret"),
 			"insecureSkipVerify": []byte("true"),
 		},
@@ -149,6 +152,27 @@ func newMirrorFixture(t *testing.T, objs ...client.Object) *mirrorFixture {
 			Audit:           ledger,
 			SystemNamespace: testNamespace,
 		},
+	}
+}
+
+func TestDeviceCredentialUsesTheUncachedAPIReader(t *testing.T) {
+	// The manager's ordinary client caches each kind it reads. Using it for a
+	// named Secret therefore starts a cluster-wide Secret list/watch and turns
+	// one get permission into three. Keep the Secret out of Client and only in
+	// APIReader so this fails if device() ever returns to the cached path.
+	cached := fake.NewClientBuilder().WithScheme(testScheme(t)).Build()
+	direct := fake.NewClientBuilder().
+		WithScheme(testScheme(t)).
+		WithObjects(deviceSecret(contendedDevice)).
+		Build()
+	reconciler := &PortMirrorReconciler{Client: cached, APIReader: direct}
+
+	device, err := reconciler.device(context.Background(), mirrorAt("mirror", time.Now(), ""))
+	if err != nil {
+		t.Fatalf("resolving device credential: %v", err)
+	}
+	if device.Address != "192.0.2.10" || device.Username != testDeviceUsername || device.Password != "secret" {
+		t.Fatalf("device = %+v, want the credential read through APIReader", device)
 	}
 }
 
