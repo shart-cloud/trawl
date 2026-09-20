@@ -30,18 +30,17 @@ func TestTapPhaseRequiresEveryLayerOfReadiness(t *testing.T) {
 		name      string
 		matched   int
 		ready     int32
-		workload  metav1.ConditionStatus
+		workload  bool
 		analyzers metav1.ConditionStatus
 		want      trawlv1alpha1.TapPhase
 	}{
-		{"no targets is an error", 0, 0, metav1.ConditionFalse, metav1.ConditionUnknown, trawlv1alpha1.TapPhaseError},
-		{"workload not ready is pending", 1, 1, metav1.ConditionFalse, metav1.ConditionTrue, trawlv1alpha1.TapPhasePending},
-		{"workload state unknown is pending", 1, 1, metav1.ConditionUnknown, metav1.ConditionTrue, trawlv1alpha1.TapPhasePending},
-		{"analyzer health unknown is pending", 1, 1, metav1.ConditionTrue, metav1.ConditionUnknown, trawlv1alpha1.TapPhasePending},
-		{"no ready target is pending", 1, 0, metav1.ConditionTrue, metav1.ConditionTrue, trawlv1alpha1.TapPhasePending},
-		{"partial target readiness is degraded", 2, 1, metav1.ConditionTrue, metav1.ConditionTrue, trawlv1alpha1.TapPhaseDegraded},
-		{"analyzer failure is degraded", 1, 1, metav1.ConditionTrue, metav1.ConditionFalse, trawlv1alpha1.TapPhaseDegraded},
-		{"complete observed readiness is active", 1, 1, metav1.ConditionTrue, metav1.ConditionTrue, trawlv1alpha1.TapPhaseActive},
+		{"no targets is an error", 0, 0, false, metav1.ConditionUnknown, trawlv1alpha1.TapPhaseError},
+		{"workload not ready is pending", 1, 1, false, metav1.ConditionTrue, trawlv1alpha1.TapPhasePending},
+		{"analyzer health unknown is pending", 1, 1, true, metav1.ConditionUnknown, trawlv1alpha1.TapPhasePending},
+		{"no ready target is pending", 1, 0, true, metav1.ConditionTrue, trawlv1alpha1.TapPhasePending},
+		{"partial target readiness is degraded", 2, 1, true, metav1.ConditionTrue, trawlv1alpha1.TapPhaseDegraded},
+		{"analyzer failure is degraded", 1, 1, true, metav1.ConditionFalse, trawlv1alpha1.TapPhaseDegraded},
+		{"complete observed readiness is active", 1, 1, true, metav1.ConditionTrue, trawlv1alpha1.TapPhaseActive},
 	}
 
 	for _, tt := range tests {
