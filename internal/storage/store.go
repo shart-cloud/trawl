@@ -65,6 +65,16 @@ type ObjectInfo struct {
 	Metadata map[string]string
 }
 
+// ListPage is one bounded, ordered page of object metadata.
+type ListPage struct {
+	Objects []ObjectInfo
+
+	// NextStart is the first matching key not returned in Objects. Passing it
+	// back as startAt resumes inclusively without duplicating the prior page's
+	// last object. Empty means this traversal is drained.
+	NextStart string
+}
+
 // PutOptions controls a single write.
 type PutOptions struct {
 	// IfNotExists makes the write conditional on the key being absent. The
@@ -128,6 +138,12 @@ type Store interface {
 	//
 	// storagetest.RunConformance asserts all of this against any implementation.
 	List(ctx context.Context, prefix, startAt string) ([]ObjectInfo, error)
+
+	// ListPage is the bounded form of List. startAt has the same inclusive and
+	// deleted-cursor semantics. limit must be positive. Implementations return
+	// at most limit objects and set NextStart to the first matching key not
+	// returned, or empty when no more keys remain.
+	ListPage(ctx context.Context, prefix, startAt string, limit int) (ListPage, error)
 
 	// Delete removes a key. Deleting an absent key succeeds, so retention
 	// cleanup is idempotent.

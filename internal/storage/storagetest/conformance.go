@@ -65,11 +65,74 @@ func RunConformance(t *testing.T, newStore NewStore) {
 		"ListFromAnAbsentCursorStartsAtTheNextKey":     listFromAbsentCursor,
 		"ListWithNoCursorReturnsEverythingUnderIt":     listWithoutCursor,
 		"ListOfAnEmptyPrefixReturnsNothingNotAnErr":    listEmpty,
+		"ListPageHasBoundedInclusiveContinuation":      listPageContract,
 	} {
 		t.Run(name, func(t *testing.T) {
 			store, prefix := newStore(t)
 			run(t, store, prefix)
 		})
+	}
+}
+
+func listPageContract(t *testing.T, store storage.Store, prefix string) {
+	ctx := context.Background()
+	seed(t, store, prefix, "a.json", "b.json", "c.json", "d.json", "e.json")
+
+	first, err := store.ListPage(ctx, prefix, "", 2)
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	assertKeys(t, first.Objects, []string{prefix + "a.json", prefix + "b.json"})
+	if first.NextStart != prefix+"c.json" {
+		t.Fatalf("first continuation = %q, want first unreturned key %q",
+			first.NextStart, prefix+"c.json")
+	}
+
+	second, err := store.ListPage(ctx, prefix, first.NextStart, 2)
+	if err != nil {
+		t.Fatalf("second page: %v", err)
+	}
+	assertKeys(t, second.Objects, []string{prefix + "c.json", prefix + "d.json"})
+	if second.NextStart != prefix+"e.json" {
+		t.Fatalf("second continuation = %q, want %q", second.NextStart, prefix+"e.json")
+	}
+
+	last, err := store.ListPage(ctx, prefix, second.NextStart, 2)
+	if err != nil {
+		t.Fatalf("last page: %v", err)
+	}
+	assertKeys(t, last.Objects, []string{prefix + "e.json"})
+	if last.NextStart != "" {
+		t.Errorf("last continuation = %q, want empty", last.NextStart)
+	}
+
+	inclusive, err := store.ListPage(ctx, prefix, prefix+"b.json", 2)
+	if err != nil {
+		t.Fatalf("inclusive page: %v", err)
+	}
+	assertKeys(t, inclusive.Objects, []string{prefix + "b.json", prefix + "c.json"})
+
+	if err := store.Delete(ctx, prefix+"b.json"); err != nil {
+		t.Fatalf("deleting cursor fixture: %v", err)
+	}
+	deleted, err := store.ListPage(ctx, prefix, prefix+"b.json", 2)
+	if err != nil {
+		t.Fatalf("page from deleted cursor: %v", err)
+	}
+	assertKeys(t, deleted.Objects, []string{prefix + "c.json", prefix + "d.json"})
+
+	empty, err := store.ListPage(ctx, prefix+"absent/", "", 2)
+	if err != nil {
+		t.Fatalf("empty page: %v", err)
+	}
+	if len(empty.Objects) != 0 || empty.NextStart != "" {
+		t.Errorf("empty page = %+v, want no objects or continuation", empty)
+	}
+
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := store.ListPage(cancelled, prefix, "", 2); !errors.Is(err, context.Canceled) {
+		t.Errorf("cancelled page = %v, want context.Canceled", err)
 	}
 }
 
