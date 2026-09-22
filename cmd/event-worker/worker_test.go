@@ -163,6 +163,8 @@ func newTestWorker(t *testing.T, lokiURL string, objs ...client.Object) *worker 
 	c := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(objs...).
+		WithIndex(&trawlv1alpha1.CaptureJob{}, controller.CaptureJobPolicyUIDIndex,
+			controller.CaptureJobPolicyUIDIndexValues).
 		WithStatusSubresource(&trawlv1alpha1.NetworkTap{}, &trawlv1alpha1.CapturePolicy{}, &trawlv1alpha1.CaptureJob{}).
 		Build()
 

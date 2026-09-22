@@ -145,11 +145,17 @@ type PolicyResult struct {
 // CaptureJobs themselves, so a restart or a leader handoff resumes with the
 // same answers rather than a clean slate it would blow straight through.
 type PolicyEngine struct {
-	// Client reads policies, taps and jobs, and creates captures. It is
+	// Client reads policies and taps and creates captures. It is
 	// expected to be cache-backed: an event stream evaluates every armed
 	// policy per record, and uncached reads would put that load on the API
 	// server.
 	Client client.Client
+
+	// Jobs optionally supplies the cache reader carrying
+	// CaptureJobPolicyUIDIndex. It is separate for control-plane tests that use
+	// a direct API client for writes but still exercise the production index.
+	// When nil, Client is the cache-backed production reader.
+	Jobs client.Reader
 
 	// Audit commits the intent and the outcome of every capture this engine
 	// creates. Required: without it a capture would exist that the ledger
@@ -176,6 +182,21 @@ type PolicyEngine struct {
 	// a policy's events still arrive in sequence.
 	mu      sync.Mutex
 	windows map[types.UID]*policyWindow
+}
+
+// CaptureJobPolicyUIDIndex is the cache field used to select the immutable set
+// of jobs belonging to one policy identity.
+const CaptureJobPolicyUIDIndex = "spec.policyRef.uid"
+
+// CaptureJobPolicyUIDIndexValues extracts the value registered under
+// CaptureJobPolicyUIDIndex. Manual captures have no policy identity and are not
+// entered in the index.
+func CaptureJobPolicyUIDIndexValues(obj client.Object) []string {
+	job, ok := obj.(*trawlv1alpha1.CaptureJob)
+	if !ok || job.Spec.PolicyRef == nil || job.Spec.PolicyRef.UID == "" {
+		return nil
+	}
+	return []string{string(job.Spec.PolicyRef.UID)}
 }
 
 // policyWindow is one policy's rolling threshold state, pinned to the threshold
@@ -544,7 +565,14 @@ func resolveTap(
 // activity.
 func (e *PolicyEngine) usage(ctx context.Context, p *trawlv1alpha1.CapturePolicy) (policy.Usage, error) {
 	var jobs trawlv1alpha1.CaptureJobList
-	if err := e.Client.List(ctx, &jobs, client.InNamespace(p.Namespace)); err != nil {
+	reader := client.Reader(e.Client)
+	if e.Jobs != nil {
+		reader = e.Jobs
+	}
+	if err := reader.List(ctx, &jobs,
+		client.InNamespace(p.Namespace),
+		client.MatchingFields{CaptureJobPolicyUIDIndex: string(p.UID)},
+	); err != nil {
 		return policy.Usage{}, sanitize.Errorf("listing captures: %v", err)
 	}
 	return policy.UsageFrom(jobs.Items, p.UID, e.now()), nil
