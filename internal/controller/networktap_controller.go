@@ -23,6 +23,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -341,6 +342,7 @@ func (r *NetworkTapReconciler) applyOwned(ctx context.Context, tap *trawlv1alpha
 
 // updateStatus derives the tap's aggregate status from what is observed.
 func (r *NetworkTapReconciler) updateStatus(ctx context.Context, tap *trawlv1alpha1.NetworkTap, matched int) error {
+	previous := tap.Status.DeepCopy()
 	workloadReady, workloadReason, workloadErr := r.workloadReady(ctx, tap)
 	tap.Status = projectNetworkTapStatus(tap.Status, networkTapStatusFacts{
 		generation:      tap.Generation,
@@ -350,13 +352,32 @@ func (r *NetworkTapReconciler) updateStatus(ctx context.Context, tap *trawlv1alp
 		now:             time.Now(),
 	})
 
-	if err := r.Status().Update(ctx, tap); err != nil {
-		if r.Metrics != nil {
-			r.Metrics.StatusUpdateFailures.WithLabelValues("NetworkTap", status.ReasonPending).Inc()
-		}
+	if err := r.writeStatusIfChanged(ctx, tap, previous, status.ReasonPending); err != nil {
 		return err
 	}
 	return workloadErr
+}
+
+// writeStatusIfChanged keeps a projected fact from becoming an API event when
+// it is already the stored fact. Status writes change resourceVersion and wake
+// watches, including this controller's own watch; repeating one creates a
+// reconcile cycle with no new observation behind it.
+func (r *NetworkTapReconciler) writeStatusIfChanged(
+	ctx context.Context,
+	tap *trawlv1alpha1.NetworkTap,
+	previous *trawlv1alpha1.NetworkTapStatus,
+	failureReason string,
+) error {
+	if equality.Semantic.DeepEqual(previous, &tap.Status) {
+		return nil
+	}
+	if err := r.Status().Update(ctx, tap); err != nil {
+		if r.Metrics != nil {
+			r.Metrics.StatusUpdateFailures.WithLabelValues("NetworkTap", failureReason).Inc()
+		}
+		return err
+	}
+	return nil
 }
 
 func allAnalyzersHealthy(target *trawlv1alpha1.TargetStatus) bool {
@@ -507,6 +528,7 @@ func (r *NetworkTapReconciler) reportUnavailable(ctx context.Context, tap *trawl
 // read as monitoring - which is the same reasoning markError sets out at
 // length, arrived at from the other side.
 func (r *NetworkTapReconciler) markUnavailable(ctx context.Context, tap *trawlv1alpha1.NetworkTap, message string) error {
+	previous := tap.Status.DeepCopy()
 	gen := tap.Generation
 	tap.Status.ObservedGeneration = gen
 	tap.Status.Phase = trawlv1alpha1.TapPhaseError
@@ -524,10 +546,7 @@ func (r *NetworkTapReconciler) markUnavailable(ctx context.Context, tap *trawlv1
 			metav1.ConditionUnknown, status.ReasonDependencyUnavailable, message, gen))
 	}
 
-	if err := r.Status().Update(ctx, tap); err != nil {
-		if r.Metrics != nil {
-			r.Metrics.StatusUpdateFailures.WithLabelValues("NetworkTap", status.ReasonDependencyUnavailable).Inc()
-		}
+	if err := r.writeStatusIfChanged(ctx, tap, previous, status.ReasonDependencyUnavailable); err != nil {
 		return sanitize.Error(err)
 	}
 	return nil
@@ -556,6 +575,7 @@ func (r *NetworkTapReconciler) markUnavailable(ctx context.Context, tap *trawlv1
 // resolved to none; where the count is the point of the error, as it is for an
 // ambiguous mirror selector, it is already in the message.
 func (r *NetworkTapReconciler) markError(ctx context.Context, tap *trawlv1alpha1.NetworkTap, reason, message string) error {
+	previous := tap.Status.DeepCopy()
 	gen := tap.Generation
 	tap.Status.ObservedGeneration = gen
 	tap.Status.Phase = trawlv1alpha1.TapPhaseError
@@ -580,7 +600,7 @@ func (r *NetworkTapReconciler) markError(ctx context.Context, tap *trawlv1alpha1
 			metav1.ConditionFalse, reason, message, gen))
 	}
 
-	if err := r.Status().Update(ctx, tap); err != nil {
+	if err := r.writeStatusIfChanged(ctx, tap, previous, reason); err != nil {
 		return sanitize.Error(err)
 	}
 	return nil
