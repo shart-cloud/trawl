@@ -48,11 +48,11 @@ import (
 )
 
 var (
-	testEnv   *envtest.Environment
-	restCfg   *rest.Config
-	k8sClient client.Client
-	jobReader client.Reader
-	scheme    = runtime.NewScheme()
+	testEnv     *envtest.Environment
+	restCfg     *rest.Config
+	k8sClient   client.Client
+	eventReader client.Reader
+	scheme      = runtime.NewScheme()
 )
 
 // TestMain starts one apiserver for the whole package. Starting one per test
@@ -106,6 +106,12 @@ func TestMain(m *testing.M) {
 		_ = testEnv.Stop()
 		os.Exit(1)
 	}
+	if err := jobCache.IndexField(context.Background(), &trawlv1alpha1.CapturePolicy{},
+		controller.CapturePolicyTriggerTypeIndex, controller.CapturePolicyTriggerTypeIndexValues); err != nil {
+		fmt.Fprintf(os.Stderr, "indexing CapturePolicies: %v\n", err)
+		_ = testEnv.Stop()
+		os.Exit(1)
+	}
 	cacheCtx, cancelCache := context.WithCancel(context.Background())
 	cacheDone := make(chan error, 1)
 	go func() { cacheDone <- jobCache.Start(cacheCtx) }()
@@ -115,7 +121,7 @@ func TestMain(m *testing.M) {
 		_ = testEnv.Stop()
 		os.Exit(1)
 	}
-	jobReader = jobCache
+	eventReader = jobCache
 
 	code := m.Run()
 	cancelCache()

@@ -165,6 +165,8 @@ func newTestWorker(t *testing.T, lokiURL string, objs ...client.Object) *worker 
 		WithObjects(objs...).
 		WithIndex(&trawlv1alpha1.CaptureJob{}, controller.CaptureJobPolicyUIDIndex,
 			controller.CaptureJobPolicyUIDIndexValues).
+		WithIndex(&trawlv1alpha1.CapturePolicy{}, controller.CapturePolicyTriggerTypeIndex,
+			controller.CapturePolicyTriggerTypeIndexValues).
 		WithStatusSubresource(&trawlv1alpha1.NetworkTap{}, &trawlv1alpha1.CapturePolicy{}, &trawlv1alpha1.CaptureJob{}).
 		Build()
 
