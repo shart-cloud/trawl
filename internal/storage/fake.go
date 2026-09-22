@@ -235,6 +235,41 @@ func (f *Fake) List(_ context.Context, prefix, startAt string) ([]ObjectInfo, er
 	return out, nil
 }
 
+// ListPage implements the bounded inclusive listing contract.
+func (f *Fake) ListPage(ctx context.Context, prefix, startAt string, limit int) (ListPage, error) {
+	if err := ctx.Err(); err != nil {
+		return ListPage{}, err
+	}
+	if limit <= 0 {
+		return ListPage{}, errors.New("list page limit must be positive")
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	keys := make([]string, 0, len(f.objects))
+	for key := range f.objects {
+		if prefix != "" && !hasPrefix(key, prefix) {
+			continue
+		}
+		if startAt != "" && key < startAt {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+
+	page := ListPage{Objects: make([]ObjectInfo, 0, min(limit, len(keys)))}
+	for i, key := range keys {
+		if i == limit {
+			page.NextStart = key
+			break
+		}
+		page.Objects = append(page.Objects, f.objects[key].info)
+	}
+	return page, nil
+}
+
 // Delete implements Store. Deleting an absent key succeeds.
 func (f *Fake) Delete(_ context.Context, key string) error {
 	f.mu.Lock()

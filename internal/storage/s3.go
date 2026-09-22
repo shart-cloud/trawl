@@ -258,6 +258,62 @@ func (s *S3Store) List(ctx context.Context, prefix, startAt string) ([]ObjectInf
 	return out, nil
 }
 
+// ListPage implements bounded inclusive traversal without materializing the
+// complete suffix. NextStart is the first matching key not returned.
+func (s *S3Store) ListPage(ctx context.Context, prefix, startAt string, limit int) (ListPage, error) {
+	if err := ctx.Err(); err != nil {
+		return ListPage{}, err
+	}
+	if limit <= 0 {
+		return ListPage{}, errors.New("list page limit must be positive")
+	}
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
+	defer cancel()
+
+	page := ListPage{Objects: make([]ObjectInfo, 0, limit)}
+	appendObject := func(info ObjectInfo) bool {
+		if len(page.Objects) == limit {
+			page.NextStart = info.Key
+			return false
+		}
+		page.Objects = append(page.Objects, info)
+		return true
+	}
+
+	if startAt != "" && strings.HasPrefix(startAt, prefix) {
+		switch info, err := s.Head(ctx, startAt); {
+		case err == nil:
+			appendObject(ObjectInfo{
+				Key: info.Key, Size: info.Size, ETag: info.ETag, LastModified: info.LastModified,
+			})
+		case errors.Is(err, ErrNotFound):
+			// Continue exclusively after the absent key, which is the first
+			// existing key at or above the inclusive start.
+		default:
+			return ListPage{}, err
+		}
+	}
+
+	for obj := range s.client.ListObjects(ctx, s.bucket, minio.ListObjectsOptions{
+		Prefix:     prefix,
+		StartAfter: startAt,
+		Recursive:  true,
+	}) {
+		if obj.Err != nil {
+			return ListPage{}, sanitize.Errorf("listing object page: %v", obj.Err)
+		}
+		if !appendObject(ObjectInfo{
+			Key: obj.Key, Size: obj.Size, ETag: obj.ETag, LastModified: obj.LastModified,
+		}) {
+			break
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return ListPage{}, err
+	}
+	return page, nil
+}
+
 // Delete implements Store. Deleting an absent key succeeds, so retention
 // cleanup converges when retried after a partial failure.
 func (s *S3Store) Delete(ctx context.Context, key string) error {
