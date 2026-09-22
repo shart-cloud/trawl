@@ -245,7 +245,7 @@ func TestOversizedLineIsRejectedWithoutStoppingTheStream(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "eve.json")
 
-	huge := `{"x":"` + strings.Repeat("A", MaxLineBytes+1024) + `"}`
+	huge := `{"x":"` + strings.Repeat("A", 3*MaxLineBytes) + `"}`
 	content := huge + "\n" + validAlert + "\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
@@ -259,8 +259,117 @@ func TestOversizedLineIsRejectedWithoutStoppingTheStream(t *testing.T) {
 	if emitted != 1 {
 		t.Errorf("emitted %d records after an oversized line, want 1", emitted)
 	}
-	if tl.Counters().Malformed == 0 {
-		t.Error("oversized line was not counted as malformed")
+	if got := tl.Counters().Malformed; got != 1 {
+		t.Errorf("oversized physical line was counted malformed %d times, want exactly 1", got)
+	}
+}
+
+func TestAValidRecordLargerThanTheReaderBufferIsAccepted(t *testing.T) {
+	// MaxLineBytes is the declared record bound. The bufio.Reader is an
+	// implementation detail and must not quietly impose its smaller 64 KiB
+	// capacity as a second, undocumented limit.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "eve.json")
+	large := strings.TrimSuffix(validAlert, "}") + `,"padding":"` +
+		strings.Repeat("A", 128<<10) + `"}`
+	if len(large) >= MaxLineBytes {
+		t.Fatalf("fixture is %d bytes, want it below the declared %d-byte bound", len(large), MaxLineBytes)
+	}
+	if err := os.WriteFile(path, []byte(large+"\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	c := &collector{}
+	tl := suricataTailer(t, path, c)
+	runTailer(t, tl, 1)
+
+	if got := tl.Counters(); got.Accepted != 1 || got.Malformed != 0 {
+		t.Errorf("large valid record produced counters %+v, want one acceptance", got)
+	}
+}
+
+func TestARecordSplitAcrossPollingBoundariesIsAcceptedOnce(t *testing.T) {
+	// Reaching the current end of an append-only file is not a record
+	// boundary. The analyzer can pause between any two writes, including in
+	// the middle of otherwise valid JSON.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "eve.json")
+	half := len(validAlert) / 2
+	if err := os.WriteFile(path, []byte(validAlert[:half]), 0o600); err != nil {
+		t.Fatalf("write prefix: %v", err)
+	}
+
+	c := &collector{}
+	tl := suricataTailer(t, path, c)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		_ = tl.Run(ctx)
+		close(done)
+	}()
+
+	// Cross at least one poll while the prefix is the whole visible file.
+	time.Sleep(2 * pollInterval)
+	if got := tl.Counters(); got != (Counters{}) {
+		t.Fatalf("an incomplete prefix was classified at EOF: %+v", got)
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("open for append: %v", err)
+	}
+	if _, err := f.WriteString(validAlert[half:] + "\n"); err != nil {
+		_ = f.Close()
+		t.Fatalf("append suffix: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	waitFor(t, func() bool { return tl.Counters().Accepted == 1 })
+	cancel()
+	<-done
+	if got := tl.Counters(); got.Accepted != 1 || got.Malformed != 0 {
+		t.Errorf("split valid record produced counters %+v, want one acceptance", got)
+	}
+}
+
+func TestRotationRejectsAnIncompleteOldRecordWithoutJoiningTheNewFile(t *testing.T) {
+	// A retained prefix belongs to one inode. Joining it to the beginning of a
+	// replacement file would manufacture a record that neither analyzer file
+	// ever contained.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "eve.json")
+	if err := os.WriteFile(path, []byte(`{"event_type":"alert"`), 0o600); err != nil {
+		t.Fatalf("write prefix: %v", err)
+	}
+
+	c := &collector{}
+	tl := suricataTailer(t, path, c)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		_ = tl.Run(ctx)
+		close(done)
+	}()
+
+	time.Sleep(2 * pollInterval)
+	if err := os.Rename(path, path+".1"); err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(validAlert+"\n"), 0o600); err != nil {
+		t.Fatalf("write replacement: %v", err)
+	}
+
+	waitFor(t, func() bool {
+		got := tl.Counters()
+		return got.Accepted == 1 && got.Malformed == 1
+	})
+	cancel()
+	<-done
+	if got := tl.Counters(); got.Accepted != 1 || got.Malformed != 1 {
+		t.Errorf("rotation produced counters %+v, want one accepted new record and one rejected old prefix", got)
 	}
 }
 

@@ -151,6 +151,7 @@ func (t *Tailer) Run(ctx context.Context) error {
 	var (
 		file    *os.File
 		reader  *bufio.Reader
+		framer  lineFramer
 		lastIno uint64
 	)
 	defer func() {
@@ -179,7 +180,7 @@ func (t *Tailer) Run(ctx context.Context) error {
 			reader = bufio.NewReaderSize(file, 64<<10)
 		}
 
-		line, err := readLine(reader)
+		line, err := framer.read(reader)
 		switch {
 		case err == nil:
 			t.process(line)
@@ -194,6 +195,13 @@ func (t *Tailer) Run(ctx context.Context) error {
 		case errors.Is(err, io.EOF):
 			// Caught up. Check for rotation, then wait for more data.
 			if rotated(t.Path, lastIno) {
+				// Bytes before EOF belong to the old inode. They cannot be
+				// completed by the replacement file: joining the two would
+				// manufacture a record that neither file contained. Oversized
+				// lines have already been counted when they crossed the bound.
+				if framer.abandon() {
+					t.reject(ResultMalformed, sanitize.DiagnosticHash("partial-line-at-rotation"))
+				}
 				_ = file.Close()
 				file = nil
 				continue
@@ -206,6 +214,9 @@ func (t *Tailer) Run(ctx context.Context) error {
 		default:
 			// A read error on the file itself: reopen rather than exit, so a
 			// transient filesystem problem does not end monitoring.
+			if framer.abandon() {
+				t.reject(ResultMalformed, sanitize.DiagnosticHash("partial-line-at-read-error"))
+			}
 			_ = file.Close()
 			file = nil
 			if sleepCtx(ctx, pollInterval) {
@@ -284,36 +295,75 @@ func (t *Tailer) reject(result RecordResult, fingerprint string) {
 
 var errLineTooLong = errors.New("analyzer record exceeds the maximum line length")
 
-// readLine reads one newline-terminated record, discarding any line longer than
-// MaxLineBytes rather than buffering it.
-func readLine(r *bufio.Reader) ([]byte, error) {
-	line, err := r.ReadSlice('\n')
-	if errors.Is(err, bufio.ErrBufferFull) {
-		// Drain the rest of the oversized line so the reader resynchronizes on
-		// the next record boundary instead of emitting fragments.
-		total := len(line)
-		for {
-			more, drainErr := r.ReadSlice('\n')
-			total += len(more)
-			if drainErr == nil || total > MaxLineBytes {
-				break
-			}
-			if !errors.Is(drainErr, bufio.ErrBufferFull) {
-				return nil, drainErr
+// lineFramer turns chunks from an append-only analyzer file into physical
+// lines. Its state survives EOF because EOF only means the writer has not
+// appended more bytes yet; it is not a record boundary.
+//
+// The retained prefix is bounded by MaxLineBytes. Once a line crosses that
+// bound, read reports it exactly once and then discards through the newline,
+// even when reaching that newline takes several polling cycles. That complete
+// drain is what lets the next physical line start at a trustworthy boundary.
+type lineFramer struct {
+	prefix     []byte
+	discarding bool
+}
+
+func (f *lineFramer) read(r *bufio.Reader) ([]byte, error) {
+	for {
+		chunk, err := r.ReadSlice('\n')
+
+		if f.discarding {
+			switch {
+			case err == nil:
+				f.discarding = false
+				// The oversized line is now fully drained. Continue in case
+				// the next record is already buffered.
+				continue
+			case errors.Is(err, bufio.ErrBufferFull):
+				continue
+			default:
+				return nil, err
 			}
 		}
-		return nil, errLineTooLong
+
+		payload := chunk
+		if err == nil {
+			payload = chunk[:len(chunk)-1]
+		}
+		if len(f.prefix)+len(payload) > MaxLineBytes {
+			f.prefix = nil
+			// If this chunk ended at a newline, the complete oversized
+			// physical line is already gone. Otherwise remember to drain
+			// the rest without classifying any fragment again.
+			f.discarding = err != nil
+			return nil, errLineTooLong
+		}
+		f.prefix = append(f.prefix, payload...)
+
+		switch {
+		case err == nil:
+			line := f.prefix
+			f.prefix = nil
+			return line, nil
+		case errors.Is(err, bufio.ErrBufferFull):
+			continue
+		default:
+			// In particular, retain prefix on io.EOF. A later append
+			// continues the same physical record.
+			return nil, err
+		}
 	}
-	if err != nil {
-		return nil, err
-	}
-	if len(line) > MaxLineBytes {
-		return nil, errLineTooLong
-	}
-	// Copy: ReadSlice's buffer is reused on the next call.
-	out := make([]byte, len(line)-1)
-	copy(out, line[:len(line)-1])
-	return out, nil
+}
+
+// abandon forgets state tied to an inode and reports whether doing so discards
+// a not-yet-classified partial record. A line already classified as oversized
+// must not be counted a second time merely because rotation happened before
+// its newline arrived.
+func (f *lineFramer) abandon() bool {
+	incomplete := len(f.prefix) > 0
+	f.prefix = nil
+	f.discarding = false
+	return incomplete
 }
 
 // sleepCtx waits for d, returning false when the context is cancelled first.
