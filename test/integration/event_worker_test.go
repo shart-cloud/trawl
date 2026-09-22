@@ -109,6 +109,7 @@ func newWorkerFixture(t *testing.T) *workerFixture {
 func (f *workerFixture) newEngine() *controller.PolicyEngine {
 	return &controller.PolicyEngine{
 		Client:    Client(),
+		Jobs:      jobReader,
 		Audit:     f.ledger,
 		Actor:     audit.Actor{Username: "system:serviceaccount:trawl-system:event-worker"},
 		Namespace: f.namespace,

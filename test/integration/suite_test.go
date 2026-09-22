@@ -37,18 +37,21 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	trawlv1alpha1 "trawl.cloud/trawl/api/v1alpha1"
+	"trawl.cloud/trawl/internal/controller"
 )
 
 var (
 	testEnv   *envtest.Environment
 	restCfg   *rest.Config
 	k8sClient client.Client
+	jobReader client.Reader
 	scheme    = runtime.NewScheme()
 )
 
@@ -87,7 +90,39 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
+	// Policy evaluation reads CaptureJobs through the same indexed cache as the
+	// event worker. A direct envtest client sends arbitrary field selectors to
+	// the API server, which correctly rejects this cache-only index; falling
+	// back to an unfiltered List here would leave the production query untested.
+	jobCache, err := cache.New(restCfg, cache.Options{Scheme: scheme})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "creating CaptureJob cache: %v\n", err)
+		_ = testEnv.Stop()
+		os.Exit(1)
+	}
+	if err := jobCache.IndexField(context.Background(), &trawlv1alpha1.CaptureJob{},
+		controller.CaptureJobPolicyUIDIndex, controller.CaptureJobPolicyUIDIndexValues); err != nil {
+		fmt.Fprintf(os.Stderr, "indexing CaptureJobs: %v\n", err)
+		_ = testEnv.Stop()
+		os.Exit(1)
+	}
+	cacheCtx, cancelCache := context.WithCancel(context.Background())
+	cacheDone := make(chan error, 1)
+	go func() { cacheDone <- jobCache.Start(cacheCtx) }()
+	if !jobCache.WaitForCacheSync(cacheCtx) {
+		fmt.Fprintln(os.Stderr, "CaptureJob cache did not synchronize")
+		cancelCache()
+		_ = testEnv.Stop()
+		os.Exit(1)
+	}
+	jobReader = jobCache
+
 	code := m.Run()
+	cancelCache()
+	if err := <-cacheDone; err != nil {
+		fmt.Fprintf(os.Stderr, "stopping CaptureJob cache: %v\n", err)
+		code = 1
+	}
 
 	if err := testEnv.Stop(); err != nil {
 		fmt.Fprintf(os.Stderr, "stopping envtest: %v\n", err)

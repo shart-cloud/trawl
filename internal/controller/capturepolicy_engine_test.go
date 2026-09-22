@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strconv"
 	"sync"
@@ -166,7 +167,7 @@ func (c *recordingCommitter) commits(decision string) int {
 
 // testScheme carries the Trawl types plus core, which the tap and job objects
 // need.
-func testScheme(t *testing.T) *runtime.Scheme {
+func testScheme(t testing.TB) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(s); err != nil {
@@ -292,6 +293,7 @@ func newEngineWith(t *testing.T, funcs interceptor.Funcs, objs ...client.Object)
 	f.client = fake.NewClientBuilder().
 		WithScheme(testScheme(t)).
 		WithObjects(objs...).
+		WithIndex(&trawlv1alpha1.CaptureJob{}, CaptureJobPolicyUIDIndex, CaptureJobPolicyUIDIndexValues).
 		WithStatusSubresource(&trawlv1alpha1.NetworkTap{}, &trawlv1alpha1.CapturePolicy{}, &trawlv1alpha1.CaptureJob{}).
 		WithInterceptorFuncs(funcs).
 		Build()
@@ -635,6 +637,91 @@ func TestThePolicyStopsCapturingAtItsHourlyLimit(t *testing.T) {
 	}
 	if n := f.audit.commits(audit.DecisionAllowed); n != 0 {
 		t.Errorf("committed %d intent records for a capture that was never requested, want 0", n)
+	}
+}
+
+func TestPolicyUsageListsOnlyTheMatchedPolicysCaptureJobs(t *testing.T) {
+	otherUID := types.UID("22222222-2222-4222-8222-222222222222")
+	jobs := make([]client.Object, 0, 101)
+	for i := range 100 {
+		uid := otherUID
+		if i == 0 {
+			uid = policyUID
+		}
+		at := metav1.NewTime(evaluatedAt.Add(-time.Minute))
+		jobs = append(jobs, &trawlv1alpha1.CaptureJob{
+			ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace, Name: "usage-" + strconv.Itoa(i)},
+			Spec:       trawlv1alpha1.CaptureJobSpec{PolicyRef: &trawlv1alpha1.ImmutablePolicyReference{UID: uid}},
+			Status: trawlv1alpha1.CaptureJobStatus{
+				Phase: trawlv1alpha1.CapturePhaseCapturing, RequestedAt: &at,
+			},
+		})
+	}
+	f := newEngineWith(t, interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if _, ok := list.(*trawlv1alpha1.CaptureJobList); ok {
+				options := &client.ListOptions{}
+				for _, opt := range opts {
+					opt.ApplyToList(options)
+				}
+				uid, exact := "", false
+				if options.FieldSelector != nil {
+					uid, exact = options.FieldSelector.RequiresExactMatch(CaptureJobPolicyUIDIndex)
+				}
+				if !exact || uid != string(policyUID) {
+					return fmt.Errorf("CaptureJobs were listed without the policy UID index")
+				}
+			}
+			return c.List(ctx, list, opts...)
+		},
+	}, jobs...)
+
+	usage, err := f.engine.usage(context.Background(), suricataPolicy())
+	if err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	if usage.Active != 1 || usage.Hourly != 1 {
+		t.Errorf("usage = %+v, want only the matched policy's one active recent capture", usage)
+	}
+}
+
+func BenchmarkPolicyUsageIndexed(b *testing.B) {
+	const (
+		policyCount = 100
+		jobCount    = 10_000
+	)
+	objects := make([]client.Object, 0, jobCount)
+	for i := range jobCount {
+		uid := types.UID(fmt.Sprintf("policy-%d", i%policyCount))
+		at := metav1.NewTime(evaluatedAt.Add(-time.Minute))
+		objects = append(objects, &trawlv1alpha1.CaptureJob{
+			ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace, Name: fmt.Sprintf("job-%d", i)},
+			Spec:       trawlv1alpha1.CaptureJobSpec{PolicyRef: &trawlv1alpha1.ImmutablePolicyReference{UID: uid}},
+			Status: trawlv1alpha1.CaptureJobStatus{
+				Phase: trawlv1alpha1.CapturePhaseCapturing, RequestedAt: &at,
+			},
+		})
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(testScheme(b)).
+		WithObjects(objects...).
+		WithIndex(&trawlv1alpha1.CaptureJob{}, CaptureJobPolicyUIDIndex, CaptureJobPolicyUIDIndexValues).
+		Build()
+	engine := &PolicyEngine{Client: c, Now: func() time.Time { return evaluatedAt }}
+	p := &trawlv1alpha1.CapturePolicy{ObjectMeta: metav1.ObjectMeta{
+		Namespace: testNamespace, UID: "policy-42",
+	}}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		usage, err := engine.usage(context.Background(), p)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if usage.Active != jobCount/policyCount {
+			b.Fatalf("active = %d, want %d", usage.Active, jobCount/policyCount)
+		}
 	}
 }
 

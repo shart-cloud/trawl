@@ -30,6 +30,7 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -201,6 +202,14 @@ func main() {
 	})
 	if err != nil {
 		fatal("creating the manager", err)
+	}
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&trawlv1alpha1.CaptureJob{},
+		controller.CaptureJobPolicyUIDIndex,
+		controller.CaptureJobPolicyUIDIndexValues,
+	); err != nil {
+		fatal("indexing captures by policy UID", err)
 	}
 	flows.SetCursorStore(&hubble.ConfigMapStore{
 		Client:    mgr.GetClient(),
