@@ -46,6 +46,11 @@ const zeekFlowFields = `"ts": 1787054370.123456,
 
 var benchmarkZeekEncoded []byte
 
+// A September 2026 per-log composite prototype decoded each input once. Across
+// this full accept path it saved only 4-5 of roughly 500 allocations and
+// 192-229 of roughly 29,000 bytes per record. Conn and DNS throughput remained
+// within run-to-run noise; only HTTP improved clearly. Schema validation, not
+// the second typed decode, dominates, so the production rewrite was not kept.
 func BenchmarkZeekAcceptPath(b *testing.B) {
 	cases := []struct {
 		name    string
@@ -249,6 +254,26 @@ func TestZeekStripsURIQueryString(t *testing.T) {
 	}
 	if strings.Contains(obs.Details.HTTP.URIPath, "s3cr3tvalue") {
 		t.Error("query string with a token was retained")
+	}
+}
+
+func TestZeekDoesNotAdmitUnlistedHTTPContent(t *testing.T) {
+	n := zeekNormalizer()
+	line := `{` + zeekFlowFields + `, "method":"POST","host":"api.example.com","uri":"/login",` +
+		`"cookie":"session=secret-cookie","post_body":"password=secret-body",` +
+		`"request_headers":{"authorization":"Bearer secret-header"}}`
+	obs, err := n.Normalize(ZeekHTTP, []byte(line))
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+	encoded, err := json.Marshal(obs)
+	if err != nil {
+		t.Fatalf("encoding observation: %v", err)
+	}
+	for _, secret := range []string{"secret-cookie", "secret-body", "secret-header"} {
+		if strings.Contains(string(encoded), secret) {
+			t.Errorf("normalized observation retained unlisted HTTP content %q", secret)
+		}
 	}
 }
 
