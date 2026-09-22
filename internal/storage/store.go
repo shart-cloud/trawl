@@ -52,9 +52,6 @@ type ObjectInfo struct {
 	Size         int64
 	ETag         string
 	LastModified time.Time
-	// RetainUntil is the backend-enforced write-once deadline, zero when the
-	// bucket does not apply one.
-	RetainUntil time.Time
 	// Metadata holds user metadata such as the SHA-256 checksum recorded at
 	// upload time.
 	//
@@ -131,10 +128,10 @@ type Store interface {
 	// object that does not exist - retention may have removed it since the
 	// caller last saw it - resumes at the next key rather than failing.
 	//
-	// Only Key, Size, ETag and LastModified are guaranteed. Metadata and
-	// RetainUntil require a Head: a listing does not carry them on every
-	// backend, and returning them from one implementation and not the other is
-	// how a caller comes to depend on the Fake.
+	// Only Key, Size, ETag and LastModified are guaranteed. Metadata requires a
+	// Head: a listing does not carry it on every backend, and returning it from
+	// one implementation and not the other is how a caller comes to depend on
+	// the Fake.
 	//
 	// storagetest.RunConformance asserts all of this against any implementation.
 	List(ctx context.Context, prefix, startAt string) ([]ObjectInfo, error)

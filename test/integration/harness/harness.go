@@ -137,12 +137,12 @@ func (m *MinIO) ArtifactStore(t *testing.T) storage.Store {
 }
 
 // AuditStore returns a Store for the audit-ledger bucket.
-func (m *MinIO) AuditStore(t *testing.T) storage.Store {
+func (m *MinIO) AuditStore(t *testing.T) *storage.S3Store {
 	t.Helper()
 	return m.storeFor(t, m.AuditBucket, m.AuditCredsDir)
 }
 
-func (m *MinIO) storeFor(t *testing.T, bucket, credsDir string) storage.Store {
+func (m *MinIO) storeFor(t *testing.T, bucket, credsDir string) *storage.S3Store {
 	t.Helper()
 	store, err := storage.NewS3Store(config.BucketConfig{
 		Endpoint:        m.Endpoint,
