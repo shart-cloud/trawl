@@ -67,6 +67,10 @@ const (
 // and a policy's counters will look healthy over a window it never saw.
 const GapUnrecoverable = "replay_window_exceeded"
 
+// GapCursorUnavailable says the persisted replay boundary could not be loaded
+// or saved, so a future worker cannot prove which overlap IDs were handled.
+const GapCursorUnavailable = "cursor_unavailable"
+
 // Client streams flows from Hubble Relay.
 type Client struct {
 	endpoint   string
@@ -82,9 +86,17 @@ type Client struct {
 	// policy evaluation.
 	handled map[string]time.Time
 
+	cursorStore      CursorStore
+	cursorHealthy    bool
+	cursorLoadFailed bool
+
 	// OnGap is called when the client knows it lost coverage, so the gap is
 	// reported rather than silently absorbed (FR-039).
 	OnGap func(reason string)
+
+	// OnCursorError reports persistence failure without making the live stream
+	// fatal. The callback must sanitize the error before logging it.
+	OnCursorError func(operation string, err error)
 
 	// OnReject is called when a flow produced no record Trawl can store, so a
 	// dropped record is counted rather than being indistinguishable from
@@ -178,6 +190,10 @@ func (c *Client) Watermark() time.Time {
 // would turn a transient relay restart into a permanent loss of denied-flow
 // triggers.
 func (c *Client) Run(ctx context.Context, handle func(context.Context, *ParsedFlow) error) error {
+	// Restored before the first request is opened. Loading after delivery starts
+	// would create a race in which old IDs are emitted before their handled set
+	// becomes visible.
+	c.loadCursor(ctx)
 	backoff := initialBackoff
 
 	for {
@@ -294,6 +310,7 @@ func (c *Client) deliver(
 		return err
 	}
 	c.remember(parsed.Observation.ID, parsed.EventTime)
+	c.saveCursor(ctx)
 	return nil
 }
 
@@ -317,6 +334,10 @@ func (c *Client) remember(id string, at time.Time) {
 		c.watermark = at
 	}
 
+	c.pruneHandledLocked()
+}
+
+func (c *Client) pruneHandledLocked() {
 	horizon := max(replayOverlap, c.replayWindow)
 	cutoff := c.watermark.Add(-horizon)
 	for handledID, eventTime := range c.handled {

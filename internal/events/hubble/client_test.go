@@ -18,6 +18,7 @@ package hubble
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -318,5 +319,101 @@ func TestHandledIDsExpireBehindTheReplayHorizon(t *testing.T) {
 	}
 	if _, ok := c.handled["current"]; !ok {
 		t.Errorf("current identity was pruned: %v", c.handled)
+	}
+}
+
+type memoryCursorStore struct {
+	cursor Cursor
+	err    error
+}
+
+func (s *memoryCursorStore) Load(context.Context) (Cursor, error) {
+	return s.cursor, s.err
+}
+
+func (s *memoryCursorStore) Save(_ context.Context, cursor Cursor) error {
+	if s.err != nil {
+		return s.err
+	}
+	s.cursor = cursor
+	return nil
+}
+
+func TestRestartRestoresHandledIDsBeforeReplay(t *testing.T) {
+	// A process-local handled set protects reconnects but not leader handoff or
+	// rollout. The replacement client must restore both the watermark and IDs
+	// before it opens a stream, so overlap cannot re-emit old evidence.
+	at := time.Date(2026, 9, 9, 22, 0, 0, 0, time.UTC)
+	store := &memoryCursorStore{}
+	first := &Client{replayWindow: time.Minute}
+	first.SetCursorStore(store)
+	first.loadCursor(context.Background())
+	handle := func(context.Context, *ParsedFlow) error { return nil }
+	for _, item := range []struct {
+		id string
+		at time.Time
+	}{{"handled-a", at}, {"handled-b", at.Add(20 * time.Second)}} {
+		parsed := &ParsedFlow{
+			Observation: &observation.Observation{ID: item.id, EventTime: item.at},
+			EventTime:   item.at,
+		}
+		if err := first.deliver(context.Background(), parsed, handle); err != nil {
+			t.Fatalf("first process delivery: %v", err)
+		}
+	}
+
+	second := &Client{replayWindow: time.Minute}
+	second.SetCursorStore(store)
+	second.loadCursor(context.Background())
+	var delivered []string
+	for _, item := range []struct {
+		id string
+		at time.Time
+	}{
+		{"handled-a", at},
+		{"outage-unseen", at.Add(10 * time.Second)},
+		{"handled-b", at.Add(20 * time.Second)},
+	} {
+		parsed := &ParsedFlow{
+			Observation: &observation.Observation{ID: item.id, EventTime: item.at},
+			EventTime:   item.at,
+		}
+		if err := second.deliver(context.Background(), parsed, func(_ context.Context, flow *ParsedFlow) error {
+			delivered = append(delivered, flow.Observation.ID)
+			return nil
+		}); err != nil {
+			t.Fatalf("replacement process delivery: %v", err)
+		}
+	}
+
+	if len(delivered) != 1 || delivered[0] != "outage-unseen" {
+		t.Errorf("replacement delivered %v, want only the unseen outage flow", delivered)
+	}
+	if !second.Watermark().Equal(at.Add(20 * time.Second)) {
+		t.Errorf("restored watermark = %s, want %s", second.Watermark(), at.Add(20*time.Second))
+	}
+}
+
+func TestCursorStoreUnavailabilityIsAnExplicitReplayGap(t *testing.T) {
+	store := &memoryCursorStore{err: errors.New("api unavailable")}
+	var gaps []string
+	var operations []string
+	c := &Client{
+		OnGap: func(reason string) { gaps = append(gaps, reason) },
+		OnCursorError: func(operation string, _ error) {
+			operations = append(operations, operation)
+		},
+	}
+	c.SetCursorStore(store)
+	c.loadCursor(context.Background())
+
+	if c.ReplaySafe() {
+		t.Error("client claims replay safety after its persisted cursor could not be read")
+	}
+	if len(gaps) != 1 || gaps[0] != GapCursorUnavailable {
+		t.Errorf("gap reasons = %v, want [%s]", gaps, GapCursorUnavailable)
+	}
+	if len(operations) != 1 || operations[0] != "load" {
+		t.Errorf("cursor error operations = %v, want [load]", operations)
 	}
 }

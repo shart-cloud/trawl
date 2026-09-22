@@ -362,6 +362,9 @@ func (w *worker) sourceHealth() map[trawlv1alpha1.CaptureTriggerType]controller.
 	if !drops.Connected {
 		drops.Reason = status.ReasonSourceDisconnected
 		drops.Message = "the Hubble flow stream is not connected"
+	} else if !w.flows.ReplaySafe() {
+		drops.Reason = status.ReasonSourceGap
+		drops.Message = "the Hubble replay cursor is unavailable"
 	}
 
 	return map[trawlv1alpha1.CaptureTriggerType]controller.SourceHealth{

@@ -130,6 +130,11 @@ func main() {
 		// failure an analyst cannot detect (FR-039).
 		metrics.TriggerGapTotal.WithLabelValues(telemetry.TriggerSourceHubbleRelay, reason).Inc()
 	}
+	flows.OnCursorError = func(operation string, err error) {
+		// Cursor failures are a coverage fact, not flow content. The dependency
+		// error is still sanitized because API errors can carry object detail.
+		logf("%s the Hubble replay cursor: %v", operation, sanitize.Error(err))
+	}
 
 	// Readiness reflects the flow stream. A worker that reports ready while
 	// disconnected would hide the fact that denied-flow evidence is not being
@@ -164,16 +169,16 @@ func main() {
 		},
 		Client: client.Options{
 			Cache: &client.CacheOptions{
-				// The alert cursor is read straight from the API server.
+				// Both event cursors are read straight from the API server.
 				//
 				// Everything else this worker reads is cached, because every
-				// armed policy is consulted per event. The cursor is the
-				// opposite case: it is read once at startup, written by this
+				// armed policy is consulted per event. Each cursor is the
+				// opposite case: it is read at startup, written by this
 				// process alone, and caching it would start a ConfigMap
 				// informer that LISTs and WATCHes every ConfigMap in the
 				// namespace. That is not a permission the worker should hold -
 				// trawl-config is in that namespace - so its Role grants get
-				// and update on the cursor by name and nothing wider. A cached
+				// and update on the cursors by name and nothing wider. A cached
 				// read would therefore be Forbidden at the reflector, the
 				// informer would never sync, and the Get would block forever:
 				// the alert poll loop would never reach its first tick and no
@@ -197,6 +202,10 @@ func main() {
 	if err != nil {
 		fatal("creating the manager", err)
 	}
+	flows.SetCursorStore(&hubble.ConfigMapStore{
+		Client:    mgr.GetClient(),
+		Namespace: cfg.SystemNamespace,
+	})
 
 	auditClient, err := audit.NewClient(audit.ClientOptions{
 		Endpoint:   cfg.EventWorker.AuditClient.Endpoint,
