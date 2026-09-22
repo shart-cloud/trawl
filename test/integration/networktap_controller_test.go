@@ -735,6 +735,97 @@ type faultyClient struct {
 	afterGet  func(client.Object)
 }
 
+type countingStatusClient struct {
+	client.Client
+	statusUpdates int
+}
+
+func (c *countingStatusClient) Status() client.SubResourceWriter {
+	return &countingStatusWriter{SubResourceWriter: c.Client.Status(), updates: &c.statusUpdates}
+}
+
+type countingStatusWriter struct {
+	client.SubResourceWriter
+	updates *int
+}
+
+func (w *countingStatusWriter) Update(
+	ctx context.Context,
+	obj client.Object,
+	opts ...client.SubResourceUpdateOption,
+) error {
+	*w.updates++
+	return w.SubResourceWriter.Update(ctx, obj, opts...)
+}
+
+func TestUnchangedNetworkTapStatusIsNotWrittenAgain(t *testing.T) {
+	t.Run("healthy projection", func(t *testing.T) {
+		ns := NewNamespace(t)
+		createNode(t, "stable-status-node", map[string]string{"trawl-test": "stable-status"})
+		tap := mirrorTap(ns, "stable-status")
+		tap.Spec.MirrorInterface.NodeSelector = metav1.LabelSelector{
+			MatchLabels: map[string]string{"trawl-test": "stable-status"},
+		}
+		if err := Client().Create(t.Context(), tap); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+
+		counter := &countingStatusClient{Client: Client()}
+		r := reconcilerFor(t, ns)
+		r.Client = counter
+		reconcile(t, r, tap)
+		first := counter.statusUpdates
+		reconcile(t, r, tap)
+		if counter.statusUpdates != first {
+			t.Errorf("status updates = %d after repeat, want unchanged at %d",
+				counter.statusUpdates, first)
+		}
+	})
+
+	t.Run("invalid declaration", func(t *testing.T) {
+		ns := NewNamespace(t)
+		tap := mirrorTap(ns, "stable-invalid-status")
+		if err := Client().Create(t.Context(), tap); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+
+		counter := &countingStatusClient{Client: Client()}
+		r := reconcilerFor(t, "different-system-namespace")
+		r.Client = counter
+		reconcile(t, r, tap)
+		first := counter.statusUpdates
+		reconcile(t, r, tap)
+		if counter.statusUpdates != first {
+			t.Errorf("invalid status updates = %d after repeat, want unchanged at %d",
+				counter.statusUpdates, first)
+		}
+	})
+
+	t.Run("dependency failure", func(t *testing.T) {
+		ns := NewNamespace(t)
+		tap := mirrorTap(ns, "stable-dependency-status")
+		if err := Client().Create(t.Context(), tap); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+
+		counter := &countingStatusClient{Client: Client()}
+		r := reconcilerFor(t, ns)
+		r.Client = &faultyClient{Client: counter, failList: func(list client.ObjectList) error {
+			if _, ok := list.(*corev1.NodeList); ok {
+				return fmt.Errorf("the node API is unavailable")
+			}
+			return nil
+		}}
+		_, _ = r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(tap)})
+		first := counter.statusUpdates
+		_, _ = r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(tap)})
+		if counter.statusUpdates != first {
+			t.Errorf("dependency status updates = %d after repeat, want unchanged at %d",
+				counter.statusUpdates, first)
+		}
+	})
+}
+
 // Get can rewrite what the apiserver returned, which is the only way to put an
 // object in front of the reconciler that the apiserver would refuse to store
 // today - a tap written before a CEL rule existed, or restored into etcd.
