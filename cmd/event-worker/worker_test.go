@@ -251,6 +251,86 @@ func TestARecordTheOverlapRedeliversIsNotEvaluatedTwice(t *testing.T) {
 	}
 }
 
+func TestAFullMalformedPageCannotStarveALaterValidAlert(t *testing.T) {
+	// The decoder can identify and position a malformed Loki row even though
+	// it cannot produce an observation from it. If the worker advances only
+	// for observations, a full malformed page remains the front of every
+	// query and all later valid alerts are starved indefinitely.
+	now := time.Now()
+	first := now.Add(-10 * time.Minute)
+	second := now.Add(-7 * time.Minute)
+	valid := alertObservation("later-valid-alert", now.Add(-6*time.Minute))
+	validLine, err := json.Marshal(valid)
+	if err != nil {
+		t.Fatalf("encoding valid alert: %v", err)
+	}
+	rows := []struct {
+		at   time.Time
+		line string
+	}{
+		{at: first, line: `{first malformed`},
+		{at: second, line: `{second malformed`},
+		{at: valid.EventTime, line: string(validLine)},
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		startNanos, parseErr := strconv.ParseInt(r.URL.Query().Get("start"), 10, 64)
+		if parseErr != nil {
+			t.Errorf("parsing query start: %v", parseErr)
+			http.Error(w, "bad start", http.StatusBadRequest)
+			return
+		}
+		limit, parseErr := strconv.Atoi(r.URL.Query().Get("limit"))
+		if parseErr != nil {
+			t.Errorf("parsing query limit: %v", parseErr)
+			http.Error(w, "bad limit", http.StatusBadRequest)
+			return
+		}
+		start := time.Unix(0, startNanos)
+		values := make([][]any, 0, limit)
+		for _, row := range rows {
+			if row.at.Before(start) {
+				continue
+			}
+			values = append(values, []any{strconv.FormatInt(row.at.UnixNano(), 10), row.line})
+			if len(values) == limit {
+				break
+			}
+		}
+		body := map[string]any{"data": map[string]any{"result": []any{
+			map[string]any{"values": values},
+		}}}
+		if encodeErr := json.NewEncoder(w).Encode(body); encodeErr != nil {
+			t.Errorf("writing response: %v", encodeErr)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	w := newTestWorker(t, srv.URL, armedTapAndPolicy()...)
+	w.alerts.Limit = 2
+	var cursor loki.Cursor
+
+	if err := w.pollAlerts(context.Background(), &cursor); err != nil {
+		t.Fatalf("first poll: %v", err)
+	}
+	if jobs := w.jobs(t); len(jobs) != 0 {
+		t.Fatalf("first malformed page created %d capture jobs", len(jobs))
+	}
+	if !cursor.Timestamp.Equal(second) {
+		t.Fatalf("cursor after malformed page = %s, want last consumed row %s", cursor.Timestamp, second)
+	}
+
+	if err := w.pollAlerts(context.Background(), &cursor); err != nil {
+		t.Fatalf("second poll: %v", err)
+	}
+	if jobs := w.jobs(t); len(jobs) != 1 {
+		t.Fatalf("got %d capture jobs, want the later valid alert to be evaluated once", len(jobs))
+	}
+	if got := events(t, w, telemetry.RecordMalformed); got != 2 {
+		t.Errorf("counted %v malformed events, want each of the 2 rows once", got)
+	}
+}
+
 // events reads one trigger-event counter for the alert source.
 func events(t *testing.T, w *worker, result string) float64 {
 	t.Helper()

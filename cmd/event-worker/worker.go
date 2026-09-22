@@ -218,10 +218,6 @@ func (w *worker) pollAlerts(ctx context.Context, cursor *loki.Cursor) error {
 	w.setAlertHealth(controller.SourceHealth{Connected: true})
 	w.metrics.TriggerSourceConnected.WithLabelValues(telemetry.TriggerSourceSuricataLoki).Set(1)
 
-	for range result.Malformed {
-		w.metrics.TriggerEventsTotal.
-			WithLabelValues(telemetry.TriggerSourceSuricataLoki, telemetry.RecordMalformed).Inc()
-	}
 	if result.Truncated {
 		// Not counted as a gap. The page is the front of the window and the
 		// cursor advances over what was read, so the rest is backlog rather
@@ -230,12 +226,22 @@ func (w *worker) pollAlerts(ctx context.Context, cursor *loki.Cursor) error {
 		logf("the alert query filled its page; the worker is behind")
 	}
 
-	for _, obs := range result.Observations {
-		if cursor.Handled(obs.ID) {
+	for _, row := range result.Rows {
+		if cursor.Handled(row.ID) {
 			w.metrics.TriggerEventsTotal.
 				WithLabelValues(telemetry.TriggerSourceSuricataLoki, eventReplayed).Inc()
 			continue
 		}
+		if row.Observation == nil {
+			w.metrics.TriggerEventsTotal.
+				WithLabelValues(telemetry.TriggerSourceSuricataLoki, telemetry.RecordMalformed).Inc()
+			// Loki returned and positioned this row even though its payload
+			// could not be decoded. Leaving the cursor behind would make a
+			// full malformed page starve every later valid alert.
+			cursor.Advance(row.Timestamp, row.ID)
+			continue
+		}
+		obs := row.Observation
 		w.metrics.TriggerEventsTotal.
 			WithLabelValues(telemetry.TriggerSourceSuricataLoki, telemetry.RecordAccepted).Inc()
 		w.metrics.TriggerLagSeconds.
@@ -247,7 +253,7 @@ func (w *worker) pollAlerts(ctx context.Context, cursor *loki.Cursor) error {
 		// failure is already recorded on the policy, and re-delivering the
 		// record next poll would retry it forever without the cursor ever
 		// moving.
-		cursor.Advance(obs.EventTime, obs.ID)
+		cursor.Advance(row.Timestamp, row.ID)
 	}
 
 	cursor.Prune(alertOverlap)
