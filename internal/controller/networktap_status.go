@@ -115,7 +115,25 @@ func summarizeTargetStatus(
 }
 
 func targetIsFresh(target *trawlv1alpha1.TargetStatus, now time.Time) bool {
-	return now.Sub(target.HeartbeatTime.Time) <= staleHeartbeat
+	return now.Before(target.HeartbeatTime.Add(staleHeartbeat))
+}
+
+// nextHeartbeatExpiry is the one future deadline at which the current status
+// projection will become false without any resource changing. Zero means every
+// report is already stale and no timer can reveal a new fact.
+func nextHeartbeatExpiry(targets []trawlv1alpha1.TargetStatus, now time.Time) time.Duration {
+	var next time.Duration
+	for i := range targets {
+		expires := targets[i].HeartbeatTime.Add(staleHeartbeat)
+		if !expires.After(now) {
+			continue
+		}
+		until := expires.Sub(now)
+		if next == 0 || until < next {
+			next = until
+		}
+	}
+	return next
 }
 
 func projectedAnalyzerHealth(

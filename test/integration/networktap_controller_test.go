@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	trawlv1alpha1 "trawl.cloud/trawl/api/v1alpha1"
+	"trawl.cloud/trawl/internal/capture"
 	"trawl.cloud/trawl/internal/config"
 	"trawl.cloud/trawl/internal/controller"
 	"trawl.cloud/trawl/internal/telemetry"
@@ -558,9 +559,10 @@ func TestReconcileRejectsATapOutsideTheSystemNamespace(t *testing.T) {
 	}
 }
 
-func TestReconcileRequeuesToKeepStalenessObservable(t *testing.T) {
-	// Without a steady requeue, a tap whose sensor died silently would keep its
-	// last reported status forever, because nothing else triggers a reconcile.
+func TestReconcileQueuesTheNextHeartbeatDeadlineAndStopsAfterExpiry(t *testing.T) {
+	// Heartbeat expiry has no API event of its own, so the controller schedules
+	// that real deadline. Once the report is stale, another timer cannot reveal
+	// anything new and would become permanent polling.
 	ns := NewNamespace(t)
 	createNode(t, "requeue-node", map[string]string{"trawl-test": "requeue"})
 
@@ -573,10 +575,30 @@ func TestReconcileRequeuesToKeepStalenessObservable(t *testing.T) {
 	}
 
 	r := reconcilerFor(t, ns)
-	res := reconcile(t, r, tap)
+	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	r.Now = func() time.Time { return now }
+	reconcile(t, r, tap)
+	stored := reload(t, tap)
+	stored.Status.Targets = []trawlv1alpha1.TargetStatus{{
+		NodeName:      "requeue-node",
+		Interface:     "eth0",
+		HeartbeatTime: metav1.NewTime(now),
+		Analyzers:     []trawlv1alpha1.AnalyzerStatus{{Name: "Suricata", Healthy: true}},
+	}}
+	if err := Client().Status().Update(t.Context(), stored); err != nil {
+		t.Fatalf("seeding target heartbeat: %v", err)
+	}
 
-	if res.RequeueAfter <= 0 {
-		t.Error("reconcile did not schedule a requeue")
+	res := reconcile(t, r, tap)
+	if res.RequeueAfter != capture.StaleHeartbeat {
+		t.Errorf("requeue = %s, want the heartbeat expiry %s",
+			res.RequeueAfter, capture.StaleHeartbeat)
+	}
+
+	now = now.Add(capture.StaleHeartbeat + time.Second)
+	res = reconcile(t, r, tap)
+	if res.RequeueAfter != 0 {
+		t.Errorf("all-stale tap scheduled another reconcile in %s", res.RequeueAfter)
 	}
 }
 
