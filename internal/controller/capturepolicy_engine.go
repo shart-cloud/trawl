@@ -698,14 +698,7 @@ func (e *PolicyEngine) commit(
 			step+":"+decision+":"+string(p.UID)),
 	}
 
-	result, err := e.Audit.Commit(ctx, rec)
-	if e.Metrics != nil {
-		outcome := result.Result
-		if outcome == "" {
-			outcome = audit.ResultUnavailable
-		}
-		e.Metrics.AuditCommitTotal.WithLabelValues(decision, outcome).Inc()
-	}
+	_, err := e.Audit.Commit(ctx, rec)
 	if err != nil {
 		return sanitize.Errorf("committing the capture audit record: %v", err)
 	}

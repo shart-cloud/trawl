@@ -222,10 +222,11 @@ func main() {
 		// than one that does not start.
 		fatal("creating the audit client", err)
 	}
+	auditCommitter := audit.ObserveCommitter(auditClient, metrics)
 
 	engine := &controller.PolicyEngine{
 		Client:    mgr.GetClient(),
-		Audit:     auditClient,
+		Audit:     auditCommitter,
 		Actor:     workerActor(cfg),
 		Namespace: cfg.SystemNamespace,
 		Metrics:   metrics,

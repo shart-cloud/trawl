@@ -39,7 +39,6 @@ import (
 
 	"trawl.cloud/trawl/internal/audit"
 	"trawl.cloud/trawl/internal/sanitize"
-	"trawl.cloud/trawl/internal/telemetry"
 )
 
 // AuditCommitter is what the webhook path commits records through. It is the
@@ -59,8 +58,6 @@ type Gate struct {
 	// Audit commits the mutation record. A nil Audit is a configuration error,
 	// not an opt-out: the gate refuses to admit anything without it.
 	Audit AuditCommitter
-
-	Metrics *telemetry.Metrics
 }
 
 // ErrAuditUnavailable is returned when the durable audit commit could not be
@@ -211,17 +208,7 @@ func (g *Gate) CommitMutationAs(ctx context.Context, req admission.Request, acti
 		StableKey: audit.StableKeyForAdmission(string(req.UID), action, decision),
 	}
 
-	res, err := g.Audit.Commit(ctx, rec)
-	if g.Metrics != nil {
-		result := res.Result
-		if result == "" {
-			result = audit.ResultUnavailable
-		}
-		g.Metrics.AuditCommitTotal.WithLabelValues(decision, result).Inc()
-		if result == audit.ResultConflict {
-			g.Metrics.AuditConflictTotal.Inc()
-		}
-	}
+	_, err := g.Audit.Commit(ctx, rec)
 	if err != nil {
 		// The underlying error can name a storage endpoint, so callers get the
 		// sentinel and operators get the detail in sanitized logs.

@@ -365,17 +365,7 @@ func (r *RetentionReconciler) auditExpiry(
 		StableKey:   audit.StableKeyForAutomatic(audit.ActionArtifactExpire, string(job.UID), expireStep+":"+decision),
 		InitiatedBy: job.Annotations[trawlv1alpha1.AnnotationRequester],
 	}
-	res, err := r.Audit.Commit(ctx, rec)
-	if r.Metrics != nil {
-		result := res.Result
-		if result == "" {
-			result = audit.ResultUnavailable
-		}
-		r.Metrics.AuditCommitTotal.WithLabelValues(rec.Decision, result).Inc()
-		if result == audit.ResultConflict {
-			r.Metrics.AuditConflictTotal.Inc()
-		}
-	}
+	_, err := r.Audit.Commit(ctx, rec)
 	if err != nil {
 		return fmt.Errorf("committing the expiry record: %w", sanitize.Error(err))
 	}
