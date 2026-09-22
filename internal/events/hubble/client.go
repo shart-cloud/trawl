@@ -76,6 +76,11 @@ type Client struct {
 	mu        sync.Mutex
 	connected bool
 	watermark time.Time
+	// handled records the stable IDs delivered within the replay horizon. The
+	// relay intentionally returns that overlap again after reconnect; stopping
+	// duplicates here keeps them out of both the emitted evidence stream and
+	// policy evaluation.
+	handled map[string]time.Time
 
 	// OnGap is called when the client knows it lost coverage, so the gap is
 	// reported rather than silently absorbed (FR-039).
@@ -266,10 +271,58 @@ func (c *Client) streamOnce(ctx context.Context, handle func(context.Context, *P
 		}
 
 		parsed := &ParsedFlow{Observation: obs, EventTime: obs.EventTime}
-		if err := handle(ctx, parsed); err != nil {
+		if err := c.deliver(ctx, parsed, handle); err != nil {
 			return err
 		}
-		c.advanceWatermark(obs.EventTime)
+	}
+}
+
+// deliver suppresses replay before a flow can be emitted or evaluated.
+//
+// The handler must succeed before the ID is remembered. A failed emission is
+// not handled evidence, and marking it first would turn a retryable delivery
+// failure into a silent loss on reconnect.
+func (c *Client) deliver(
+	ctx context.Context,
+	parsed *ParsedFlow,
+	handle func(context.Context, *ParsedFlow) error,
+) error {
+	if c.wasHandled(parsed.Observation.ID) {
+		return nil
+	}
+	if err := handle(ctx, parsed); err != nil {
+		return err
+	}
+	c.remember(parsed.Observation.ID, parsed.EventTime)
+	return nil
+}
+
+func (c *Client) wasHandled(id string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, ok := c.handled[id]
+	return ok
+}
+
+// remember advances the resume watermark and retains this identity only for
+// the bounded horizon a reconnect can request.
+func (c *Client) remember(id string, at time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.handled == nil {
+		c.handled = map[string]time.Time{}
+	}
+	c.handled[id] = at
+	if at.After(c.watermark) {
+		c.watermark = at
+	}
+
+	horizon := max(replayOverlap, c.replayWindow)
+	cutoff := c.watermark.Add(-horizon)
+	for handledID, eventTime := range c.handled {
+		if eventTime.Before(cutoff) {
+			delete(c.handled, handledID)
+		}
 	}
 }
 
