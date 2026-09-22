@@ -341,38 +341,14 @@ func (r *NetworkTapReconciler) applyOwned(ctx context.Context, tap *trawlv1alpha
 
 // updateStatus derives the tap's aggregate status from what is observed.
 func (r *NetworkTapReconciler) updateStatus(ctx context.Context, tap *trawlv1alpha1.NetworkTap, matched int) error {
-	gen := tap.Generation
-
-	tap.Status.ObservedGeneration = gen
-	//nolint:gosec // node counts are bounded by cluster size
-	tap.Status.MatchedTargets = int32(matched)
-
-	ready, lastPacket := r.summarizeTargets(tap)
-	tap.Status.ReadyTargets = ready
-	tap.Status.LastPacketTime = lastPacket
-
 	workloadReady, workloadReason, workloadErr := r.workloadReady(ctx, tap)
-
-	status.Set(&tap.Status.Conditions, status.New(status.TypeAccepted,
-		metav1.ConditionTrue, status.ReasonAccepted, "spec accepted", gen))
-
-	status.Set(&tap.Status.Conditions, status.New(status.TypeTargetsResolved,
-		boolCondition(matched > 0), targetsReason(matched),
-		fmt.Sprintf("%d eligible node(s)", matched), gen))
-
-	status.Set(&tap.Status.Conditions, status.New(status.TypeWorkloadReady,
-		workloadReady, workloadReasonEnum(workloadReady), workloadReason, gen))
-
-	analyzersHealthy, analyzerReason := r.analyzersHealthy(tap)
-	status.Set(&tap.Status.Conditions, status.New(status.TypeAnalyzersHealthy,
-		analyzersHealthy, analyzerReasonEnum(analyzersHealthy), analyzerReason, gen))
-
-	packetsSeen := lastPacket != nil
-	status.Set(&tap.Status.Conditions, status.New(status.TypePacketsObserved,
-		boolCondition(packetsSeen), packetsReason(packetsSeen),
-		packetsMessage(lastPacket), gen))
-
-	tap.Status.Phase = derivePhase(matched, ready, workloadReady, analyzersHealthy)
+	tap.Status = projectNetworkTapStatus(tap.Status, networkTapStatusFacts{
+		generation:      tap.Generation,
+		matchedTargets:  matched,
+		workloadReady:   workloadReady,
+		workloadMessage: workloadReason,
+		now:             time.Now(),
+	})
 
 	if err := r.Status().Update(ctx, tap); err != nil {
 		if r.Metrics != nil {
@@ -381,31 +357,6 @@ func (r *NetworkTapReconciler) updateStatus(ctx context.Context, tap *trawlv1alp
 		return err
 	}
 	return workloadErr
-}
-
-// summarizeTargets counts healthy targets and finds the most recent packet.
-//
-// A target whose heartbeat has gone stale is not counted ready. Its last
-// reported state describes a sensor that may no longer exist, and carrying it
-// forward would let a dead sensor hold the tap in Active.
-func (r *NetworkTapReconciler) summarizeTargets(tap *trawlv1alpha1.NetworkTap) (ready int32, lastPacket *metav1.Time) {
-	now := time.Now()
-	for i := range tap.Status.Targets {
-		target := &tap.Status.Targets[i]
-
-		if now.Sub(target.HeartbeatTime.Time) > staleHeartbeat {
-			continue
-		}
-		if allAnalyzersHealthy(target) {
-			ready++
-		}
-		if target.LastPacketTime != nil {
-			if lastPacket == nil || target.LastPacketTime.After(lastPacket.Time) {
-				lastPacket = target.LastPacketTime
-			}
-		}
-	}
-	return ready, lastPacket
 }
 
 func allAnalyzersHealthy(target *trawlv1alpha1.TargetStatus) bool {
@@ -418,30 +369,6 @@ func allAnalyzersHealthy(target *trawlv1alpha1.TargetStatus) bool {
 		}
 	}
 	return true
-}
-
-func (r *NetworkTapReconciler) analyzersHealthy(tap *trawlv1alpha1.NetworkTap) (metav1.ConditionStatus, string) {
-	if len(tap.Status.Targets) == 0 {
-		// No sensor has reported yet. Unknown, not False: nothing has been
-		// observed to be wrong, and nothing has been observed to be right.
-		return metav1.ConditionUnknown, "no sensor has reported yet"
-	}
-
-	var unhealthy []string
-	for i := range tap.Status.Targets {
-		target := &tap.Status.Targets[i]
-		for _, a := range target.Analyzers {
-			if !a.Healthy {
-				unhealthy = append(unhealthy, fmt.Sprintf("%s/%s", target.NodeName, a.Name))
-			}
-		}
-	}
-	if len(unhealthy) == 0 {
-		return metav1.ConditionTrue, "all analyzers healthy"
-	}
-	// Naming the specific failure is what makes Degraded actionable rather than
-	// merely alarming.
-	return metav1.ConditionFalse, sanitize.String(fmt.Sprintf("unhealthy: %v", unhealthy))
 }
 
 // workloadReady reports whether the rendered workload's current generation has
