@@ -296,6 +296,68 @@ func (e *ReplayFailure) Error() string {
 
 func (e *ReplayFailure) Unwrap() error { return e.Cause }
 
+// ReplayBatchResult describes one bounded prefix of ordered ledger traversal.
+type ReplayBatchResult struct {
+	Delivered     int
+	LastDelivered string
+	// NextStart is the first ledger key not examined in this batch. Empty means
+	// the listed suffix was drained.
+	NextStart string
+}
+
+// ReplayBatch forwards at most limit records after cursor.
+//
+// Store pages start inclusively. Requesting one extra entry accommodates both
+// a cursor object that still exists (and is excluded) and one retention has
+// removed, while keeping memory bounded at limit+1.
+func (s *Sink) ReplayBatch(
+	ctx context.Context,
+	cursor string,
+	limit int,
+	deliver DeliverFunc,
+) (ReplayBatchResult, error) {
+	if limit <= 0 {
+		return ReplayBatchResult{}, errors.New("audit replay batch limit must be positive")
+	}
+	page, err := s.store.ListPage(ctx, s.prefix+recordInfix, cursor, limit+1)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return ReplayBatchResult{}, err
+		}
+		return ReplayBatchResult{}, sanitize.Errorf("listing audit ledger page: %v", err)
+	}
+	objects := beyondCursor(page.Objects, cursor)
+	next := page.NextStart
+	if len(objects) > limit {
+		next = objects[limit].Key
+		objects = objects[:limit]
+	}
+
+	result := ReplayBatchResult{NextStart: next}
+	for _, obj := range objects {
+		body, err := s.store.Get(ctx, obj.Key)
+		if err != nil {
+			return result, &ReplayFailure{
+				Key: obj.Key, Classification: ReplayFailureRead,
+				Cause: sanitize.Errorf("reading audit ledger object: %v", err),
+			}
+		}
+		rec, err := Decode(body)
+		if err != nil {
+			return result, &ReplayFailure{
+				Key: obj.Key, Classification: ReplayFailureDecode,
+				Cause: sanitize.Errorf("decoding audit ledger object: %v", err),
+			}
+		}
+		if err := deliver(ctx, rec); err != nil {
+			return result, sanitize.Errorf("forwarding audit record: %v", err)
+		}
+		result.Delivered++
+		result.LastDelivered = obj.Key
+	}
+	return result, nil
+}
+
 // Replay forwards ledger records to the searchable stream, beginning at cursor.
 //
 // The cursor names the last record the stream accepted, so its own object is
