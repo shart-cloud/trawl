@@ -47,10 +47,6 @@ import (
 	"trawl.cloud/trawl/internal/telemetry"
 )
 
-// finalizer marks taps whose owned workloads must be removed before the object
-// disappears.
-const finalizer = "trawl.cloud/networktap-cleanup"
-
 const (
 	ownedResourceFieldOwner = "trawl-networktap-controller"
 	workloadReadyMessage    = "workload ready"
@@ -78,7 +74,6 @@ type NetworkTapReconciler struct {
 
 // +kubebuilder:rbac:groups=trawl.cloud,resources=networktaps,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=trawl.cloud,resources=networktaps/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=trawl.cloud,resources=networktaps/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments;daemonsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=configmaps;serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
@@ -123,15 +118,10 @@ func (r *NetworkTapReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	if !tap.DeletionTimestamp.IsZero() {
-		return ctrl.Result{}, r.finalize(ctx, &tap)
-	}
-
-	if !controllerutil.ContainsFinalizer(&tap, finalizer) {
-		controllerutil.AddFinalizer(&tap, finalizer)
-		if err := r.Update(ctx, &tap); err != nil {
-			result = telemetry.ReconcileError
-			return ctrl.Result{}, sanitize.Error(err)
-		}
+		// Every rendered resource has a controller owner reference. There is no
+		// external state or ordered cleanup for this reconciler to perform, so
+		// deletion belongs entirely to Kubernetes garbage collection.
+		return ctrl.Result{}, nil
 	}
 
 	// Re-validate the stored spec for the same reason the namespace is checked.
@@ -295,8 +285,7 @@ func incumbent(other, tap *trawlv1alpha1.NetworkTap) bool {
 // applyOwnedResources creates or updates everything the tap owns.
 //
 // Owner references are set on every object so deletion is the garbage
-// collector's job for the common case, with the finalizer covering what it
-// cannot reach.
+// collector's job.
 func (r *NetworkTapReconciler) applyOwnedResources(ctx context.Context, tap *trawlv1alpha1.NetworkTap) error {
 	sa := r.Renderer.ServiceAccount(tap)
 	role := r.Renderer.StatusRole(tap)
@@ -480,28 +469,6 @@ func derivePhase(matched int, ready int32, workloadReady metav1.ConditionStatus,
 	default:
 		return trawlv1alpha1.TapPhaseActive
 	}
-}
-
-// finalize removes what the tap owns and releases the finalizer.
-//
-// Only owned monitoring resources are removed. Observations already in Loki and
-// any CaptureJobs remain under their own retention: deleting a tap stops
-// collection, it does not destroy the evidence already collected (FR-008).
-func (r *NetworkTapReconciler) finalize(ctx context.Context, tap *trawlv1alpha1.NetworkTap) error {
-	if !controllerutil.ContainsFinalizer(tap, finalizer) {
-		return nil
-	}
-
-	// Owner references handle the deletion; the finalizer exists so the tap
-	// object outlives its workloads long enough for that to be observable.
-	controllerutil.RemoveFinalizer(tap, finalizer)
-	if err := r.Update(ctx, tap); err != nil {
-		if r.Metrics != nil {
-			r.Metrics.FinalizerFailures.WithLabelValues("NetworkTap", status.ReasonPending).Inc()
-		}
-		return sanitize.Error(err)
-	}
-	return nil
 }
 
 // reconcileOutcome labels a stopped reconcile for the metrics.
