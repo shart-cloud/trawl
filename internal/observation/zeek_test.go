@@ -17,6 +17,7 @@ limitations under the License.
 package observation
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -42,6 +43,49 @@ const zeekFlowFields = `"ts": 1787054370.123456,
   "id.resp_h": "203.0.113.10",
   "id.resp_p": 443,
   "proto": "tcp"`
+
+var benchmarkZeekEncoded []byte
+
+func BenchmarkZeekAcceptPath(b *testing.B) {
+	cases := []struct {
+		name    string
+		logType ZeekLogType
+		line    string
+	}{
+		{"conn", ZeekConn, `{` + zeekFlowFields + `, "service":"ssl","duration":12.5,"conn_state":"SF","orig_bytes":1024,"resp_bytes":8192,"missed_bytes":0}`},
+		{"dns", ZeekDNS, `{` + zeekFlowFields + `, "query":"example.com","qtype_name":"A","rcode_name":"NOERROR","answers":["93.184.216.34"]}`},
+		{"tls", ZeekSSL, `{` + zeekFlowFields + `, "version":"TLSv13","cipher":"TLS_AES_256_GCM_SHA384","server_name":"example.com","next_protocol":"h2","established":true,"ja3":"abc123"}`},
+		{"http", ZeekHTTP, `{` + zeekFlowFields + `, "method":"GET","host":"example.com","uri":"/index.html?token=discarded","status_code":200,"user_agent":"curl/8"}`},
+	}
+	if _, err := Schema(); err != nil {
+		b.Fatalf("compiling schema: %v", err)
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			n := zeekNormalizer()
+			line := []byte(tc.line)
+			b.ReportAllocs()
+			b.SetBytes(int64(len(line)))
+			b.ResetTimer()
+			for range b.N {
+				obs, err := n.Normalize(tc.logType, line)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if err := Normalize(obs); err != nil {
+					b.Fatal(err)
+				}
+				if err := Validate(obs); err != nil {
+					b.Fatal(err)
+				}
+				benchmarkZeekEncoded, err = json.Marshal(obs)
+				if err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
 
 func TestZeekNormalizesEachSupportedLogType(t *testing.T) {
 	n := zeekNormalizer()
