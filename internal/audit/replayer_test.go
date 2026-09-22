@@ -212,6 +212,53 @@ func TestReplayerDoesNotAdvanceThroughAFailedWrite(t *testing.T) {
 	}
 }
 
+func TestUnreadableLedgerRecordBlocksReplayAndCursorAdvancement(t *testing.T) {
+	for _, corruptIndex := range []int{1, 2} {
+		t.Run(fmt.Sprintf("corrupt record %d", corruptIndex), func(t *testing.T) {
+			store := storage.NewFake()
+			sink, keys := commitN(t, store, 3)
+			if _, err := store.Put(context.Background(), keys[corruptIndex], []byte("{not an audit record"),
+				storage.PutOptions{}); err != nil {
+				t.Fatalf("corrupting fixture: %v", err)
+			}
+
+			cursor := &memoryCursor{}
+			var out bytes.Buffer
+			r := newTestReplayer(t, sink, cursor, &out, nil)
+			err := r.ReplayOnce(context.Background())
+			if err == nil {
+				t.Fatal("ReplayOnce reported success across an unreadable ledger object")
+			}
+			var blocked *ReplayFailure
+			if !errors.As(err, &blocked) {
+				t.Fatalf("error = %T %v, want ReplayFailure", err, err)
+			}
+			if blocked.Key != keys[corruptIndex] || blocked.Classification != ReplayFailureDecode {
+				t.Errorf("blocking failure = %+v, want key %q classification %q",
+					blocked, keys[corruptIndex], ReplayFailureDecode)
+			}
+
+			got := lines(t, &out)
+			if len(got) != corruptIndex {
+				t.Fatalf("forwarded %d records, want only %d valid records before corruption",
+					len(got), corruptIndex)
+			}
+			wantCursor := ""
+			if corruptIndex > 0 {
+				wantCursor = keys[corruptIndex-1]
+			}
+			if cursor.value != wantCursor {
+				t.Errorf("cursor = %q, want last valid predecessor %q", cursor.value, wantCursor)
+			}
+			for _, rec := range got {
+				if rec.LedgerKey == keys[2] && corruptIndex < 2 {
+					t.Error("valid record after corrupt object was falsely reported as forwarded")
+				}
+			}
+		})
+	}
+}
+
 func TestReplayerReportsAnEmptyBacklogOnceDrained(t *testing.T) {
 	// The cursor is inclusive, so the drained ledger still lists the cursor's
 	// own object. Counting it would leave the backlog gauge stuck at 1 forever
