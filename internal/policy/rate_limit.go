@@ -49,24 +49,43 @@ type Usage struct {
 // let a recreated one start with a used-up budget it never spent.
 func UsageFrom(jobs []trawlv1alpha1.CaptureJob, uid types.UID, now time.Time) Usage {
 	var usage Usage
-	hourAgo := now.Add(-time.Hour)
-
 	for _, job := range jobs {
 		ref := job.Spec.PolicyRef
 		if ref == nil || ref.UID != uid {
 			continue
 		}
+		usage = addUsage(usage, job, now)
+	}
+	return usage
+}
 
-		requested := requestedAt(job)
-		if requested.After(hourAgo) {
-			usage.Hourly++
+// UsageByPolicy summarizes every policy's captures in one pass.
+//
+// The map is keyed by immutable policy UID for the same reason UsageFrom is:
+// deleting and recreating a name creates a new rate-limit identity. Policies
+// with no captures are absent and read back as the zero Usage value.
+func UsageByPolicy(jobs []trawlv1alpha1.CaptureJob, now time.Time) map[types.UID]Usage {
+	usageByPolicy := make(map[types.UID]Usage)
+	for _, job := range jobs {
+		if job.Spec.PolicyRef == nil {
+			continue
 		}
-		if requested.After(usage.Last) {
-			usage.Last = requested
-		}
-		if !terminal(job.Status.Phase) {
-			usage.Active++
-		}
+		uid := job.Spec.PolicyRef.UID
+		usageByPolicy[uid] = addUsage(usageByPolicy[uid], job, now)
+	}
+	return usageByPolicy
+}
+
+func addUsage(usage Usage, job trawlv1alpha1.CaptureJob, now time.Time) Usage {
+	requested := requestedAt(job)
+	if requested.After(now.Add(-time.Hour)) {
+		usage.Hourly++
+	}
+	if requested.After(usage.Last) {
+		usage.Last = requested
+	}
+	if !terminal(job.Status.Phase) {
+		usage.Active++
 	}
 	return usage
 }

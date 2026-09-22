@@ -185,6 +185,7 @@ func (t *PolicyStatusTracker) Flush(
 	// Taken all at once, so decisions arriving during the flush accumulate
 	// into a fresh batch rather than being written and then cleared unwritten.
 	batches := t.take()
+	usageByPolicy := policy.UsageByPolicy(jobs.Items, t.now())
 
 	var errs []error
 	for i := range policies.Items {
@@ -196,7 +197,7 @@ func (t *PolicyStatusTracker) Flush(
 			// be there to report them.
 			continue
 		}
-		if err := t.apply(ctx, p, batch, jobs.Items, health); err != nil {
+		if err := t.apply(ctx, p, batch, usageByPolicy[p.UID], health); err != nil {
 			// Kept for the next flush rather than dropped: a conflict or a
 			// brief API outage has nothing to do with the policy, and losing
 			// the batch would silently lose the record of decisions that
@@ -245,7 +246,7 @@ func (t *PolicyStatusTracker) apply(
 	ctx context.Context,
 	p *trawlv1alpha1.CapturePolicy,
 	batch *decisionBatch,
-	jobs []trawlv1alpha1.CaptureJob,
+	usage policy.Usage,
 	health map[trawlv1alpha1.CaptureTriggerType]SourceHealth,
 ) error {
 	desired := p.Status.DeepCopy()
@@ -272,7 +273,6 @@ func (t *PolicyStatusTracker) apply(
 	// Rebuilt from the captures on every flush rather than counted in memory,
 	// so a restart does not lose the count and a job that finished while the
 	// worker was down is not still reported as running.
-	usage := policy.UsageFrom(jobs, p.UID, t.now())
 	desired.ActiveCaptures = usage.Active
 
 	tapReason := t.tapCondition(ctx, p, desired)
