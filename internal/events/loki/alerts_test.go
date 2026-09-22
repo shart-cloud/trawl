@@ -123,6 +123,37 @@ func TestAMalformedRecordIsSkippedAndCountedNotFatal(t *testing.T) {
 	if got.Malformed != 1 {
 		t.Errorf("malformed count = %d, want 1", got.Malformed)
 	}
+	if len(got.Rows) != 3 {
+		t.Fatalf("retained cursor facts for %d rows, want all 3 consumed rows", len(got.Rows))
+	}
+	malformed := got.Rows[1]
+	if malformed.Observation != nil {
+		t.Error("malformed row unexpectedly carries a decoded observation")
+	}
+	if !malformed.Timestamp.Equal(time.Unix(0, 2).UTC()) {
+		t.Errorf("malformed row timestamp = %s, want Loki timestamp 2", malformed.Timestamp)
+	}
+	if malformed.ID == "" || strings.Contains(malformed.ID, "this is not json") {
+		t.Errorf("malformed row cursor identity is absent or leaked payload: %q", malformed.ID)
+	}
+}
+
+func TestARowWithoutAUsableLokiTimestampFailsThePage(t *testing.T) {
+	// Without a stream timestamp there is no position the cursor can advance
+	// to. Calling the row merely malformed and returning success would claim
+	// the page was consumed while guaranteeing it is read again forever.
+	body := `{"status":"success","data":{"resultType":"streams","result":[{"stream":{},"values":[
+	  ["not-a-loki-timestamp","{this is not json"]
+	]}]}}`
+	client := loki.NewClient(serveBody(t, http.StatusOK, body).URL, "", nil)
+
+	got, err := client.Alerts(context.Background(), time.Now().Add(-time.Minute), time.Now())
+	if err == nil {
+		t.Fatalf("row with unusable timestamp returned success and %+v", got)
+	}
+	if len(got.Rows) != 0 || len(got.Observations) != 0 {
+		t.Errorf("failed page returned consumed data: %+v", got)
+	}
 }
 
 func TestAQueryFailureIsReportedRatherThanReadAsNoAlerts(t *testing.T) {

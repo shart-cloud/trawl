@@ -18,6 +18,7 @@ package loki
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -70,7 +71,15 @@ func NewClient(endpoint, tenantID string, httpClient *http.Client) *Client {
 
 // Result is one page of decoded alerts.
 type Result struct {
+	// Rows are the cursor facts for every row Loki returned, including rows
+	// whose observation payload was malformed. A row with a valid Loki
+	// timestamp was consumed and must remain representable independently of
+	// whether attacker-influenced content decoded.
+	Rows []Row
+
 	// Observations are the records that decoded successfully, oldest first.
+	// Deprecated: callers that advance a cursor must iterate Rows so malformed
+	// payloads cannot pin progress.
 	Observations []*observation.Observation
 
 	// Malformed counts records that could not be decoded. They are skipped
@@ -81,6 +90,17 @@ type Result struct {
 	// Truncated says the page hit the limit, so more records exist in the
 	// window than were returned.
 	Truncated bool
+}
+
+// Row is one consumed Loki row.
+//
+// Timestamp and ID are deliberately independent of Observation. They are the
+// minimum facts a cursor needs to advance past a malformed payload without
+// storing or logging that payload. Observation is nil when decoding failed.
+type Row struct {
+	Timestamp   time.Time
+	ID          string
+	Observation *observation.Observation
 }
 
 // Alerts queries one bounded time range.
@@ -123,7 +143,7 @@ func (c *Client) Alerts(ctx context.Context, start, end time.Time) (Result, erro
 		return Result{}, fmt.Errorf("decoding alert response: %w", err)
 	}
 
-	return decode(body, limit), nil
+	return decode(body, limit)
 }
 
 // queryRangeResponse is the subset of Loki's response this reads.
@@ -140,19 +160,44 @@ type queryRangeResponse struct {
 	} `json:"data"`
 }
 
-func decode(body queryRangeResponse, limit int) Result {
+func decode(body queryRangeResponse, limit int) (Result, error) {
 	var result Result
 	entries := 0
 
-	for _, stream := range body.Data.Result {
-		for _, value := range stream.Values {
+	for streamIndex, stream := range body.Data.Result {
+		for rowIndex, value := range stream.Values {
 			entries++
+			if len(value) == 0 {
+				return Result{}, fmt.Errorf("decoding alert response: row %d in stream %d has no timestamp", rowIndex, streamIndex)
+			}
+			rawTimestamp, ok := value[0].(string)
+			if !ok {
+				return Result{}, fmt.Errorf("decoding alert response: row %d in stream %d has a non-string timestamp", rowIndex, streamIndex)
+			}
+			nanoseconds, err := strconv.ParseInt(rawTimestamp, 10, 64)
+			if err != nil || nanoseconds < 0 {
+				return Result{}, fmt.Errorf("decoding alert response: row %d in stream %d has an unusable timestamp", rowIndex, streamIndex)
+			}
+			at := time.Unix(0, nanoseconds).UTC()
+
 			if len(value) < 2 {
+				result.Rows = append(result.Rows, Row{
+					Timestamp: at,
+					ID:        malformedRowID(rawTimestamp, []byte("missing-line")),
+				})
 				result.Malformed++
 				continue
 			}
 			line, ok := value[1].(string)
 			if !ok {
+				encoded, marshalErr := json.Marshal(value[1])
+				if marshalErr != nil {
+					encoded = []byte(fmt.Sprintf("%T", value[1]))
+				}
+				result.Rows = append(result.Rows, Row{
+					Timestamp: at,
+					ID:        malformedRowID(rawTimestamp, encoded),
+				})
 				result.Malformed++
 				continue
 			}
@@ -163,13 +208,36 @@ func decode(body queryRangeResponse, limit int) Result {
 				// logging it would copy attacker-influenced content into the
 				// worker's own logs, which are read by people and shipped to
 				// the same Loki. The count is what an operator needs.
+				result.Rows = append(result.Rows, Row{
+					Timestamp: at,
+					ID:        malformedRowID(rawTimestamp, []byte(line)),
+				})
 				result.Malformed++
 				continue
 			}
+			id := obs.ID
+			if id == "" {
+				// A JSON object can decode without satisfying the observation
+				// contract. Retain a row-specific identity so several such
+				// records do not all collapse onto the empty ID.
+				id = malformedRowID(rawTimestamp, []byte(line))
+			}
+			result.Rows = append(result.Rows, Row{Timestamp: at, ID: id, Observation: &obs})
 			result.Observations = append(result.Observations, &obs)
 		}
 	}
 
 	result.Truncated = entries >= limit
-	return result
+	return result, nil
+}
+
+// malformedRowID produces a stable, non-payload cursor identity. The digest is
+// intentionally not exposed as diagnostics; it exists only to let the bounded
+// handled set recognize the same Loki row during overlap replay.
+func malformedRowID(timestamp string, payload []byte) string {
+	h := sha256.New()
+	_, _ = h.Write([]byte(timestamp))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write(payload)
+	return fmt.Sprintf("loki-row-%x", h.Sum(nil))
 }
