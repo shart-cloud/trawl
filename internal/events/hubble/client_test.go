@@ -17,10 +17,13 @@ limitations under the License.
 package hubble
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	flowpb "github.com/cilium/cilium/api/v1/flow"
+
+	"trawl.cloud/trawl/internal/observation"
 )
 
 func TestWatermarkOnlyMovesForward(t *testing.T) {
@@ -250,5 +253,70 @@ func TestAShortOutageIsNotReportedAsUnrecoverable(t *testing.T) {
 
 	if len(reasons) != 0 {
 		t.Errorf("a 10-second outage reported %v", reasons)
+	}
+}
+
+func TestReconnectSuppressesHandledIDsButDeliversUnseenOutageFlows(t *testing.T) {
+	// The reconnect deliberately overlaps the watermark. Stable IDs already
+	// handed to the worker must stop here, before either evidence emission or
+	// policy evaluation, while a flow that occurred during the outage must pass
+	// in the order the relay returned it.
+	at := time.Date(2026, 9, 9, 22, 0, 0, 0, time.UTC)
+	c := &Client{replayWindow: time.Minute}
+	var delivered []string
+	handle := func(_ context.Context, parsed *ParsedFlow) error {
+		delivered = append(delivered, parsed.Observation.ID)
+		return nil
+	}
+	parsed := func(id string, eventTime time.Time) *ParsedFlow {
+		obs := &observation.Observation{ID: id, EventTime: eventTime}
+		return &ParsedFlow{Observation: obs, EventTime: eventTime}
+	}
+
+	for _, flow := range []*ParsedFlow{
+		parsed("handled-a", at),
+		parsed("handled-b", at.Add(20*time.Second)),
+	} {
+		if err := c.deliver(context.Background(), flow, handle); err != nil {
+			t.Fatalf("initial delivery: %v", err)
+		}
+	}
+	for _, flow := range []*ParsedFlow{
+		parsed("handled-a", at),
+		parsed("outage-unseen", at.Add(10*time.Second)),
+		parsed("handled-b", at.Add(20*time.Second)),
+	} {
+		if err := c.deliver(context.Background(), flow, handle); err != nil {
+			t.Fatalf("reconnect delivery: %v", err)
+		}
+	}
+
+	want := []string{"handled-a", "handled-b", "outage-unseen"}
+	if len(delivered) != len(want) {
+		t.Fatalf("delivered IDs = %v, want %v", delivered, want)
+	}
+	for i := range want {
+		if delivered[i] != want[i] {
+			t.Errorf("delivered IDs = %v, want %v", delivered, want)
+			break
+		}
+	}
+}
+
+func TestHandledIDsExpireBehindTheReplayHorizon(t *testing.T) {
+	// The cursor lives for the process lifetime and denied flows can be
+	// continuous. Retaining identities Hubble can no longer return would turn
+	// reconnect safety into an unbounded memory leak.
+	at := time.Date(2026, 9, 9, 22, 0, 0, 0, time.UTC)
+	c := &Client{replayWindow: time.Minute}
+	c.remember("old-a", at)
+	c.remember("old-b", at.Add(10*time.Second))
+	c.remember("current", at.Add(2*time.Minute))
+
+	if len(c.handled) != 1 {
+		t.Fatalf("retained handled IDs = %v, want only the replayable identity", c.handled)
+	}
+	if _, ok := c.handled["current"]; !ok {
+		t.Errorf("current identity was pruned: %v", c.handled)
 	}
 }
