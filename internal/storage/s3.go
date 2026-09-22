@@ -158,7 +158,6 @@ func (s *S3Store) PutStream(ctx context.Context, key string, body io.Reader, siz
 		Size:         info.Size,
 		ETag:         info.ETag,
 		LastModified: info.LastModified,
-		RetainUntil:  opts.RetainUntil,
 		Metadata:     opts.Metadata,
 	}, nil
 }
@@ -175,15 +174,28 @@ func (s *S3Store) Head(ctx context.Context, key string) (ObjectInfo, error) {
 		}
 		return ObjectInfo{}, sanitize.Errorf("reading object metadata: %v", err)
 	}
-	info := objectInfoFrom(stat)
+	return objectInfoFrom(stat), nil
+}
 
-	// Retention lives on the object lock, not in StatObject's metadata. It is
-	// read separately so callers can verify that write-once protection was
-	// actually applied rather than assume the request took effect.
-	if _, until, err := s.client.GetObjectRetention(ctx, s.bucket, key, ""); err == nil && until != nil {
-		info.RetainUntil = *until
+// RetentionUntil reads the backend-enforced object-lock deadline for an
+// explicit diagnostic. It is deliberately separate from Head: readiness,
+// download, and commit verification need ordinary metadata and must not pay a
+// second backend request for a value they never consume.
+func (s *S3Store) RetentionUntil(ctx context.Context, key string) (time.Time, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
+	defer cancel()
+
+	_, until, err := s.client.GetObjectRetention(ctx, s.bucket, key, "")
+	if err != nil {
+		if isNotFound(err) {
+			return time.Time{}, ErrNotFound
+		}
+		return time.Time{}, sanitize.Errorf("reading object retention: %v", err)
 	}
-	return info, nil
+	if until == nil {
+		return time.Time{}, nil
+	}
+	return *until, nil
 }
 
 // Get implements Store.

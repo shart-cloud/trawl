@@ -196,15 +196,15 @@ func TestAuditLedgerAppliesWriteOnceRetention(t *testing.T) {
 		t.Fatalf("put with retention: %v", err)
 	}
 
-	info, err := store.Head(ctx, key)
+	gotRetention, err := store.RetentionUntil(ctx, key)
 	if err != nil {
-		t.Fatalf("head: %v", err)
+		t.Fatalf("reading object retention: %v", err)
 	}
-	if info.RetainUntil.IsZero() {
+	if gotRetention.IsZero() {
 		t.Fatal("the backend recorded no retention deadline on an audit object")
 	}
-	if diff := info.RetainUntil.Sub(retainUntil); diff > time.Minute || diff < -time.Minute {
-		t.Errorf("RetainUntil = %v, want ~%v", info.RetainUntil, retainUntil)
+	if diff := gotRetention.Sub(retainUntil); diff > time.Minute || diff < -time.Minute {
+		t.Errorf("RetentionUntil = %v, want ~%v", gotRetention, retainUntil)
 	}
 }
 

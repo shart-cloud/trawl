@@ -156,7 +156,6 @@ func (f *Fake) Put(_ context.Context, key string, body []byte, opts PutOptions) 
 		Size:         int64(len(body)),
 		ETag:         hex.EncodeToString(sum[:]),
 		LastModified: f.clock(),
-		RetainUntil:  opts.RetainUntil,
 		Metadata:     lowerKeys(opts.Metadata),
 	}
 	if f.swallow {
