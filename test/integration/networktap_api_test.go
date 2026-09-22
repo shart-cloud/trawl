@@ -20,10 +20,13 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	trawlv1alpha1 "trawl.cloud/trawl/api/v1alpha1"
@@ -308,6 +311,61 @@ func TestNetworkTapTargetsAreAssociativeByNode(t *testing.T) {
 	})
 	if err := Client().Status().Update(t.Context(), &fetched); err == nil {
 		t.Error("apiserver accepted duplicate target keys")
+	}
+}
+
+func TestDistinctSensorFieldManagersPreserveEachOthersTargets(t *testing.T) {
+	// Associative list schema is necessary but not sufficient. Server-side
+	// apply also tracks omission by field manager, so two sensors sharing one
+	// manager make each heartbeat authoritative for the other's entry and the
+	// last writer prunes it.
+	ns := NewNamespace(t)
+	tap := mirrorTap(ns, "target-field-owners")
+	if err := Client().Create(t.Context(), tap); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	apply := func(manager string, target trawlv1alpha1.TargetStatus) {
+		t.Helper()
+		statusValue, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&struct {
+			Targets []trawlv1alpha1.TargetStatus `json:"targets"`
+		}{Targets: []trawlv1alpha1.TargetStatus{target}})
+		if err != nil {
+			t.Fatalf("encoding target status: %v", err)
+		}
+		u := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": trawlv1alpha1.GroupVersion.String(),
+			"kind":       "NetworkTap",
+			"metadata": map[string]any{
+				"namespace": ns,
+				"name":      tap.Name,
+			},
+			"status": statusValue,
+		}}
+		if err := Client().Status().Apply(t.Context(), client.ApplyConfigurationFromUnstructured(u),
+			client.FieldOwner(manager), client.ForceOwnership); err != nil {
+			t.Fatalf("applying %s: %v", manager, err)
+		}
+	}
+
+	now := metav1.Now()
+	apply("sensor-node-a", trawlv1alpha1.TargetStatus{
+		NodeName: "node-a", Interface: "eth0", HeartbeatTime: now,
+	})
+	apply("sensor-node-b", trawlv1alpha1.TargetStatus{
+		NodeName: "node-b", Interface: "eth0", HeartbeatTime: now,
+	})
+	updated := metav1.NewTime(now.Add(time.Second))
+	apply("sensor-node-a", trawlv1alpha1.TargetStatus{
+		NodeName: "node-a", Interface: "eth0", HeartbeatTime: updated,
+	})
+
+	var fetched trawlv1alpha1.NetworkTap
+	if err := Client().Get(t.Context(), client.ObjectKeyFromObject(tap), &fetched); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if len(fetched.Status.Targets) != 2 {
+		t.Fatalf("targets after A, B, A applies = %+v, want both entries", fetched.Status.Targets)
 	}
 }
 
