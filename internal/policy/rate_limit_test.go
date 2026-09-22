@@ -17,6 +17,7 @@ limitations under the License.
 package policy_test
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -124,6 +125,58 @@ func TestAPolicyEditDoesNotResetTheHourlyBudget(t *testing.T) {
 
 	if got := policy.UsageFrom(jobs, policyUID, now); got.Hourly != 3 {
 		t.Errorf("hourly = %d, want 3 across generations", got.Hourly)
+	}
+}
+
+func TestUsageByPolicyMatchesIndependentUsageAcrossPolicyIdentities(t *testing.T) {
+	now := time.Date(2026, 9, 9, 22, 0, 0, 0, time.UTC)
+	oldUID := types.UID("22222222-2222-4222-8222-222222222222")
+	jobs := []trawlv1alpha1.CaptureJob{
+		job(now.Add(-10*time.Minute), trawlv1alpha1.CapturePhasePending),
+		job(now.Add(-2*time.Hour), trawlv1alpha1.CapturePhaseCompleted),
+		job(now.Add(-20*time.Minute), trawlv1alpha1.CapturePhaseFailed, func(j *trawlv1alpha1.CaptureJob) {
+			// The name is deliberately the same: deletion and recreation under
+			// that name must not transfer usage to the new UID.
+			j.Spec.PolicyRef.UID = oldUID
+		}),
+		job(now.Add(-5*time.Minute), trawlv1alpha1.CapturePhaseCapturing, func(j *trawlv1alpha1.CaptureJob) {
+			j.Spec.PolicyRef = nil
+			j.Spec.RequestType = trawlv1alpha1.CaptureRequestManual
+		}),
+	}
+
+	got := policy.UsageByPolicy(jobs, now)
+	for _, uid := range []types.UID{policyUID, oldUID, "never-captured"} {
+		want := policy.UsageFrom(jobs, uid, now)
+		if got[uid] != want {
+			t.Errorf("usage for %q = %+v, want independent result %+v", uid, got[uid], want)
+		}
+	}
+}
+
+var benchmarkUsageByPolicy map[types.UID]policy.Usage
+
+func BenchmarkUsageByPolicy(b *testing.B) {
+	now := time.Date(2026, 9, 9, 22, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		policies int
+		jobs     int
+	}{{10, 1_000}, {100, 10_000}, {1_000, 10_000}} {
+		b.Run(fmt.Sprintf("policies_%d/jobs_%d", tc.policies, tc.jobs), func(b *testing.B) {
+			jobs := make([]trawlv1alpha1.CaptureJob, tc.jobs)
+			for i := range jobs {
+				uid := types.UID(fmt.Sprintf("policy-%d", i%tc.policies))
+				jobs[i] = job(now.Add(-time.Duration(i%120)*time.Minute),
+					trawlv1alpha1.CapturePhaseCompleted, func(j *trawlv1alpha1.CaptureJob) {
+						j.Spec.PolicyRef.UID = uid
+					})
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				benchmarkUsageByPolicy = policy.UsageByPolicy(jobs, now)
+			}
+		})
 	}
 }
 
