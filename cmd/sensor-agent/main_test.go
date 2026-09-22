@@ -206,6 +206,25 @@ func TestEveryTailerSharesTheTargetsDuplicateCache(t *testing.T) {
 	}
 }
 
+func TestEachSensorHasAStableDistinctStatusFieldOwner(t *testing.T) {
+	targetA := trawlv1alpha1.TargetStatus{NodeName: "node-a", Interface: "eno1"}
+	targetB := trawlv1alpha1.TargetStatus{NodeName: "node-b", Interface: "eno1"}
+
+	a1 := statusFieldOwner("trawl-system", "tap", targetA)
+	a2 := statusFieldOwner("trawl-system", "tap", targetA)
+	b := statusFieldOwner("trawl-system", "tap", targetB)
+
+	if a1 != a2 {
+		t.Errorf("same sensor produced field owners %q and %q", a1, a2)
+	}
+	if a1 == b {
+		t.Errorf("different sensors share field owner %q; one apply can prune the other's target", a1)
+	}
+	if len(a1) > 128 {
+		t.Errorf("field owner is %d bytes, over Kubernetes' 128-byte bound", len(a1))
+	}
+}
+
 // The counters the analyzer reports have to reach the status the tap publishes.
 //
 // This is the omission main_test.go's duplication test named as still open:

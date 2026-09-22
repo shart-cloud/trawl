@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"net"
 	"os"
@@ -26,13 +27,6 @@ import (
 // reporting into API load. The reporter carries its own timestamps, so a
 // consumer can tell a stale report from a current one regardless.
 const statusInterval = 30 * time.Second
-
-// fieldOwner scopes server-side apply to this sensor.
-//
-// status.targets is a map list keyed by nodeName, so each sensor owns its own
-// entry and concurrent reporters merge rather than overwrite. A shared owner
-// would make the last writer delete every other node's entry.
-const fieldOwner = client.FieldOwner("trawl-sensor")
 
 // publishStatus reports this sensor's observed state to its NetworkTap until
 // the context ends.
@@ -104,9 +98,10 @@ func restConfig(tokenDir string) (*rest.Config, error) {
 }
 
 func applyStatus(ctx context.Context, c client.Client, r *sensor.StatusReporter, namespace, name string) error {
+	targetStatus := r.Build()
 	target, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&struct {
 		Targets []trawlv1alpha1.TargetStatus `json:"targets"`
-	}{Targets: []trawlv1alpha1.TargetStatus{r.Build()}})
+	}{Targets: []trawlv1alpha1.TargetStatus{targetStatus}})
 	if err != nil {
 		return sanitize.Errorf("encoding target status: %v", err)
 	}
@@ -125,5 +120,18 @@ func applyStatus(ctx context.Context, c client.Client, r *sensor.StatusReporter,
 	// must not read, merge and write back a list that other sensors are editing
 	// at the same time.
 	return c.Status().Apply(ctx, client.ApplyConfigurationFromUnstructured(u),
-		fieldOwner, client.ForceOwnership)
+		statusFieldOwner(namespace, name, targetStatus), client.ForceOwnership)
+}
+
+// statusFieldOwner scopes server-side apply to one sensor target.
+//
+// status.targets is a map list keyed by nodeName. A shared manager name makes
+// each apply authoritative for every target previously written by that same
+// manager, so node A's heartbeat can prune node B's entry. The digest keeps the
+// manager stable without putting attacker-controlled object names into a field
+// Kubernetes limits to 128 bytes.
+func statusFieldOwner(namespace, name string, target trawlv1alpha1.TargetStatus) client.FieldOwner {
+	digest := sha256.Sum256(fmt.Appendf(nil, "%s\x00%s\x00%s\x00%s",
+		namespace, name, target.NodeName, target.Interface))
+	return client.FieldOwner(fmt.Sprintf("trawl-sensor-%x", digest[:16]))
 }
