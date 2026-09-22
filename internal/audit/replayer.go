@@ -36,6 +36,10 @@ import (
 // before assuming something is wrong.
 const DefaultReplayInterval = 30 * time.Second
 
+// DefaultReplayBatchSize bounds ledger metadata and delivery work held between
+// cursor writes.
+const DefaultReplayBatchSize = 500
+
 // CursorStore persists the replay cursor across restarts.
 //
 // Load returns the empty string when no cursor has been stored yet. That is
@@ -67,6 +71,9 @@ type ReplayOptions struct {
 	// Interval defaults to DefaultReplayInterval.
 	Interval time.Duration
 
+	// BatchSize defaults to DefaultReplayBatchSize.
+	BatchSize int
+
 	// Now is indirected for tests.
 	Now func() time.Time
 }
@@ -84,12 +91,13 @@ type ReplayOptions struct {
 // pipeline is well-formed and collects nothing, and an audit query returns an
 // empty result rather than an error.
 type Replayer struct {
-	sink     *Sink
-	cursor   CursorStore
-	out      io.Writer
-	metrics  *telemetry.Metrics
-	interval time.Duration
-	now      func() time.Time
+	sink      *Sink
+	cursor    CursorStore
+	out       io.Writer
+	metrics   *telemetry.Metrics
+	interval  time.Duration
+	batchSize int
+	now       func() time.Time
 
 	// writes to Out are serialised: the manager's stdout is shared with its
 	// logger, and a record interleaved with a log line is a record no JSON
@@ -109,15 +117,19 @@ func NewReplayer(opts ReplayOptions) (*Replayer, error) {
 	}
 
 	r := &Replayer{
-		sink:     opts.Sink,
-		cursor:   opts.Cursor,
-		out:      opts.Out,
-		metrics:  opts.Metrics,
-		interval: opts.Interval,
-		now:      opts.Now,
+		sink:      opts.Sink,
+		cursor:    opts.Cursor,
+		out:       opts.Out,
+		metrics:   opts.Metrics,
+		interval:  opts.Interval,
+		batchSize: opts.BatchSize,
+		now:       opts.Now,
 	}
 	if r.interval <= 0 {
 		r.interval = DefaultReplayInterval
+	}
+	if r.batchSize <= 0 {
+		r.batchSize = DefaultReplayBatchSize
 	}
 	if r.now == nil {
 		r.now = time.Now
@@ -164,28 +176,32 @@ func (r *Replayer) ReplayOnce(ctx context.Context) error {
 		return sanitize.Errorf("loading the audit replay cursor: %v", err)
 	}
 
-	// last names the final record the stream accepted, which is what the cursor
-	// may advance to. Replay's own count is not enough: it says how many were
-	// forwarded, not which key that leaves us at.
-	last := ""
-	delivered, replayErr := r.sink.Replay(ctx, cursor, func(_ context.Context, rec Record) error {
-		if err := r.write(rec); err != nil {
-			return err
+	persisted := cursor
+	var replayErr, saveErr error
+	for {
+		batch, err := r.sink.ReplayBatch(ctx, persisted, r.batchSize,
+			func(_ context.Context, rec Record) error { return r.write(rec) })
+		if r.metrics != nil && batch.Delivered > 0 {
+			r.metrics.AuditReplayTotal.WithLabelValues(telemetry.AuditResultSuccess).
+				Add(float64(batch.Delivered))
 		}
-		last = rec.LedgerKey
-		return nil
-	})
 
-	if r.metrics != nil && delivered > 0 {
-		r.metrics.AuditReplayTotal.WithLabelValues(telemetry.AuditResultSuccess).Add(float64(delivered))
-	}
-
-	// Persist before returning any error. A pass that forwarded ten records and
-	// failed on the eleventh must not re-forward those ten on every retry.
-	saveErr := error(nil)
-	if last != "" && last != cursor {
-		if saveErr = r.cursor.Save(ctx, last); saveErr != nil {
-			saveErr = sanitize.Errorf("persisting the audit replay cursor: %v", saveErr)
+		// Persist every completed prefix before listing the next one. A
+		// cancellation or delivery failure can therefore replay at most one
+		// bounded batch rather than the whole suffix already forwarded.
+		if batch.LastDelivered != "" && batch.LastDelivered != persisted {
+			if saveErr = r.cursor.Save(ctx, batch.LastDelivered); saveErr != nil {
+				saveErr = sanitize.Errorf("persisting the audit replay cursor: %v", saveErr)
+				break
+			}
+			persisted = batch.LastDelivered
+		}
+		if err != nil {
+			replayErr = err
+			break
+		}
+		if batch.NextStart == "" {
+			break
 		}
 	}
 
@@ -196,11 +212,7 @@ func (r *Replayer) ReplayOnce(ctx context.Context) error {
 	// The backlog is reported against the cursor that was actually persisted.
 	// Reporting against the one replay reached would claim a drained stream
 	// whenever the cursor write was the thing that failed.
-	reported := cursor
-	if saveErr == nil && last != "" {
-		reported = last
-	}
-	r.reportBacklog(ctx, reported)
+	r.reportBacklog(ctx, persisted)
 
 	return errors.Join(replayErr, saveErr)
 }

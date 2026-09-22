@@ -337,6 +337,77 @@ func TestReplayerTreatsALostCursorAsTheBeginning(t *testing.T) {
 	}
 }
 
+type cancellingPageStore struct {
+	storage.Store
+	cancel      context.CancelFunc
+	cancelAfter int
+	calls       int
+	maxLimit    int
+}
+
+func (s *cancellingPageStore) ListPage(
+	ctx context.Context,
+	prefix, startAt string,
+	limit int,
+) (storage.ListPage, error) {
+	s.calls++
+	s.maxLimit = max(s.maxLimit, limit)
+	page, err := s.Store.ListPage(ctx, prefix, startAt, limit)
+	if s.calls == s.cancelAfter {
+		s.cancel()
+	}
+	return page, err
+}
+
+func TestReplayPersistsProgressOneBoundedBatchAtATime(t *testing.T) {
+	base := storage.NewFake()
+	_, keys := commitN(t, base, 10)
+	ctx, cancel := context.WithCancel(context.Background())
+	bounded := &cancellingPageStore{Store: base, cancel: cancel, cancelAfter: 2}
+	sink, err := NewSink(Options{
+		Store: bounded, Prefix: DefaultPrefix, Retention: 365 * 24 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("NewSink: %v", err)
+	}
+	cursor := &memoryCursor{}
+	var first bytes.Buffer
+	r, err := NewReplayer(ReplayOptions{
+		Sink: sink, Cursor: cursor, Out: &first, BatchSize: 3,
+	})
+	if err != nil {
+		t.Fatalf("NewReplayer: %v", err)
+	}
+	if err := r.ReplayOnce(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled replay = %v, want context.Canceled", err)
+	}
+	if got := len(lines(t, &first)); got != 6 {
+		t.Fatalf("forwarded %d records before cancellation, want two batches of 3", got)
+	}
+	if cursor.value != keys[5] {
+		t.Errorf("cursor = %q, want last record in the second batch %q", cursor.value, keys[5])
+	}
+	if bounded.maxLimit > 4 {
+		t.Errorf("storage page limit = %d, want at most batch size plus inclusive cursor", bounded.maxLimit)
+	}
+
+	var second bytes.Buffer
+	restarted := newTestReplayer(t, sink, cursor, &second, nil)
+	restarted.batchSize = 3
+	if err := restarted.ReplayOnce(context.Background()); err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	combined := append(lines(t, &first), lines(t, &second)...)
+	if len(combined) != len(keys) {
+		t.Fatalf("combined delivery = %d records, want %d", len(combined), len(keys))
+	}
+	for i := range keys {
+		if combined[i].LedgerKey != keys[i] {
+			t.Fatalf("combined record %d = %q, want %q", i, combined[i].LedgerKey, keys[i])
+		}
+	}
+}
+
 func TestReplayerRefusesAnIncompleteConfiguration(t *testing.T) {
 	// A replayer with no destination would report success while forwarding
 	// nothing, which is the failure this whole path exists to make impossible.
