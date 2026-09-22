@@ -37,6 +37,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"trawl.cloud/trawl/internal/controller"
+	"trawl.cloud/trawl/internal/events/hubble"
 	"trawl.cloud/trawl/internal/events/loki"
 )
 
@@ -163,6 +164,19 @@ func TestTheWorkersRoleAllowsTheStatusWriteAndTheCursor(t *testing.T) {
 	cursor.Advance(f.now, "another-alert")
 	if err := store.Save(ctx, cursor); err != nil {
 		t.Fatalf("the Role refused updating the alert cursor: %v", err)
+	}
+
+	hubbleStore := &hubble.ConfigMapStore{Client: workerClient, Namespace: f.namespace}
+	hubbleCursor := hubble.Cursor{
+		Watermark: f.now,
+		Handled:   map[string]time.Time{"some-flow": f.now},
+	}
+	if err := hubbleStore.Save(ctx, hubbleCursor); err != nil {
+		t.Fatalf("the Role refused creating the Hubble cursor: %v", err)
+	}
+	hubbleCursor.Handled["another-flow"] = f.now
+	if err := hubbleStore.Save(ctx, hubbleCursor); err != nil {
+		t.Fatalf("the Role refused updating the Hubble cursor: %v", err)
 	}
 }
 

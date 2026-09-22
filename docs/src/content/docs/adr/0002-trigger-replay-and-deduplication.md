@@ -23,8 +23,12 @@ incident, not fifty.
 deliberate overlap window on resume. Overlap guarantees no gap; a per-event
 fingerprint suppresses the re-delivered records inside it. Timestamp ties are
 resolved by fingerprint, not by ordering assumptions. Hubble reconnects use an
-event-time watermark and report unrecoverable loss explicitly rather than
-pretending continuity.
+event-time watermark plus stable handled IDs. That bounded Hubble cursor is
+persisted before a replacement leader opens its stream, so reconnect and
+restart overlap recover unseen outage flows without emitting old evidence or
+evaluating it twice. Cursor load or save failure is a source gap, not a claim
+of replay safety. Coverage older than Hubble's replay bound is likewise
+reported explicitly rather than presented as continuity.
 
 **Deduplication identity is the traffic, not the policy.** The key is a
 canonical direction-neutral five-tuple plus the tap, hashed into a cooldown
@@ -70,12 +74,15 @@ restarts without a separate store.
   That is intended: a long incident should produce periodic evidence.
 - Cursor loss degrades to the overlap window, which is bounded and observable
   as a known gap rather than silent loss.
-- The worker needs ConfigMap write access for the cursor — a narrow grant, but
-  it must be scoped by resource name.
+- The worker needs ConfigMap write access for the Loki and Hubble cursors — a
+  narrow grant scoped to those two resource names.
 
 ## Rollback
 
-Cursors are data, not schema. Deleting the cursor ConfigMap makes the worker
-resume from now, losing backlog but never creating duplicates. Rolling back the
-worker image is safe because dedupe identity lives in CaptureJob names already
+Cursors are data, not schema. Deleting the Loki cursor makes that source resume
+from its bounded lookback and report the gap. Deleting the Hubble cursor removes
+the proof needed to suppress restart overlap, so the worker reports degraded
+replay safety; deterministic CaptureJob identity still prevents the same
+occurrence from authorizing a second capture. Rolling back the worker image is
+safe because capture dedupe identity lives in CaptureJob names already
 persisted in the cluster.

@@ -74,13 +74,13 @@ rules:
   - apiGroups: ["trawl.cloud"]
     resources: ["capturejobs"]
     verbs: ["get", "list", "watch", "create"]
-  # The alert cursor. Named, because this is the only ConfigMap the worker has
-  # any business touching and an unrestricted grant would include every
+  # The event cursors. Named, because these are the only ConfigMaps the worker
+  # has any business touching and an unrestricted grant would include every
   # configuration object in the namespace - trawl-config among them.
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "update"]
-    resourceNames: ["trawl-alert-cursor"]
+    resourceNames: ["trawl-alert-cursor", "trawl-hubble-cursor"]
   # Creating it requires an unnamed create, since the name cannot be checked
   # before the object exists - the same shape as the lease above.
   - apiGroups: [""]
