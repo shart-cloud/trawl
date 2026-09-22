@@ -94,12 +94,26 @@ func TestTargetSummaryExcludesStaleHealthAndKeepsPacketHistory(t *testing.T) {
 		},
 	}}
 
-	r := &NetworkTapReconciler{}
-	ready, lastPacket := r.summarizeTargets(tap)
-	if ready != 1 {
-		t.Errorf("ready targets = %d, want only the fresh target", ready)
+	got := projectNetworkTapStatus(tap.Status, networkTapStatusFacts{
+		generation:      7,
+		matchedTargets:  2,
+		workloadReady:   metav1.ConditionTrue,
+		workloadMessage: workloadReadyMessage,
+		now:             now,
+	})
+	if got.ReadyTargets != 1 {
+		t.Errorf("ready targets = %d, want only the fresh target", got.ReadyTargets)
 	}
-	if lastPacket == nil || !lastPacket.Equal(&newPacket) {
-		t.Errorf("last packet = %v, want %v", lastPacket, newPacket)
+	if got.LastPacketTime == nil || !got.LastPacketTime.Equal(&newPacket) {
+		t.Errorf("last packet = %v, want %v", got.LastPacketTime, newPacket)
+	}
+	if got.Phase != trawlv1alpha1.TapPhaseDegraded {
+		t.Errorf("phase = %q, want Degraded for one of two ready targets", got.Phase)
+	}
+	if got.ObservedGeneration != 7 || got.MatchedTargets != 2 {
+		t.Errorf("generation/targets = %d/%d, want 7/2", got.ObservedGeneration, got.MatchedTargets)
+	}
+	if len(got.Conditions) != 5 {
+		t.Errorf("conditions = %+v, want the complete five-condition projection", got.Conditions)
 	}
 }
