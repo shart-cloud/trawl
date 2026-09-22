@@ -117,3 +117,75 @@ func TestTargetSummaryExcludesStaleHealthAndKeepsPacketHistory(t *testing.T) {
 		t.Errorf("conditions = %+v, want the complete five-condition projection", got.Conditions)
 	}
 }
+
+func TestStalenessChangesCurrentHealthWithoutErasingPacketHistory(t *testing.T) {
+	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	staleHeartbeatTime := metav1.NewTime(now.Add(-2 * staleHeartbeat))
+	freshHeartbeatTime := metav1.NewTime(now)
+	oldPacket := metav1.NewTime(now.Add(-time.Hour))
+
+	project := func(targets []trawlv1alpha1.TargetStatus, matched int) trawlv1alpha1.NetworkTapStatus {
+		return projectNetworkTapStatus(trawlv1alpha1.NetworkTapStatus{Targets: targets}, networkTapStatusFacts{
+			generation:      3,
+			matchedTargets:  matched,
+			workloadReady:   metav1.ConditionTrue,
+			workloadMessage: workloadReadyMessage,
+			now:             now,
+		})
+	}
+
+	t.Run("stale-only packet history survives", func(t *testing.T) {
+		got := project([]trawlv1alpha1.TargetStatus{{
+			NodeName:       "old-node",
+			HeartbeatTime:  staleHeartbeatTime,
+			LastPacketTime: &oldPacket,
+			Analyzers:      []trawlv1alpha1.AnalyzerStatus{{Name: "Suricata", Healthy: true}},
+		}}, 1)
+		if got.LastPacketTime == nil || !got.LastPacketTime.Equal(&oldPacket) {
+			t.Errorf("last packet = %v, want historical %v", got.LastPacketTime, oldPacket)
+		}
+		if got.ReadyTargets != 0 || got.Phase != trawlv1alpha1.TapPhasePending {
+			t.Errorf("ready/phase = %d/%s, want 0/Pending", got.ReadyTargets, got.Phase)
+		}
+		analyzers := tapCondition(got.Conditions, "AnalyzersHealthy")
+		if analyzers == nil || analyzers.Status != metav1.ConditionUnknown || analyzers.Reason != "ProbeUnavailable" {
+			t.Errorf("analyzer condition = %+v, want Unknown/ProbeUnavailable", analyzers)
+		}
+		packets := tapCondition(got.Conditions, "PacketsObserved")
+		if packets == nil || packets.Status != metav1.ConditionTrue {
+			t.Errorf("packet condition = %+v, want historical True", packets)
+		}
+	})
+
+	t.Run("stale unhealthy evidence does not override fresh health", func(t *testing.T) {
+		got := project([]trawlv1alpha1.TargetStatus{
+			{
+				NodeName:      "old-node",
+				HeartbeatTime: staleHeartbeatTime,
+				Analyzers:     []trawlv1alpha1.AnalyzerStatus{{Name: "Suricata", Healthy: false}},
+			},
+			{
+				NodeName:      "current-node",
+				HeartbeatTime: freshHeartbeatTime,
+				Analyzers:     []trawlv1alpha1.AnalyzerStatus{{Name: "Suricata", Healthy: true}},
+			},
+		}, 2)
+		analyzers := tapCondition(got.Conditions, "AnalyzersHealthy")
+		if analyzers == nil || analyzers.Status != metav1.ConditionTrue {
+			t.Errorf("analyzer condition = %+v, want current healthy evidence", analyzers)
+		}
+		if got.ReadyTargets != 1 || got.Phase != trawlv1alpha1.TapPhaseDegraded {
+			t.Errorf("ready/phase = %d/%s, want 1/Degraded for partial current coverage",
+				got.ReadyTargets, got.Phase)
+		}
+	})
+}
+
+func tapCondition(conditions []metav1.Condition, conditionType string) *metav1.Condition {
+	for i := range conditions {
+		if conditions[i].Type == conditionType {
+			return &conditions[i]
+		}
+	}
+	return nil
+}
