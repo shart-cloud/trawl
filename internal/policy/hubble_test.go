@@ -239,6 +239,30 @@ func TestAReplayedEventIsCountedOnce(t *testing.T) {
 	}
 }
 
+func TestAReplayCannotRejuvenateAnEventsPlaceInTheWindow(t *testing.T) {
+	// Identity decides whether this is a new occurrence. Delivery time must not
+	// refresh an existing event, or reconnect replay can keep an old denial in
+	// the active window long enough to help a later, unrelated denial satisfy
+	// the threshold.
+	window := policy.NewThresholdWindow(3, 30*time.Second)
+	at := time.Date(2026, 9, 9, 14, 0, 0, 0, time.UTC)
+
+	window.Observe(seen(0, at))
+	window.Observe(seen(1, at.Add(25*time.Second)))
+
+	replayed := seen(0, at.Add(40*time.Second))
+	replayed.EventTime = at
+	window.Observe(replayed)
+
+	got := window.Observe(seen(2, at.Add(40*time.Second)))
+	if got.Reached {
+		t.Errorf("a replay refreshed an old event and reached the threshold (count %d)", got.Count)
+	}
+	if got.Count != 2 {
+		t.Errorf("count = %d, want 2 after the original event aged out", got.Count)
+	}
+}
+
 func TestAnEventOlderThanTheWindowIsNotCounted(t *testing.T) {
 	// Out-of-order delivery is normal: the worker can be handed a record older
 	// than one it has already seen. Such a record is evidence, but it is not

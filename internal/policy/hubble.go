@@ -105,11 +105,14 @@ func NewThresholdWindow(count int, d time.Duration) *ThresholdWindow {
 // rate the worker actually saw.
 func (w *ThresholdWindow) Observe(obs *observation.Observation) ThresholdCount {
 	// Keyed by the observation's stable ID, so a record delivered twice - which
-	// replay around a cursor does deliberately - counts once.
-	w.events[obs.ID] = obs.ObservedAt
-
-	if obs.ObservedAt.After(w.newest) {
-		w.newest = obs.ObservedAt
+	// replay around a cursor does deliberately - counts once. Preserve the
+	// first delivery time as well as the count: replacing it on replay would
+	// rejuvenate an old occurrence and let it remain in a later rate window.
+	if _, seen := w.events[obs.ID]; !seen {
+		w.events[obs.ID] = obs.ObservedAt
+		if obs.ObservedAt.After(w.newest) {
+			w.newest = obs.ObservedAt
+		}
 	}
 	w.expire()
 
