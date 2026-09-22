@@ -271,6 +271,31 @@ func (s *Sink) recordKeyFor(rec Record) string {
 // DeliverFunc forwards one record to the searchable stream.
 type DeliverFunc func(ctx context.Context, rec Record) error
 
+const (
+	// ReplayFailureRead means the ledger object could not be retrieved.
+	ReplayFailureRead = "read"
+	// ReplayFailureDecode means bytes were retrieved but were not a valid audit
+	// record. Contents are deliberately absent from the failure.
+	ReplayFailureDecode = "decode"
+)
+
+// ReplayFailure identifies the exact ledger key that blocks ordered replay.
+//
+// The key and a bounded classification are safe operational facts. Cause is
+// sanitized and Error never includes object contents.
+type ReplayFailure struct {
+	Key            string
+	Classification string
+	Cause          error
+}
+
+func (e *ReplayFailure) Error() string {
+	return fmt.Sprintf("audit replay blocked at ledger key %q: %s",
+		sanitize.String(e.Key), e.Classification)
+}
+
+func (e *ReplayFailure) Unwrap() error { return e.Cause }
+
 // Replay forwards ledger records to the searchable stream, beginning at cursor.
 //
 // The cursor names the last record the stream accepted, so its own object is
@@ -296,13 +321,20 @@ func (s *Sink) Replay(ctx context.Context, cursor string, deliver DeliverFunc) (
 	for _, obj := range objects {
 		body, err := s.store.Get(ctx, obj.Key)
 		if err != nil {
-			return delivered, sanitize.Errorf("reading audit ledger object: %v", err)
+			return delivered, &ReplayFailure{
+				Key: obj.Key, Classification: ReplayFailureRead,
+				Cause: sanitize.Errorf("reading audit ledger object: %v", err),
+			}
 		}
 		rec, err := Decode(body)
 		if err != nil {
-			// A single unreadable object must not stall the whole stream; it is
-			// counted and stepped over.
-			continue
+			// Ordered replay cannot step over unreadable evidence. Doing so would
+			// let the cursor and searchable copy claim coverage after a hole that
+			// only the authoritative ledger still exposes.
+			return delivered, &ReplayFailure{
+				Key: obj.Key, Classification: ReplayFailureDecode,
+				Cause: sanitize.Errorf("decoding audit ledger object: %v", err),
+			}
 		}
 		if err := deliver(ctx, rec); err != nil {
 			return delivered, sanitize.Errorf("forwarding audit record: %v", err)
