@@ -189,3 +189,19 @@ func tapCondition(conditions []metav1.Condition, conditionType string) *metav1.C
 	}
 	return nil
 }
+
+func TestNextHeartbeatExpirySchedulesOnlyARealFreshnessDeadline(t *testing.T) {
+	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	targets := []trawlv1alpha1.TargetStatus{
+		{NodeName: "later", HeartbeatTime: metav1.NewTime(now.Add(-10 * time.Second))},
+		{NodeName: "next", HeartbeatTime: metav1.NewTime(now.Add(-60 * time.Second))},
+		{NodeName: "stale", HeartbeatTime: metav1.NewTime(now.Add(-2 * staleHeartbeat))},
+	}
+
+	if got, want := nextHeartbeatExpiry(targets, now), 30*time.Second; got != want {
+		t.Errorf("next expiry = %s, want %s", got, want)
+	}
+	if got := nextHeartbeatExpiry(targets, now.Add(staleHeartbeat)); got != 0 {
+		t.Errorf("all-stale targets scheduled another reconcile in %s", got)
+	}
+}

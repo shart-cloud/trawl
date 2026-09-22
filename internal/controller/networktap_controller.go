@@ -72,6 +72,8 @@ type NetworkTapReconciler struct {
 	Config    *config.Config
 	Renderer  *WorkloadRenderer
 	Metrics   *telemetry.Metrics
+	// Now is time.Now unless a test pins the status and heartbeat clock.
+	Now func() time.Time
 }
 
 // +kubebuilder:rbac:groups=trawl.cloud,resources=networktaps,verbs=get;list;watch;update;patch
@@ -165,15 +167,24 @@ func (r *NetworkTapReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, r.reportUnavailable(ctx, &tap, "applying the tap's owned resources", err)
 	}
 
-	if err := r.updateStatus(ctx, &tap, len(nodes)); err != nil {
+	now := r.clock()
+	if err := r.updateStatus(ctx, &tap, len(nodes), now); err != nil {
 		result = telemetry.ReconcileError
 		return ctrl.Result{}, sanitize.Error(err)
 	}
 
-	// A steady requeue keeps heartbeat staleness observable. Without it a tap
-	// whose sensor died silently would keep its last reported status forever,
-	// because nothing else would trigger a reconcile.
-	return ctrl.Result{RequeueAfter: staleHeartbeat / 3}, nil
+	// Wake at the next fact change that cannot produce its own watch event: a
+	// fresh heartbeat becoming stale. Once all reports are stale, sensor, spec,
+	// node and workload events are the only things that can change the answer,
+	// so permanent polling would only repeat no-op reconciliation.
+	return ctrl.Result{RequeueAfter: nextHeartbeatExpiry(tap.Status.Targets, now)}, nil
+}
+
+func (r *NetworkTapReconciler) clock() time.Time {
+	if r.Now != nil {
+		return r.Now()
+	}
+	return time.Now()
 }
 
 // eligibleNodes resolves the tap's node selector.
@@ -341,7 +352,12 @@ func (r *NetworkTapReconciler) applyOwned(ctx context.Context, tap *trawlv1alpha
 }
 
 // updateStatus derives the tap's aggregate status from what is observed.
-func (r *NetworkTapReconciler) updateStatus(ctx context.Context, tap *trawlv1alpha1.NetworkTap, matched int) error {
+func (r *NetworkTapReconciler) updateStatus(
+	ctx context.Context,
+	tap *trawlv1alpha1.NetworkTap,
+	matched int,
+	now time.Time,
+) error {
 	previous := tap.Status.DeepCopy()
 	workloadReady, workloadReason, workloadErr := r.workloadReady(ctx, tap)
 	tap.Status = projectNetworkTapStatus(tap.Status, networkTapStatusFacts{
@@ -349,7 +365,7 @@ func (r *NetworkTapReconciler) updateStatus(ctx context.Context, tap *trawlv1alp
 		matchedTargets:  matched,
 		workloadReady:   workloadReady,
 		workloadMessage: workloadReason,
-		now:             time.Now(),
+		now:             now,
 	})
 
 	if err := r.writeStatusIfChanged(ctx, tap, previous, status.ReasonPending); err != nil {
