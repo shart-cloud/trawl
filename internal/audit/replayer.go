@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
 	"sync"
 	"time"
 
@@ -105,6 +106,17 @@ type Replayer struct {
 	mu sync.Mutex
 }
 
+// ReplayOutcome is the complete set of facts established by one bounded
+// traversal. Backlog is nil when replay stopped before it could measure the
+// complete suffix covered by PersistedCursor.
+type ReplayOutcome struct {
+	Delivered       int
+	LastDelivered   string
+	PersistedCursor string
+	Backlog         *ReplayBacklog
+	Failure         error
+}
+
 // NewReplayer validates the options and returns a Replayer.
 func NewReplayer(opts ReplayOptions) (*Replayer, error) {
 	switch {
@@ -171,16 +183,29 @@ func (r *Replayer) Start(ctx context.Context) error {
 // ReplayOnce forwards everything the stream has not seen and persists how far
 // it got.
 func (r *Replayer) ReplayOnce(ctx context.Context) error {
+	return r.Replay(ctx).Failure
+}
+
+// Replay forwards one ledger suffix and reports only facts established by that
+// same traversal. It never performs a second listing to infer backlog state.
+func (r *Replayer) Replay(ctx context.Context) ReplayOutcome {
 	cursor, err := r.cursor.Load(ctx)
 	if err != nil {
-		return sanitize.Errorf("loading the audit replay cursor: %v", err)
+		outcome := ReplayOutcome{Failure: sanitize.Errorf("loading the audit replay cursor: %v", err)}
+		r.reportOutcome(outcome)
+		return outcome
 	}
 
 	persisted := cursor
+	outcome := ReplayOutcome{PersistedCursor: cursor}
 	var replayErr, saveErr error
 	for {
 		batch, err := r.sink.ReplayBatch(ctx, persisted, r.batchSize,
 			func(_ context.Context, rec Record) error { return r.write(rec) })
+		outcome.Delivered += batch.Delivered
+		if batch.LastDelivered != "" {
+			outcome.LastDelivered = batch.LastDelivered
+		}
 		if r.metrics != nil && batch.Delivered > 0 {
 			r.metrics.AuditReplayTotal.WithLabelValues(telemetry.AuditResultSuccess).
 				Add(float64(batch.Delivered))
@@ -195,26 +220,27 @@ func (r *Replayer) ReplayOnce(ctx context.Context) error {
 				break
 			}
 			persisted = batch.LastDelivered
+			outcome.PersistedCursor = persisted
 		}
 		if err != nil {
 			replayErr = err
+			outcome.Backlog = batch.Backlog
 			break
 		}
 		if batch.NextStart == "" {
+			outcome.Backlog = batch.Backlog
 			break
 		}
 	}
 
-	if replayErr != nil && r.metrics != nil {
-		r.metrics.AuditReplayTotal.WithLabelValues(telemetry.AuditResultUnavailable).Inc()
+	outcome.Failure = errors.Join(replayErr, saveErr)
+	if saveErr != nil {
+		// The batch facts describe LastDelivered, not the older persisted cursor.
+		// Combining them would understate backlog after a cursor-store failure.
+		outcome.Backlog = nil
 	}
-
-	// The backlog is reported against the cursor that was actually persisted.
-	// Reporting against the one replay reached would claim a drained stream
-	// whenever the cursor write was the thing that failed.
-	r.reportBacklog(ctx, persisted)
-
-	return errors.Join(replayErr, saveErr)
+	r.reportOutcome(outcome)
+	return outcome
 }
 
 // write emits one record as a single JSON line.
@@ -232,25 +258,30 @@ func (r *Replayer) write(rec Record) error {
 	return nil
 }
 
-// reportBacklog maintains the two gauges that say whether the searchable copy
-// is keeping up with the ledger.
+// reportOutcome maintains replay and backlog metrics from the same traversal
+// that advanced the cursor.
 //
 // Both were registered long before anything set them, so they read zero -
 // "nothing unforwarded" - while the entire ledger was unforwarded. A failure
-// to measure the backlog is reported as no measurement rather than as a zero,
-// which is the distinction that made the original silence possible.
-func (r *Replayer) reportBacklog(ctx context.Context, cursor string) {
+// to measure the backlog is reported as NaN rather than as a zero or a stale
+// prior value, which is the distinction that made the original silence
+// possible.
+func (r *Replayer) reportOutcome(outcome ReplayOutcome) {
 	if r.metrics == nil {
 		return
 	}
-	objects, oldest, err := r.sink.Backlog(ctx, cursor)
-	if err != nil {
+	if outcome.Failure != nil {
+		r.metrics.AuditReplayTotal.WithLabelValues(telemetry.AuditResultUnavailable).Inc()
+	}
+	if outcome.Backlog == nil {
+		r.metrics.AuditBacklogObjects.Set(math.NaN())
+		r.metrics.AuditOldestUnforwardedSecs.Set(math.NaN())
 		return
 	}
-	r.metrics.AuditBacklogObjects.Set(float64(objects))
-	if objects == 0 || oldest.IsZero() {
+	r.metrics.AuditBacklogObjects.Set(float64(outcome.Backlog.Objects))
+	if outcome.Backlog.Objects == 0 || outcome.Backlog.Oldest.IsZero() {
 		r.metrics.AuditOldestUnforwardedSecs.Set(0)
 		return
 	}
-	r.metrics.AuditOldestUnforwardedSecs.Set(r.now().Sub(oldest).Seconds())
+	r.metrics.AuditOldestUnforwardedSecs.Set(r.now().Sub(outcome.Backlog.Oldest).Seconds())
 }

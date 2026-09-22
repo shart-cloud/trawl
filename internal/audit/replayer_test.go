@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -300,6 +301,107 @@ func TestReplayerReportsTheBacklogItHasNotForwarded(t *testing.T) {
 
 	if got := testutil.ToFloat64(m.AuditBacklogObjects); got != 2 {
 		t.Errorf("backlog gauge is %v, want 2: one record was forwarded of three", got)
+	}
+}
+
+type noBroadListStore struct {
+	storage.Store
+	listCalls int
+}
+
+func (s *noBroadListStore) List(context.Context, string, string) ([]storage.ObjectInfo, error) {
+	s.listCalls++
+	return nil, errors.New("unbounded List must not be used by replay")
+}
+
+func TestReplayOutcomeOwnsCursorAndBacklogTruth(t *testing.T) {
+	base := storage.NewFake()
+	_, keys := commitN(t, base, 3)
+	bounded := &noBroadListStore{Store: base}
+	sink, err := NewSink(Options{
+		Store: bounded, Prefix: DefaultPrefix, Retention: 365 * 24 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("NewSink: %v", err)
+	}
+	cursor := &memoryCursor{}
+	r, err := NewReplayer(ReplayOptions{
+		Sink: sink, Cursor: cursor, Out: &failingWriter{failAfter: 1}, BatchSize: 10,
+	})
+	if err != nil {
+		t.Fatalf("NewReplayer: %v", err)
+	}
+
+	outcome := r.Replay(context.Background())
+	if outcome.Failure == nil {
+		t.Fatal("replay outcome reported success despite a stream write failure")
+	}
+	if outcome.Delivered != 1 || outcome.LastDelivered != keys[0] {
+		t.Errorf("delivery outcome = (%d, %q), want (1, %q)",
+			outcome.Delivered, outcome.LastDelivered, keys[0])
+	}
+	if outcome.PersistedCursor != keys[0] {
+		t.Errorf("persisted cursor = %q, want %q", outcome.PersistedCursor, keys[0])
+	}
+	if outcome.Backlog == nil || outcome.Backlog.Objects != 2 {
+		t.Fatalf("backlog = %+v, want an exact two-object remainder", outcome.Backlog)
+	}
+	if bounded.listCalls != 0 {
+		t.Errorf("replay made %d unbounded List calls, want none", bounded.listCalls)
+	}
+}
+
+func TestReplayMarksBacklogUnmeasuredWhenTraversalCannotEstablishIt(t *testing.T) {
+	base := storage.NewFake()
+	_, keys := commitN(t, base, 5)
+	if _, err := base.Put(context.Background(), keys[1], []byte("{not an audit record"),
+		storage.PutOptions{}); err != nil {
+		t.Fatalf("corrupting fixture: %v", err)
+	}
+	sink, err := NewSink(Options{
+		Store: base, Prefix: DefaultPrefix, Retention: 365 * 24 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("NewSink: %v", err)
+	}
+	m := telemetry.NewMetrics()
+	var stream bytes.Buffer
+	r, err := NewReplayer(ReplayOptions{
+		Sink: sink, Cursor: &memoryCursor{}, Out: &stream, Metrics: m, BatchSize: 2,
+	})
+	if err != nil {
+		t.Fatalf("NewReplayer: %v", err)
+	}
+
+	outcome := r.Replay(context.Background())
+	if outcome.Failure == nil || outcome.Backlog != nil {
+		t.Fatalf("outcome = %+v, want blocking failure with unavailable backlog", outcome)
+	}
+	if got := testutil.ToFloat64(m.AuditBacklogObjects); !math.IsNaN(got) {
+		t.Errorf("backlog gauge = %v, want NaN for an unavailable measurement", got)
+	}
+	if got := testutil.ToFloat64(m.AuditOldestUnforwardedSecs); !math.IsNaN(got) {
+		t.Errorf("oldest gauge = %v, want NaN for an unavailable measurement", got)
+	}
+}
+
+func TestReplayDoesNotInventBacklogWhenCursorPersistenceFails(t *testing.T) {
+	base := storage.NewFake()
+	sink, _ := commitN(t, base, 2)
+	m := telemetry.NewMetrics()
+	cursor := &memoryCursor{saveErr: errors.New("API server unavailable")}
+	var stream bytes.Buffer
+	r := newTestReplayer(t, sink, cursor, &stream, m)
+
+	outcome := r.Replay(context.Background())
+	if outcome.Failure == nil || outcome.Backlog != nil {
+		t.Fatalf("outcome = %+v, want cursor failure with unavailable backlog", outcome)
+	}
+	if outcome.Delivered != 2 || outcome.LastDelivered == "" || outcome.PersistedCursor != "" {
+		t.Errorf("outcome = %+v, want two delivered records and no persisted cursor", outcome)
+	}
+	if got := testutil.ToFloat64(m.AuditBacklogObjects); !math.IsNaN(got) {
+		t.Errorf("backlog gauge = %v, want NaN after cursor persistence failed", got)
 	}
 }
 

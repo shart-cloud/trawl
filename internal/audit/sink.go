@@ -300,9 +300,20 @@ func (e *ReplayFailure) Unwrap() error { return e.Cause }
 type ReplayBatchResult struct {
 	Delivered     int
 	LastDelivered string
+	// Backlog is exact only when this page established the complete suffix
+	// remaining after LastDelivered. Nil means later pages exist or listing
+	// failed, so neither the count nor oldest object is known.
+	Backlog *ReplayBacklog
 	// NextStart is the first ledger key not examined in this batch. Empty means
 	// the listed suffix was drained.
 	NextStart string
+}
+
+// ReplayBacklog is an exact measurement of the ledger suffix not covered by a
+// replay cursor.
+type ReplayBacklog struct {
+	Objects int
+	Oldest  time.Time
 }
 
 // ReplayBatch forwards at most limit records after cursor.
@@ -334,9 +345,10 @@ func (s *Sink) ReplayBatch(
 	}
 
 	result := ReplayBatchResult{NextStart: next}
-	for _, obj := range objects {
+	for i, obj := range objects {
 		body, err := s.store.Get(ctx, obj.Key)
 		if err != nil {
+			result.Backlog = exactReplayBacklog(objects[i:], next)
 			return result, &ReplayFailure{
 				Key: obj.Key, Classification: ReplayFailureRead,
 				Cause: sanitize.Errorf("reading audit ledger object: %v", err),
@@ -344,18 +356,38 @@ func (s *Sink) ReplayBatch(
 		}
 		rec, err := Decode(body)
 		if err != nil {
+			result.Backlog = exactReplayBacklog(objects[i:], next)
 			return result, &ReplayFailure{
 				Key: obj.Key, Classification: ReplayFailureDecode,
 				Cause: sanitize.Errorf("decoding audit ledger object: %v", err),
 			}
 		}
 		if err := deliver(ctx, rec); err != nil {
+			result.Backlog = exactReplayBacklog(objects[i:], next)
 			return result, sanitize.Errorf("forwarding audit record: %v", err)
 		}
 		result.Delivered++
 		result.LastDelivered = obj.Key
 	}
+	result.Backlog = exactReplayBacklog(nil, next)
 	return result, nil
+}
+
+func exactReplayBacklog(objects []storage.ObjectInfo, next string) *ReplayBacklog {
+	if next != "" {
+		return nil
+	}
+	backlog := &ReplayBacklog{Objects: len(objects)}
+	if len(objects) == 0 {
+		return backlog
+	}
+	backlog.Oldest = objects[0].LastModified
+	for _, obj := range objects[1:] {
+		if obj.LastModified.Before(backlog.Oldest) {
+			backlog.Oldest = obj.LastModified
+		}
+	}
+	return backlog
 }
 
 // Replay forwards ledger records to the searchable stream, beginning at cursor.
