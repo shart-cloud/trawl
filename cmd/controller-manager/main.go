@@ -256,6 +256,7 @@ func main() {
 		setupLog.Error(sanitize.Error(err), "Failed to create the audit sink")
 		os.Exit(1)
 	}
+	auditCommitter := audit.ObserveCommitter(auditSink, trawlMetrics)
 
 	// Nothing above this point serves a request. The manager started, took
 	// leadership and reported healthy while reconciling no taps at all, and
@@ -289,7 +290,7 @@ func main() {
 		Config:   installCfg,
 		Renderer: &controller.CaptureRenderer{Config: installCfg},
 		Store:    artifactStore,
-		Audit:    auditSink,
+		Audit:    auditCommitter,
 		Metrics:  trawlMetrics,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to set up the CaptureJob controller")
@@ -304,7 +305,7 @@ func main() {
 		Scheme:  mgr.GetScheme(),
 		Config:  installCfg,
 		Store:   artifactStore,
-		Audit:   auditSink,
+		Audit:   auditCommitter,
 		Metrics: trawlMetrics,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to set up the retention controller")
@@ -337,7 +338,7 @@ func main() {
 		Client:          mgr.GetClient(),
 		APIReader:       mgr.GetAPIReader(),
 		Providers:       mirrorProviders,
-		Audit:           auditSink,
+		Audit:           auditCommitter,
 		SystemNamespace: installCfg.SystemNamespace,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to set up the PortMirror controller")
@@ -348,8 +349,7 @@ func main() {
 	// a precondition of admission, not a side effect of it.
 	gate := &admission.Gate{
 		SystemNamespace: installCfg.SystemNamespace,
-		Audit:           auditSink,
-		Metrics:         trawlMetrics,
+		Audit:           auditCommitter,
 	}
 	if err := (&admission.NetworkTapWebhook{Gate: gate}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to set up the NetworkTap webhook")

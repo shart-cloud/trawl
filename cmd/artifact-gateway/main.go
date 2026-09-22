@@ -128,13 +128,14 @@ func main() {
 	if err != nil {
 		fatal("configuring the audit client", err)
 	}
+	auditCommitter := audit.ObserveCommitter(auditClient, metrics)
 
 	handler, err := gateway.New(gateway.Options{
 		Reviewer:  reviewer,
 		Jobs:      gateway.NewKubeJobs(kubeClient),
 		Store:     artifacts,
 		Presigner: artifacts,
-		Audit:     auditClient,
+		Audit:     auditCommitter,
 		Metrics:   metrics,
 
 		DownloadsPerMinute:    cfg.Gateway.DownloadsPerMinute,

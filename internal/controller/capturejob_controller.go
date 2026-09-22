@@ -640,17 +640,7 @@ func (r *CaptureJobReconciler) auditTransition(ctx context.Context, job *trawlv1
 }
 
 func (r *CaptureJobReconciler) commit(ctx context.Context, rec audit.Record) error {
-	res, err := r.Audit.Commit(ctx, rec)
-	if r.Metrics != nil {
-		result := res.Result
-		if result == "" {
-			result = audit.ResultUnavailable
-		}
-		r.Metrics.AuditCommitTotal.WithLabelValues(rec.Decision, result).Inc()
-		if result == audit.ResultConflict {
-			r.Metrics.AuditConflictTotal.Inc()
-		}
-	}
+	_, err := r.Audit.Commit(ctx, rec)
 	if err != nil {
 		return fmt.Errorf("%w: %w", admission.ErrAuditUnavailable, sanitize.Error(err))
 	}
