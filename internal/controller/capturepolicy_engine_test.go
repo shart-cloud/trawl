@@ -294,6 +294,8 @@ func newEngineWith(t *testing.T, funcs interceptor.Funcs, objs ...client.Object)
 		WithScheme(testScheme(t)).
 		WithObjects(objs...).
 		WithIndex(&trawlv1alpha1.CaptureJob{}, CaptureJobPolicyUIDIndex, CaptureJobPolicyUIDIndexValues).
+		WithIndex(&trawlv1alpha1.CapturePolicy{}, CapturePolicyTriggerTypeIndex,
+			CapturePolicyTriggerTypeIndexValues).
 		WithStatusSubresource(&trawlv1alpha1.NetworkTap{}, &trawlv1alpha1.CapturePolicy{}, &trawlv1alpha1.CaptureJob{}).
 		WithInterceptorFuncs(funcs).
 		Build()
@@ -597,6 +599,32 @@ func TestOnePolicysFailureDoesNotStopAnother(t *testing.T) {
 	}
 }
 
+func TestEvaluationListsOnlyPoliciesForTheObservationTrigger(t *testing.T) {
+	f := newEngineWith(t, interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if _, ok := list.(*trawlv1alpha1.CapturePolicyList); ok {
+				options := &client.ListOptions{}
+				for _, opt := range opts {
+					opt.ApplyToList(options)
+				}
+				triggerType, exact := "", false
+				if options.FieldSelector != nil {
+					triggerType, exact = options.FieldSelector.RequiresExactMatch(CapturePolicyTriggerTypeIndex)
+				}
+				if !exact || triggerType != string(trawlv1alpha1.CaptureTriggerHubbleDrop) {
+					return fmt.Errorf("CapturePolicies were listed without the trigger-type index")
+				}
+			}
+			return c.List(ctx, list, opts...)
+		},
+	}, hubblePolicy(func(p *trawlv1alpha1.CapturePolicy) { p.Spec.Armed = false }))
+
+	got := only(t, f.evaluate(t, drop()))
+	if got.Outcome != OutcomeDisarmed {
+		t.Errorf("outcome = %s, want Disarmed", got.Outcome)
+	}
+}
+
 func TestThePolicyStopsCapturingAtItsHourlyLimit(t *testing.T) {
 	// The limit is counted from the policy's own CaptureJobs, so it holds
 	// across restarts. Reaching it suppresses the capture and records the
@@ -722,6 +750,78 @@ func BenchmarkPolicyUsageIndexed(b *testing.B) {
 		if usage.Active != jobCount/policyCount {
 			b.Fatalf("active = %d, want %d", usage.Active, jobCount/policyCount)
 		}
+	}
+}
+
+func BenchmarkPolicySelectionFullList(b *testing.B) {
+	for _, policyCount := range []int{10, 100, 1_000} {
+		b.Run(fmt.Sprintf("policies_%d", policyCount), func(b *testing.B) {
+			objects := make([]client.Object, 0, policyCount)
+			for i := range policyCount {
+				triggerType := trawlv1alpha1.CaptureTriggerSuricataAlert
+				if i%2 == 0 {
+					triggerType = trawlv1alpha1.CaptureTriggerHubbleDrop
+				}
+				objects = append(objects, &trawlv1alpha1.CapturePolicy{
+					ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace, Name: fmt.Sprintf("policy-%d", i)},
+					Spec:       trawlv1alpha1.CapturePolicySpec{Trigger: trawlv1alpha1.CapturePolicyTrigger{Type: triggerType}},
+				})
+			}
+			c := fake.NewClientBuilder().WithScheme(testScheme(b)).WithObjects(objects...).Build()
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				var policies trawlv1alpha1.CapturePolicyList
+				if err := c.List(context.Background(), &policies, client.InNamespace(testNamespace)); err != nil {
+					b.Fatal(err)
+				}
+				matched := 0
+				for i := range policies.Items {
+					if policies.Items[i].Spec.Trigger.Type == trawlv1alpha1.CaptureTriggerHubbleDrop {
+						matched++
+					}
+				}
+				if matched != (policyCount+1)/2 {
+					b.Fatalf("matched %d policies, want %d", matched, (policyCount+1)/2)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkPolicySelectionIndexed(b *testing.B) {
+	for _, policyCount := range []int{10, 100, 1_000} {
+		b.Run(fmt.Sprintf("policies_%d", policyCount), func(b *testing.B) {
+			objects := make([]client.Object, 0, policyCount)
+			for i := range policyCount {
+				triggerType := trawlv1alpha1.CaptureTriggerSuricataAlert
+				if i%2 == 0 {
+					triggerType = trawlv1alpha1.CaptureTriggerHubbleDrop
+				}
+				objects = append(objects, &trawlv1alpha1.CapturePolicy{
+					ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace, Name: fmt.Sprintf("policy-%d", i)},
+					Spec:       trawlv1alpha1.CapturePolicySpec{Trigger: trawlv1alpha1.CapturePolicyTrigger{Type: triggerType}},
+				})
+			}
+			c := fake.NewClientBuilder().
+				WithScheme(testScheme(b)).
+				WithObjects(objects...).
+				WithIndex(&trawlv1alpha1.CapturePolicy{}, CapturePolicyTriggerTypeIndex,
+					CapturePolicyTriggerTypeIndexValues).
+				Build()
+			engine := &PolicyEngine{Client: c, Namespace: testNamespace}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				policies, err := engine.policiesFor(context.Background(), trawlv1alpha1.CaptureTriggerHubbleDrop)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if len(policies) != (policyCount+1)/2 {
+					b.Fatalf("selected %d policies, want %d", len(policies), (policyCount+1)/2)
+				}
+			}
+		})
 	}
 }
 
@@ -931,6 +1031,30 @@ func TestAnAlertIsNotOfferedToADenialPolicy(t *testing.T) {
 
 	if len(results) != 0 {
 		t.Errorf("got %+v, want no results - a Suricata alert is not a denied flow", results)
+	}
+}
+
+func TestAnotherTriggerTypeDoesNotPruneAHubbleThresholdWindow(t *testing.T) {
+	f := newEngine(t, activeTap(), hubblePolicy(func(p *trawlv1alpha1.CapturePolicy) {
+		p.Spec.Trigger.HubbleDrop.Threshold = &trawlv1alpha1.DropThreshold{
+			Count: 3, Window: metav1.Duration{Duration: time.Minute},
+		}
+	}))
+	for i := range 2 {
+		f.evaluate(t, drop(func(o *observation.Observation) {
+			o.ID = fmt.Sprintf("drop-%d", i)
+			o.ObservedAt = o.ObservedAt.Add(time.Duration(i) * time.Second)
+		}))
+	}
+	// The indexed Suricata selection contains no Hubble policies. That absence
+	// says nothing about whether their windows are still live.
+	f.evaluate(t, alert())
+	got := only(t, f.evaluate(t, drop(func(o *observation.Observation) {
+		o.ID = "drop-2"
+		o.ObservedAt = o.ObservedAt.Add(2 * time.Second)
+	})))
+	if got.Outcome != OutcomeCreated {
+		t.Errorf("outcome after interleaved alert = %s (%v), want Created", got.Outcome, got.Err)
 	}
 }
 

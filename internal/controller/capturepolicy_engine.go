@@ -151,6 +151,11 @@ type PolicyEngine struct {
 	// server.
 	Client client.Client
 
+	// Policies optionally supplies the cache reader carrying
+	// CapturePolicyTriggerTypeIndex. When nil, Client is the cache-backed
+	// production reader.
+	Policies client.Reader
+
 	// Jobs optionally supplies the cache reader carrying
 	// CaptureJobPolicyUIDIndex. It is separate for control-plane tests that use
 	// a direct API client for writes but still exercise the production index.
@@ -184,9 +189,14 @@ type PolicyEngine struct {
 	windows map[types.UID]*policyWindow
 }
 
-// CaptureJobPolicyUIDIndex is the cache field used to select the immutable set
-// of jobs belonging to one policy identity.
-const CaptureJobPolicyUIDIndex = "spec.policyRef.uid"
+const (
+	// CaptureJobPolicyUIDIndex is the cache field used to select the immutable
+	// set of jobs belonging to one policy identity.
+	CaptureJobPolicyUIDIndex = "spec.policyRef.uid"
+	// CapturePolicyTriggerTypeIndex selects only policies applicable to one
+	// observation source.
+	CapturePolicyTriggerTypeIndex = "spec.trigger.type"
+)
 
 // CaptureJobPolicyUIDIndexValues extracts the value registered under
 // CaptureJobPolicyUIDIndex. Manual captures have no policy identity and are not
@@ -197,6 +207,17 @@ func CaptureJobPolicyUIDIndexValues(obj client.Object) []string {
 		return nil
 	}
 	return []string{string(job.Spec.PolicyRef.UID)}
+}
+
+// CapturePolicyTriggerTypeIndexValues extracts the policy trigger union's
+// discriminator. The API validates the closed values; the index merely avoids
+// copying unrelated policy objects for each event.
+func CapturePolicyTriggerTypeIndexValues(obj client.Object) []string {
+	p, ok := obj.(*trawlv1alpha1.CapturePolicy)
+	if !ok || p.Spec.Trigger.Type == "" {
+		return nil
+	}
+	return []string{string(p.Spec.Trigger.Type)}
 }
 
 // policyWindow is one policy's rolling threshold state, pinned to the threshold
@@ -233,18 +254,20 @@ func (e *PolicyEngine) Evaluate(ctx context.Context, obs *observation.Observatio
 		return nil, nil
 	}
 
-	var policies trawlv1alpha1.CapturePolicyList
-	if err := e.Client.List(ctx, &policies, client.InNamespace(e.Namespace)); err != nil {
-		return nil, sanitize.Errorf("listing capture policies: %v", err)
+	policies, err := e.policiesFor(ctx, triggerType)
+	if err != nil {
+		return nil, err
 	}
-	e.pruneWindows(policies.Items)
+	if triggerType == trawlv1alpha1.CaptureTriggerHubbleDrop {
+		// Rolling windows exist only for Hubble threshold policies. A Suricata
+		// selection deliberately excludes those policies and therefore cannot
+		// prove that their state is orphaned.
+		e.pruneWindows(policies)
+	}
 
 	var results []PolicyResult
-	for i := range policies.Items {
-		p := &policies.Items[i]
-		if p.Spec.Trigger.Type != triggerType {
-			continue
-		}
+	for i := range policies {
+		p := &policies[i]
 		// A policy being deleted still exists for a while. Evaluating it would
 		// create a capture attributed to a rule that is on its way out.
 		if !p.DeletionTimestamp.IsZero() {
@@ -256,6 +279,23 @@ func (e *PolicyEngine) Evaluate(ctx context.Context, obs *observation.Observatio
 		}
 	}
 	return results, nil
+}
+
+func (e *PolicyEngine) policiesFor(
+	ctx context.Context, triggerType trawlv1alpha1.CaptureTriggerType,
+) ([]trawlv1alpha1.CapturePolicy, error) {
+	reader := client.Reader(e.Client)
+	if e.Policies != nil {
+		reader = e.Policies
+	}
+	var policies trawlv1alpha1.CapturePolicyList
+	if err := reader.List(ctx, &policies,
+		client.InNamespace(e.Namespace),
+		client.MatchingFields{CapturePolicyTriggerTypeIndex: string(triggerType)},
+	); err != nil {
+		return nil, sanitize.Errorf("listing capture policies: %v", err)
+	}
+	return policies.Items, nil
 }
 
 // evaluateOne runs one policy against one observation.

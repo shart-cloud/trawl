@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	trawlv1alpha1 "trawl.cloud/trawl/api/v1alpha1"
@@ -109,7 +110,8 @@ func newWorkerFixture(t *testing.T) *workerFixture {
 func (f *workerFixture) newEngine() *controller.PolicyEngine {
 	return &controller.PolicyEngine{
 		Client:    Client(),
-		Jobs:      jobReader,
+		Policies:  eventReader,
+		Jobs:      eventReader,
 		Audit:     f.ledger,
 		Actor:     audit.Actor{Username: "system:serviceaccount:trawl-system:event-worker"},
 		Namespace: f.namespace,
@@ -197,6 +199,26 @@ func (f *workerFixture) armPolicy(
 	}
 	if err := Client().Create(context.Background(), p); err != nil {
 		t.Fatalf("creating policy %s: %v", name, err)
+	}
+	if err := wait.PollUntilContextTimeout(t.Context(), 10*time.Millisecond, 5*time.Second, true,
+		func(ctx context.Context) (bool, error) {
+			var policies trawlv1alpha1.CapturePolicyList
+			if err := eventReader.List(ctx, &policies,
+				client.InNamespace(f.namespace),
+				client.MatchingFields{
+					controller.CapturePolicyTriggerTypeIndex: string(p.Spec.Trigger.Type),
+				},
+			); err != nil {
+				return false, err
+			}
+			for i := range policies.Items {
+				if policies.Items[i].UID == p.UID {
+					return true, nil
+				}
+			}
+			return false, nil
+		}); err != nil {
+		t.Fatalf("waiting for policy %s in the indexed cache: %v", name, err)
 	}
 	return p
 }

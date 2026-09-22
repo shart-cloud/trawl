@@ -211,6 +211,14 @@ func main() {
 	); err != nil {
 		fatal("indexing captures by policy UID", err)
 	}
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&trawlv1alpha1.CapturePolicy{},
+		controller.CapturePolicyTriggerTypeIndex,
+		controller.CapturePolicyTriggerTypeIndexValues,
+	); err != nil {
+		fatal("indexing policies by trigger type", err)
+	}
 	flows.SetCursorStore(&hubble.ConfigMapStore{
 		Client:    mgr.GetClient(),
 		Namespace: cfg.SystemNamespace,
