@@ -32,6 +32,14 @@ bucket. Two policies matching the same flow collapse to one execution: the
 first creates it, the rest record a suppression reference. This is deliberate —
 the analyst wants one pcap of the incident, not one per matching rule.
 
+The time that selects the cooldown bucket must belong to the event occurrence,
+not to a repeat delivery. Hubble reconstructs `ObservedAt` whenever a flow is
+received, so Hubble capture identity uses the stable producer `EventTime`.
+Suricata alerts are replayed from their serialized observation and retain the
+original `ObservedAt` already used by their capture identity. `ObservedAt`
+remains ingestion and latency evidence for Hubble; reconnect time alone cannot
+move the same flow into a new cooldown bucket.
+
 **Deterministic names.** The CaptureJob name derives from that key and bucket,
 so a create-or-get against the API server is the deduplication primitive. etcd
 does the mutual exclusion, not in-process state.

@@ -473,6 +473,41 @@ func TestARepeatOfTheSameEventCollapsesOntoTheExistingCapture(t *testing.T) {
 	}
 }
 
+func TestHubbleCaptureIdentityDoesNotChangeWhenRedeliveryCrossesACooldownBoundary(t *testing.T) {
+	// Hubble reconstructs ObservedAt when it normalizes each delivery. EventTime
+	// and ID describe the immutable occurrence. Using the fresh delivery time
+	// in the cooldown bucket lets reconnect replay manufacture a second
+	// privileged capture for the same flow.
+	f := newEngine(t, activeTap(), hubblePolicy())
+
+	first := only(t, f.evaluate(t, drop()))
+	replayed := only(t, f.evaluate(t, drop(func(o *observation.Observation) {
+		o.ObservedAt = o.ObservedAt.Add(10 * time.Minute)
+	})))
+
+	if first.Outcome != OutcomeCreated {
+		t.Fatalf("first outcome = %s (%v), want Created", first.Outcome, first.Err)
+	}
+	if replayed.Outcome != OutcomeDuplicate {
+		t.Fatalf("replayed outcome = %s (%v), want Duplicate", replayed.Outcome, replayed.Err)
+	}
+	if replayed.CaptureName != first.CaptureName {
+		t.Errorf("redelivery names capture %q, want original %q", replayed.CaptureName, first.CaptureName)
+	}
+
+	newOccurrence := only(t, f.evaluate(t, drop(func(o *observation.Observation) {
+		o.ID = "genuinely-later-flow"
+		o.EventTime = o.EventTime.Add(10 * time.Minute)
+		o.ObservedAt = o.ObservedAt.Add(10 * time.Minute)
+	})))
+	if newOccurrence.Outcome != OutcomeCreated {
+		t.Fatalf("later occurrence outcome = %s (%v), want Created", newOccurrence.Outcome, newOccurrence.Err)
+	}
+	if newOccurrence.CaptureName == first.CaptureName {
+		t.Error("genuinely later occurrence collapsed onto the earlier cooldown bucket")
+	}
+}
+
 func TestLosingTheCreateRaceAdoptsTheExistingCapture(t *testing.T) {
 	// Two workers can evaluate the same event at once - during a leader
 	// handoff, the old leader may still be draining. Both propose the same

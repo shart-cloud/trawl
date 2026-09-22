@@ -291,7 +291,9 @@ func (e *PolicyEngine) evaluateOne(
 		return e.notMatched(res, p, policy.ReasonDifferentTap)
 	}
 
-	key := policy.DeduplicationKey(string(tap.UID), obs.Flow, obs.ObservedAt, p.Spec.RateLimit.Cooldown.Duration)
+	key := policy.DeduplicationKey(
+		string(tap.UID), obs.Flow, deduplicationTime(obs), p.Spec.RateLimit.Cooldown.Duration,
+	)
 	name := policy.CaptureJobName(key)
 
 	// The get half of create-or-get. Cheap, and it is what collapses the
@@ -368,6 +370,21 @@ func (e *PolicyEngine) evaluateOne(
 		res.Err = err
 	}
 	return res, true
+}
+
+// deduplicationTime selects the immutable time that identifies one trigger
+// occurrence before the pure key function buckets it.
+//
+// Hubble normalizes a fresh ObservedAt on every delivery, including deliberate
+// reconnect replay, so its producer-stamped EventTime is the stable occurrence
+// time. Loki replays the whole serialized Suricata observation and therefore
+// preserves its original ObservedAt; retaining that choice avoids changing the
+// established identity of alerts already represented by CaptureJobs.
+func deduplicationTime(obs *observation.Observation) time.Time {
+	if obs.Source.Kind == observation.SourceHubble {
+		return obs.EventTime
+	}
+	return obs.ObservedAt
 }
 
 // notMatched finishes a declined evaluation, or reports nothing at all when the
