@@ -93,7 +93,6 @@ rules:
   - trawl.cloud
   resources:
   - capturejobs/finalizers
-  - networktaps/finalizers
   - portmirrors/finalizers
   verbs:
   - update

@@ -477,7 +477,7 @@ func TestConditionsCarryObservedGeneration(t *testing.T) {
 	}
 }
 
-func TestReconcileAddsAFinalizer(t *testing.T) {
+func TestReconcileDoesNotAddAFinalizerWithoutCleanupWork(t *testing.T) {
 	ns := NewNamespace(t)
 	createNode(t, "final-node", map[string]string{"trawl-test": "final"})
 
@@ -493,36 +493,8 @@ func TestReconcileAddsAFinalizer(t *testing.T) {
 	reconcile(t, r, tap)
 
 	stored := reload(t, tap)
-	if len(stored.Finalizers) == 0 {
-		t.Fatal("no finalizer was added")
-	}
-}
-
-func TestDeletionReleasesTheFinalizer(t *testing.T) {
-	// Deleting a tap stops monitoring; it must not leave the object wedged.
-	ns := NewNamespace(t)
-	createNode(t, "delete-node", map[string]string{"trawl-test": "delete"})
-
-	tap := mirrorTap(ns, "deletion")
-	tap.Spec.MirrorInterface.NodeSelector = metav1.LabelSelector{
-		MatchLabels: map[string]string{"trawl-test": "delete"},
-	}
-	if err := Client().Create(t.Context(), tap); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-
-	r := reconcilerFor(t, ns)
-	reconcile(t, r, tap)
-
-	if err := Client().Delete(t.Context(), reload(t, tap)); err != nil {
-		t.Fatalf("delete: %v", err)
-	}
-	reconcile(t, r, reload(t, tap))
-
-	var after trawlv1alpha1.NetworkTap
-	err := Client().Get(t.Context(), client.ObjectKeyFromObject(tap), &after)
-	if err == nil && len(after.Finalizers) > 0 {
-		t.Errorf("finalizer still present after deletion: %v", after.Finalizers)
+	if len(stored.Finalizers) != 0 {
+		t.Fatalf("finalizers = %v, want none without controller cleanup work", stored.Finalizers)
 	}
 }
 
