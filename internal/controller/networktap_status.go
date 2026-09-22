@@ -62,7 +62,7 @@ func projectNetworkTapStatus(
 		facts.workloadReady, workloadReasonEnum(facts.workloadReady),
 		facts.workloadMessage, facts.generation)
 
-	analyzersHealthy, analyzerMessage := projectedAnalyzerHealth(desired.Targets)
+	analyzersHealthy, analyzerMessage := projectedAnalyzerHealth(desired.Targets, facts.now)
 	setTapCondition(&desired.Conditions, facts.now, status.TypeAnalyzersHealthy,
 		analyzersHealthy, analyzerReasonEnum(analyzersHealthy),
 		analyzerMessage, facts.generation)
@@ -100,28 +100,44 @@ func summarizeTargetStatus(
 ) (ready int32, lastPacket *metav1.Time) {
 	for i := range targets {
 		target := &targets[i]
-		if now.Sub(target.HeartbeatTime.Time) > staleHeartbeat {
-			continue
-		}
-		if allAnalyzersHealthy(target) {
-			ready++
-		}
+		// Packet time is historical evidence. Heartbeat expiry changes whether
+		// this target is healthy now; it cannot make an observed packet never
+		// have happened.
 		if target.LastPacketTime != nil &&
 			(lastPacket == nil || target.LastPacketTime.After(lastPacket.Time)) {
 			lastPacket = target.LastPacketTime
+		}
+		if targetIsFresh(target, now) && allAnalyzersHealthy(target) {
+			ready++
 		}
 	}
 	return ready, lastPacket
 }
 
-func projectedAnalyzerHealth(targets []trawlv1alpha1.TargetStatus) (metav1.ConditionStatus, string) {
+func targetIsFresh(target *trawlv1alpha1.TargetStatus, now time.Time) bool {
+	return now.Sub(target.HeartbeatTime.Time) <= staleHeartbeat
+}
+
+func projectedAnalyzerHealth(
+	targets []trawlv1alpha1.TargetStatus,
+	now time.Time,
+) (metav1.ConditionStatus, string) {
 	if len(targets) == 0 {
 		return metav1.ConditionUnknown, "no sensor has reported yet"
 	}
 
 	var unhealthy []string
+	fresh := 0
+	incomplete := false
 	for i := range targets {
 		target := &targets[i]
+		if !targetIsFresh(target, now) {
+			continue
+		}
+		fresh++
+		if len(target.Analyzers) == 0 {
+			incomplete = true
+		}
 		for _, analyzer := range target.Analyzers {
 			if !analyzer.Healthy {
 				unhealthy = append(unhealthy, fmt.Sprintf("%s/%s", target.NodeName, analyzer.Name))
@@ -129,7 +145,14 @@ func projectedAnalyzerHealth(targets []trawlv1alpha1.TargetStatus) (metav1.Condi
 		}
 	}
 	if len(unhealthy) == 0 {
-		return metav1.ConditionTrue, "all analyzers healthy"
+		switch {
+		case fresh == 0:
+			return metav1.ConditionUnknown, "all sensor reports are stale"
+		case incomplete:
+			return metav1.ConditionUnknown, "a current sensor has not reported analyzer health"
+		default:
+			return metav1.ConditionTrue, "all current analyzers healthy"
+		}
 	}
 	return metav1.ConditionFalse, sanitize.String(fmt.Sprintf("unhealthy: %v", unhealthy))
 }
