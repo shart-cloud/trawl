@@ -111,6 +111,7 @@ func (f *workerFixture) newEngine() *controller.PolicyEngine {
 	return &controller.PolicyEngine{
 		Client:    Client(),
 		Policies:  eventReader,
+		APIReader: Client(),
 		Jobs:      eventReader,
 		Audit:     f.ledger,
 		Actor:     audit.Actor{Username: "system:serviceaccount:trawl-system:event-worker"},

@@ -156,6 +156,13 @@ type PolicyEngine struct {
 	// production reader.
 	Policies client.Reader
 
+	// APIReader verifies an armed policy against the API server before a
+	// matched observation can request a capture. The indexed cache can still
+	// hold a policy after deletion or disarm; this read closes that gap for
+	// privileged work without putting every nonmatching event on the API server.
+	// When nil, Client is used by direct callers and unit tests.
+	APIReader client.Reader
+
 	// Jobs optionally supplies the cache reader carrying
 	// CaptureJobPolicyUIDIndex. It is separate for control-plane tests that use
 	// a direct API client for writes but still exercise the production index.
@@ -298,6 +305,30 @@ func (e *PolicyEngine) policiesFor(
 	return policies.Items, nil
 }
 
+// armedPolicyIsCurrent checks the authoritative policy only after an event
+// matches. A cache-backed selection may still include a deleted, disarmed, or
+// replaced policy, and none of those may authorize a new capture. A changed
+// generation waits for the cache to catch up rather than acting on old bounds.
+func (e *PolicyEngine) armedPolicyIsCurrent(
+	ctx context.Context, cached *trawlv1alpha1.CapturePolicy,
+) (bool, error) {
+	reader := e.APIReader
+	if reader == nil {
+		reader = e.Client
+	}
+	var current trawlv1alpha1.CapturePolicy
+	err := reader.Get(ctx, client.ObjectKeyFromObject(cached), &current)
+	if apierrors.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, sanitize.Errorf("reading current capture policy: %v", err)
+	}
+	return current.UID == cached.UID &&
+		current.Generation == cached.Generation &&
+		current.Spec.Armed && current.DeletionTimestamp.IsZero(), nil
+}
+
 // evaluateOne runs one policy against one observation.
 //
 // The second return says whether there is anything to report. A disarmed policy
@@ -327,6 +358,16 @@ func (e *PolicyEngine) evaluateOne(
 	}
 	if !decision.Matched {
 		return e.notMatched(res, p, decision.Reason)
+	}
+
+	if p.Spec.Armed {
+		current, err := e.armedPolicyIsCurrent(ctx, p)
+		if err != nil {
+			return e.failed(res, status.ReasonDependencyUnavailable, err), true
+		}
+		if !current {
+			return PolicyResult{}, false
+		}
 	}
 
 	res.TriggerTime = obs.ObservedAt
