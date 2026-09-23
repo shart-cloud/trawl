@@ -6,7 +6,9 @@ and invalid-bounds acceptance checks run against the release candidate. SC-003 i
 evaluated at the honestly reported rate the installation produced, and SC-005's
 criterion is the ten-attempt sample the fixtures actually support.
 The WS0.4 implementation and its review corrections passed the complete local
-gates on 2026-09-20. The release remains blocked on a green tag-triggered
+gates on 2026-09-20. On 2026-09-23, the pre-AWS release-prep branch merged the
+later upstream supply-chain work and passed `make lint`, `make test`, `make verify`,
+and `make security` locally. The release remains blocked on a green tag-triggered
 supply-chain workflow and release-candidate cluster validation.
 
 Assembled 2026-09-11 against `admin@talos-cluster` (single node `talos-node`,
@@ -97,7 +99,7 @@ All five security jobs failed the first time they ran and were fixed; see
 |---|---|---|
 | Runbook | **pass** | `docs/src/content/docs/operations/runbook.md` |
 | Evidence handling | **pass** | `docs/src/content/docs/security/evidence-handling.md` |
-| Supply-chain manifest | **pending** | local assembler passes; the latest Images run failed because the SBOM action's output directory was absent, now fixed but not yet proven by a release build |
+| Supply-chain manifest | **pending** | the 2026-09-20 Images run generated the manifest but its folded YAML gate made `jq` read empty stdin; the release-prep fix and executable workflow regression pass locally, but a hosted tag-triggered build has not proved the artifact |
 | Upgrade and rollback | **pass** | `test/integration/upgrade_rollback_test.go` |
 | Quickstart executable | **pass** | every command resolves; `test/e2e/results/quickstart.md` |
 
@@ -177,7 +179,7 @@ Not signed. The measurable-outcome decisions are accepted. Blocking items:
 - [x] Close the remaining WS0.4 code-quality items
 - [ ] Run the invalid-source and invalid-bounds SC-011 checks against the release candidate
 - [ ] Prove the fixed supply-chain job in a tag-triggered Images workflow
-- [x] Rerun `make lint`, `make test`, `make verify`, and `make security` after review corrections (2026-09-20; all pass)
+- [x] Rerun `make lint`, `make test`, `make verify`, and `make security` on the pre-AWS release-prep branch (2026-09-23; all pass locally)
 - [ ] Rerun PortMirror configure/readback/data/revert, verify packet status, and exercise off-namespace rejection
 
 Non-blocking but worth a decision before release:
