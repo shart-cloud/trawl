@@ -308,14 +308,14 @@ jobs:
       - name: Refuse an incomplete supply-chain record
         env:
           MANIFEST: ${{ runner.temp }}/trawl-supply-chain/manifest.json
-        run: >-
-          jq -e
-          '.build.cleanTree == true and
-           .imageDigests.status == "present" and
-           .goVulnerabilities.status == "present" and
-           .sbom.status == "present" and
-           .provenance.status == "present"'
-          "$MANIFEST" >/dev/null
+        run: |
+          jq -e '
+            .build.cleanTree == true and
+            .imageDigests.status == "present" and
+            .goVulnerabilities.status == "present" and
+            .sbom.status == "present" and
+            .provenance.status == "present"
+          ' "$MANIFEST" >/dev/null
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

@@ -24,7 +24,74 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"sigs.k8s.io/yaml"
 )
+
+func TestImagesWorkflowRunsTheCompletenessGateAgainstItsManifest(t *testing.T) {
+	root := repoRoot(t)
+	workflowPath := filepath.Join(root, ".github", "workflows", "images.yml")
+	raw, err := os.ReadFile(workflowPath) //nolint:gosec // Repository fixture.
+	if err != nil {
+		t.Fatalf("reading Images workflow: %v", err)
+	}
+	var workflow struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				Name string `json:"name"`
+				Run  string `json:"run"`
+			} `json:"steps"`
+		} `json:"jobs"`
+	}
+	if err := yaml.Unmarshal(raw, &workflow); err != nil {
+		t.Fatalf("decoding Images workflow: %v", err)
+	}
+	var gate string
+	for _, step := range workflow.Jobs["supply-chain"].Steps {
+		if step.Name == "Refuse an incomplete supply-chain record" {
+			gate = step.Run
+			break
+		}
+	}
+	if gate == "" {
+		t.Fatal("Images workflow has no supply-chain completeness gate")
+	}
+
+	manifestPath := filepath.Join(t.TempDir(), "manifest.json")
+	writeManifest := func(sbomStatus string) {
+		t.Helper()
+		manifest := map[string]any{
+			"build":             map[string]any{"cleanTree": true},
+			"imageDigests":      map[string]any{"status": "present"},
+			"goVulnerabilities": map[string]any{"status": "present"},
+			"sbom":              map[string]any{"status": sbomStatus},
+			"provenance":        map[string]any{"status": "present"},
+		}
+		encoded, err := json.Marshal(manifest)
+		if err != nil {
+			t.Fatalf("encoding manifest fixture: %v", err)
+		}
+		if err := os.WriteFile(manifestPath, encoded, 0o600); err != nil {
+			t.Fatalf("writing manifest fixture: %v", err)
+		}
+	}
+	runGate := func() ([]byte, error) {
+		t.Helper()
+		cmd := exec.CommandContext(t.Context(), "bash", "-e", "-c", gate) //nolint:gosec // Workflow script from this repository.
+		cmd.Dir = root
+		cmd.Env = append(os.Environ(), "MANIFEST="+manifestPath)
+		return cmd.CombinedOutput()
+	}
+
+	writeManifest("present")
+	if output, err := runGate(); err != nil {
+		t.Fatalf("a complete manifest was rejected: %v\n%s", err, output)
+	}
+	writeManifest("unavailable")
+	if output, err := runGate(); err == nil {
+		t.Errorf("an incomplete manifest passed the workflow gate:\n%s", output)
+	}
+}
 
 func TestTheSupplyChainManifestDeclaresEverySection(t *testing.T) {
 	// The manifest's one rule is that a section which could not be produced is
