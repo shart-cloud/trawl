@@ -340,6 +340,66 @@ func only(t *testing.T, results []PolicyResult) PolicyResult {
 	return results[0]
 }
 
+func TestAStaleCachedPolicyCannotAuthorizeACapture(t *testing.T) {
+	// Selection is indexed in the watch cache, but a policy may be deleted or
+	// disarmed at the API server before that cache observes the change. The
+	// authoritative read happens only after a match and before any audit intent
+	// or CaptureJob write.
+	cases := []struct {
+		name        string
+		current     func(*trawlv1alpha1.CapturePolicy) *trawlv1alpha1.CapturePolicy
+		readFailure bool
+	}{
+		{name: "deleted", current: func(*trawlv1alpha1.CapturePolicy) *trawlv1alpha1.CapturePolicy { return nil }},
+		{name: "disarmed", current: func(p *trawlv1alpha1.CapturePolicy) *trawlv1alpha1.CapturePolicy {
+			p.Spec.Armed = false
+			return p
+		}},
+		{name: "recreated", current: func(p *trawlv1alpha1.CapturePolicy) *trawlv1alpha1.CapturePolicy {
+			p.UID = types.UID("replacement-policy")
+			return p
+		}},
+		{name: "new generation", current: func(p *trawlv1alpha1.CapturePolicy) *trawlv1alpha1.CapturePolicy {
+			p.Generation++
+			return p
+		}},
+		{name: "API unavailable", readFailure: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cached := suricataPolicy()
+			f := newEngine(t, activeTap(), cached)
+			if tc.readFailure {
+				f.engine.APIReader = failingReader{}
+			} else {
+				current := tc.current(cached.DeepCopy())
+				var objects []client.Object
+				if current != nil {
+					objects = append(objects, current)
+				}
+				f.engine.APIReader = fake.NewClientBuilder().
+					WithScheme(testScheme(t)).WithObjects(objects...).Build()
+			}
+
+			results := f.evaluate(t, alert())
+			if tc.readFailure {
+				got := only(t, results)
+				if got.Outcome != OutcomeFailed || got.FailureReason != status.ReasonDependencyUnavailable {
+					t.Errorf("decision = %+v, want dependency failure", got)
+				}
+			} else if len(results) != 0 {
+				t.Errorf("stale cached policy still decided: %+v", results)
+			}
+			if jobs := f.jobs(t); len(jobs) != 0 {
+				t.Errorf("stale cached policy created %d captures", len(jobs))
+			}
+			if got := f.audit.commits(audit.DecisionAllowed); got != 0 {
+				t.Errorf("stale cached policy committed %d authorization intents", got)
+			}
+		})
+	}
+}
+
 func TestAMatchingAlertCreatesOneCaptureDescribingWhyItExists(t *testing.T) {
 	// The whole point of the engine. A policy-created capture has to explain
 	// itself long after the alert has aged out of Loki (FR-032), so the job

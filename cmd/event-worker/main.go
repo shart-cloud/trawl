@@ -243,6 +243,7 @@ func main() {
 
 	engine := &controller.PolicyEngine{
 		Client:    mgr.GetClient(),
+		APIReader: mgr.GetAPIReader(),
 		Audit:     auditCommitter,
 		Actor:     workerActor(cfg),
 		Namespace: cfg.SystemNamespace,
