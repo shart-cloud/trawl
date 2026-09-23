@@ -192,7 +192,7 @@ func decode(body queryRangeResponse, limit int) (Result, error) {
 			if !ok {
 				encoded, marshalErr := json.Marshal(value[1])
 				if marshalErr != nil {
-					encoded = []byte(fmt.Sprintf("%T", value[1]))
+					encoded = fmt.Appendf(nil, "%T", value[1])
 				}
 				result.Rows = append(result.Rows, Row{
 					Timestamp: at,

@@ -230,9 +230,9 @@ func TestUnreadableLedgerRecordBlocksReplayAndCursorAdvancement(t *testing.T) {
 			if err == nil {
 				t.Fatal("ReplayOnce reported success across an unreadable ledger object")
 			}
-			var blocked *ReplayFailure
+			var blocked *ReplayError
 			if !errors.As(err, &blocked) {
-				t.Fatalf("error = %T %v, want ReplayFailure", err, err)
+				t.Fatalf("error = %T %v, want ReplayError", err, err)
 			}
 			if blocked.Key != keys[corruptIndex] || blocked.Classification != ReplayFailureDecode {
 				t.Errorf("blocking failure = %+v, want key %q classification %q",

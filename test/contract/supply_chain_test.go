@@ -77,7 +77,7 @@ func TestImagesWorkflowRunsTheCompletenessGateAgainstItsManifest(t *testing.T) {
 	}
 	runGate := func() ([]byte, error) {
 		t.Helper()
-		cmd := exec.CommandContext(t.Context(), "bash", "-e", "-c", gate) //nolint:gosec // Workflow script from this repository.
+		cmd := exec.CommandContext(t.Context(), "bash", "-e", "-c", gate) //nolint:gosec // Repository workflow.
 		cmd.Dir = root
 		cmd.Env = append(os.Environ(), "MANIFEST="+manifestPath)
 		return cmd.CombinedOutput()
