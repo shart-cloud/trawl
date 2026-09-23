@@ -119,10 +119,10 @@ func (s *ConfigMapStore) name() string {
 
 func (s *ConfigMapStore) validate() error {
 	if s.Client == nil {
-		return errors.New("Hubble cursor: no client")
+		return errors.New("hubble cursor: no client")
 	}
 	if s.Namespace == "" {
-		return errors.New("Hubble cursor: no namespace")
+		return errors.New("hubble cursor: no namespace")
 	}
 	return nil
 }

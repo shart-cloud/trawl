@@ -18,6 +18,7 @@ package hubble
 
 import (
 	"context"
+	"maps"
 	"time"
 )
 
@@ -77,9 +78,7 @@ func (c *Client) loadCursor(ctx context.Context) {
 	c.mu.Lock()
 	c.watermark = cursor.Watermark
 	c.handled = make(map[string]time.Time, len(cursor.Handled))
-	for id, at := range cursor.Handled {
-		c.handled[id] = at
-	}
+	maps.Copy(c.handled, cursor.Handled)
 	c.pruneHandledLocked()
 	c.cursorHealthy = true
 	c.cursorLoadFailed = false
@@ -97,9 +96,7 @@ func (c *Client) saveCursor(ctx context.Context) {
 		Watermark: c.watermark,
 		Handled:   make(map[string]time.Time, len(c.handled)),
 	}
-	for id, at := range c.handled {
-		cursor.Handled[id] = at
-	}
+	maps.Copy(cursor.Handled, c.handled)
 	c.mu.Unlock()
 
 	if err := store.Save(ctx, cursor); err != nil {
