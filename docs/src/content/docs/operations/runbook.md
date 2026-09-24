@@ -109,8 +109,10 @@ The reason narrows it further:
 |---|---|---|
 | `WrongNamespace` | the resource is outside the system namespace | admission refuses these; one that exists was written another way. Delete it — it is not configuring anything |
 | `InvalidSpec` | the stored spec fails validation | the message names the field. Usually an object restored from a backup that predates a rule |
-| `CredentialMissing` | the `deviceRef` Secret is absent or missing `address`, `username` or `password` | check the Secret, and ESO's sync if it is managed |
-| `DeviceUnreachable` | no answer from the device's REST API | below |
+| CredentialMissing | the device Secret is absent or lacks required fields for the selected provider | check address and username; REST needs password, SSH needs sshHostKey and a private key or password |
+| DeviceUnreachable | the device did not answer through the selected transport | below |
+| DeviceUntrusted | the SSH host key is invalid or does not match the pinned key | verify the key out of band before changing the Secret |
+| DeviceUnsupported | the SSH profile does not support the reported model, firmware, switch layout, or requested port | use a supported profile or leave the mirror externally managed |
 | `DeviceRefused` | the device answered and rejected the configuration | usually a port name that does not exist on this device, or a user without `write` policy |
 | `MirrorDrifted` | the device's mirror is not what the spec asks | below |
 | `AuditUnavailable` | the ledger could not record the device change, so it was not attempted | fail-closed, by design. See *Audit ledger backlog and replay* |
@@ -120,10 +122,17 @@ The reason narrows it further:
 1. `kubectl describe portmirror <name> -n trawl-system` — the conditions, and
    `deviceIdentity` for the model and firmware the device reported.
 2. `kubectl get portmirror <name> -n trawl-system -o jsonpath='{.status.observedSources} -> {.status.observedTarget}{"\n"}'`
-   — what the device says, as against what the spec asks for.
+   — what the device says, as against what the spec asks for. Check `status.observedDirections` for each source port too; mixed directions can otherwise look correct in aggregate.
 3. `kubectl logs -n trawl-system deploy/trawl-controller-manager | grep -i portmirror`
 
-**`DeviceUnreachable` is a network or TLS problem, not a Trawl one.** A factory
+**For SSH mirrors**, confirm the controller has an egress rule to the exact
+switch management address on TCP/22. A wrong host key reports DeviceUntrusted;
+verify the device identity through a trusted channel before updating the Secret.
+A CRS328 running unsupported firmware or lacking the expected mirror fields
+reports DeviceUnsupported and is not changed. The SSH profile is pending the
+hardware acceptance run in ADR-0014.
+
+**DeviceUnreachable on REST mirrors is usually a network or TLS problem.** A factory
 RouterOS device serves a self-signed certificate, so either `ca.crt` is pinned in
 the Secret or `insecureSkipVerify` is set deliberately; a pinned CA that no
 longer matches the device's certificate fails exactly here. Confirm from inside

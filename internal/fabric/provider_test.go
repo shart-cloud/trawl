@@ -90,7 +90,7 @@ func TestObservedStateMatchesRegardlessOfSourceOrder(t *testing.T) {
 	// differently, and an operator who saw Degraded for that reason twice
 	// would stop reading the field.
 	want := Mirror{Sources: []string{"ether1", "ether2"}, Target: "ether24"}
-	got := State{Sources: []string{"ether2", "ether1"}, Target: "ether24"}
+	got := State{Sources: []string{"ether2", "ether1"}, Target: "ether24", Direction: DirectionBoth, SourceDirections: map[string]Direction{"ether1": DirectionBoth, "ether2": DirectionBoth}}
 	if !got.Matches(want) {
 		t.Error("the same mirror in a different order was reported as drift")
 	}
@@ -137,5 +137,21 @@ func TestRegistryNamesWhatItHasWhenAskedForWhatItDoesNot(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "MikroTikRouterOS7") {
 		t.Errorf("the error does not name the providers that do exist: %v", err)
+	}
+}
+
+func TestObservedStateRejectsPerPortDirectionDrift(t *testing.T) {
+	want := Mirror{Sources: []string{"ether1", "ether2"}, Target: "ether24", Direction: DirectionBoth}
+	got := State{
+		Sources: []string{"ether1", "ether2"}, Target: "ether24", Direction: DirectionBoth,
+		SourceDirections: map[string]Direction{"ether1": DirectionIngress, "ether2": DirectionEgress},
+	}
+	if got.Matches(want) {
+		t.Fatal("an aggregate Both concealed different per-port directions")
+	}
+	got.SourceDirections["ether1"] = DirectionBoth
+	got.SourceDirections["ether2"] = DirectionBoth
+	if !got.Matches(want) {
+		t.Fatal("matching per-port directions were reported as drift")
 	}
 }

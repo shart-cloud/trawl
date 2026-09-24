@@ -352,7 +352,7 @@ review. No new API group is planned.
 
 1. Finish WS1's occurrence/ingest-time ADR and extracted feature. It is a
    prerequisite for time-correct pod attribution and later evidence features.
-2. Draft ADR-0014's SSH profile and credential decisions, run R-7 on the
+2. Complete ADR-0014's SSH profile and credential decisions, run R-7 on the
    reference RouterOS switch, then extract WS5a with FR-057 through FR-060.
 3. Draft ADR-0013's attribution contract, run R-8, then extract WS4a with
    FR-061 through FR-064. The eBPF collector is conditional on that spike.

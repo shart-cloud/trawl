@@ -153,7 +153,7 @@ func (r *PortMirrorReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// its own kind of harm.
 	observed, err := provider.Observe(ctx, device)
 	if err != nil {
-		return r.fail(ctx, &mirror, status.ReasonDeviceUnreachable, err)
+		return r.fail(ctx, &mirror, deviceFailureReason(err), err)
 	}
 
 	if !observed.Matches(want) {
@@ -169,22 +169,22 @@ func (r *PortMirrorReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 				audit.DecisionFailed, sanitize.Error(err).Error()); auditErr != nil {
 				return r.fail(ctx, &mirror, status.ReasonAuditUnavailable, auditErr)
 			}
-			// The observation is recorded alongside the refusal. Without it
-			// the operator sees only "the device refused", and has to log into
-			// the switch to learn what it actually has - which is the question
-			// this status field exists to answer, and is most pressing exactly
-			// when Trawl has lost the ability to correct it.
+			// A command may have changed some ports before a later command
+			// failed. Re-read when possible so status shows the partial state.
+			if latest, observeErr := provider.Observe(ctx, device); observeErr == nil {
+				observed = latest
+			}
 			r.recordObservation(&mirror, observed)
-			return r.fail(ctx, &mirror, status.ReasonDeviceRefused,
-				fmt.Errorf("%w; the device currently reports target %q and sources %v",
-					err, observed.Target, observed.Sources))
+			return r.fail(ctx, &mirror, deviceConfigureReason(err),
+				fmt.Errorf("%w; last observed target %q, sources %v and directions %v",
+					err, observed.Target, observed.Sources, observed.SourceDirections))
 		}
 
 		// Read back rather than assuming. Configure returning nil means every
 		// request was accepted, not that the device is in the state asked for.
 		observed, err = provider.Observe(ctx, device)
 		if err != nil {
-			return r.fail(ctx, &mirror, status.ReasonDeviceUnreachable, err)
+			return r.fail(ctx, &mirror, deviceFailureReason(err), err)
 		}
 		if err := r.auditDevice(ctx, &mirror, audit.ActionPortMirrorConfigure,
 			audit.DecisionSucceeded, "the device reports the requested mirror"); err != nil {
@@ -204,6 +204,10 @@ func (r *PortMirrorReconciler) recordObservation(mirror *trawlv1alpha1.PortMirro
 	now := metav1.Now()
 	mirror.Status.ObservedSources = observed.Sources
 	mirror.Status.ObservedTarget = observed.Target
+	mirror.Status.ObservedDirections = make(map[string]trawlv1alpha1.MirrorDirection, len(observed.SourceDirections))
+	for name, direction := range observed.SourceDirections {
+		mirror.Status.ObservedDirections[name] = trawlv1alpha1.MirrorDirection(direction)
+	}
 	if observed.Identity != "" {
 		mirror.Status.DeviceIdentity = observed.Identity
 	}
@@ -235,7 +239,7 @@ func (r *PortMirrorReconciler) report(
 		mirror.Status.Phase = trawlv1alpha1.PortMirrorDegraded
 		status.Set(&mirror.Status.Conditions, status.New(status.TypeMirrorConfigured,
 			metav1.ConditionFalse, status.ReasonMirrorDrifted,
-			fmt.Sprintf("the device reports target %q and sources %v", observed.Target, observed.Sources),
+			fmt.Sprintf("the device reports target %q, sources %v and directions %v", observed.Target, observed.Sources, observed.SourceDirections),
 			mirror.Generation))
 	}
 
@@ -274,7 +278,7 @@ func (r *PortMirrorReconciler) revert(ctx context.Context, mirror *trawlv1alpha1
 			audit.DecisionFailed, sanitize.Error(err).Error()); auditErr != nil {
 			return ctrl.Result{}, auditErr
 		}
-		return r.fail(ctx, mirror, status.ReasonDeviceUnreachable,
+		return r.fail(ctx, mirror, deviceFailureReason(err),
 			fmt.Errorf("the device mirror could not be removed, so this resource is kept: %w", err))
 	}
 
@@ -382,10 +386,12 @@ func (r *PortMirrorReconciler) device(ctx context.Context, mirror *trawlv1alpha1
 	}
 
 	device := fabric.Device{
-		Address:   string(secret.Data["address"]),
-		Username:  string(secret.Data["username"]),
-		Password:  string(secret.Data["password"]),
-		CACertPEM: secret.Data["ca.crt"],
+		Address:       string(secret.Data["address"]),
+		Username:      string(secret.Data["username"]),
+		Password:      string(secret.Data["password"]),
+		CACertPEM:     secret.Data["ca.crt"],
+		SSHHostKey:    secret.Data["sshHostKey"],
+		SSHPrivateKey: secret.Data["sshPrivateKey"],
 	}
 	// Opt-in per device and only when no CA is pinned, so an installation that
 	// trusts whatever answers is visible in the Secret that chose it.
@@ -400,7 +406,14 @@ func (r *PortMirrorReconciler) device(ctx context.Context, mirror *trawlv1alpha1
 	if device.Username == "" {
 		missing = append(missing, "username")
 	}
-	if device.Password == "" {
+	if mirror.Spec.Provider == trawlv1alpha1.MirrorProviderMikroTikRouterOS7SSH {
+		if len(device.SSHHostKey) == 0 {
+			missing = append(missing, "sshHostKey")
+		}
+		if len(device.SSHPrivateKey) == 0 && device.Password == "" {
+			missing = append(missing, "sshPrivateKey or password")
+		}
+	} else if device.Password == "" {
 		missing = append(missing, "password")
 	}
 	if len(missing) > 0 {
@@ -469,7 +482,8 @@ func (r *PortMirrorReconciler) fail(
 	// unreachable sends an operator to the switch for a problem in the spec.
 	condition := status.TypeDeviceReachable
 	switch reason {
-	case status.ReasonDeviceRefused, status.ReasonAccepted, status.ReasonDeviceConflict,
+	case status.ReasonDeviceRefused, status.ReasonDeviceUnsupported, status.ReasonDeviceUntrusted,
+		status.ReasonAccepted, status.ReasonDeviceConflict,
 		status.ReasonInvalidSpec, status.ReasonWrongNamespace:
 		// None of these are statements about reachability. A contended mirror
 		// in particular has not spoken to the device at all, so claiming it
@@ -491,4 +505,24 @@ func (r *PortMirrorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&trawlv1alpha1.PortMirror{}).
 		Named("portmirror").
 		Complete(r)
+}
+
+// deviceFailureReason distinguishes a reachable but unsupported switch and a
+// host-key trust failure from a device that did not answer.
+func deviceFailureReason(err error) string {
+	switch {
+	case errors.Is(err, fabric.ErrUnsupportedDevice):
+		return status.ReasonDeviceUnsupported
+	case errors.Is(err, fabric.ErrUntrustedDevice):
+		return status.ReasonDeviceUntrusted
+	default:
+		return status.ReasonDeviceUnreachable
+	}
+}
+
+func deviceConfigureReason(err error) string {
+	if errors.Is(err, fabric.ErrUnsupportedDevice) {
+		return status.ReasonDeviceUnsupported
+	}
+	return status.ReasonDeviceRefused
 }

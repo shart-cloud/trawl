@@ -472,15 +472,26 @@ spec:
   direction: Both
 ```
 
-The referenced Secret carries `address`, `username`, `password`, and either
-`ca.crt` or `insecureSkipVerify: "true"`. It is same-namespace, like every other
-reference in this contract.
+The existing MikroTikRouterOS7 provider uses HTTPS REST. Its referenced
+same-namespace Secret carries address, username, password, and either a
+pinned CA in ca.crt or an explicit insecureSkipVerify value.
+
+MikroTikRouterOS7SSH uses the same PortMirror lifecycle for the reviewed
+CRS328 RouterOS 7 CLI profile. Its Secret carries address, username, a pinned
+single OpenSSH public host key in sshHostKey, and either an unencrypted
+sshPrivateKey or password.
+SSH host-key verification cannot be disabled. Commands are built into the
+profile; the CR and Secret cannot supply command text. The controller's
+default-deny egress policy does not open TCP/22. An installation enabling this
+provider must apply a device-address-scoped egress rule, using
+config/samples/routeros_ssh_egress.example.yaml as a starting point. The
+hardware acceptance gate for this profile is recorded in ADR-0014.
 
 ### Spec
 
 ```text
 PortMirrorSpec
-├── provider: MikroTikRouterOS7                        required, immutable
+├── provider: MikroTikRouterOS7 | MikroTikRouterOS7SSH required, immutable
 ├── deviceRef: corev1.LocalObjectReference             required, immutable, non-empty name
 ├── sources[]: string                                  required, 1..48, set, port-name pattern
 ├── target: string                                     required, <=64, port-name pattern
@@ -512,6 +523,7 @@ PortMirrorStatus
 ├── phase: Pending | Active | Degraded | Error
 ├── observedSources[]: string                          set, what the device reports
 ├── observedTarget: string                             what the device reports
+├── observedDirections{}: Ingress | Egress | Both     per source port, what the device reports
 ├── deviceIdentity: string                             model and firmware, as the device states them
 ├── lastVerifiedTime?: metav1.Time                     last successful read-back
 └── conditions[]: metav1.Condition                     map key: type

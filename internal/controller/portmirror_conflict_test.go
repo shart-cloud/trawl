@@ -70,7 +70,10 @@ func (p *countingProvider) Observe(context.Context, fabric.Device) (fabric.State
 
 func (p *countingProvider) Configure(_ context.Context, _ fabric.Device, m fabric.Mirror) error {
 	p.configures++
-	p.state = fabric.State{Sources: m.Sources, Target: m.Target, Identity: "CRS310"}
+	p.state = fabric.State{Sources: m.Sources, Target: m.Target, Direction: fabric.DirectionBoth, SourceDirections: map[string]fabric.Direction{}, Identity: "CRS310"}
+	for _, source := range m.Sources {
+		p.state.SourceDirections[source] = fabric.DirectionBoth
+	}
 	return nil
 }
 
