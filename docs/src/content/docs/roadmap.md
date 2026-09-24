@@ -16,7 +16,8 @@ wrong order.
 
 Nothing here is a task list. Where a workstream has a decision that has to be
 made before code exists, the decision is named as a decision and not disguised
-as an implementation detail.
+as an implementation detail. The current slice order and exit gates are in
+specs/002-post-mvp-evolution/plan.md; WS4 and WS5 are split there.
 
 ### Principles carried forward from the MVP
 
@@ -51,13 +52,14 @@ Shipped and gated:
   ledger (`CaptureJob`, artifact gateway, analyst/viewer/retention-admin roles)
 - Event-driven capture from Suricata alerts and Hubble drops (`CapturePolicy`)
 - Declarative physical port mirroring via a pluggable fabric provider, MikroTik
-  implementation only (`PortMirror`)
+  RouterOS 7 HTTPS REST implementation only (`PortMirror`)
 - Two-layer analyzer content: upstream refresh at pod start, digest-pinned OCI
   overlay for custom content, GitOps-managed
 
 Deliberately not built, and recorded as such: pod injection, TLS decryption,
 dynamic rule/script CRDs, schedule/anomaly/generic-flow triggers, inline
-enforcement, packet replay.
+enforcement, packet replay. Runtime-security-triggered capture is dropped from
+the current program.
 
 ## Workstream 0 — Close the carried gaps
 
@@ -438,9 +440,25 @@ This is exactly the failure that broke the artifact gateway for a day during the
 MVP. It is written into the runbook; the point of writing it there was this
 moment.
 
-## Workstream 4 — eBPF capture via AF_XDP
+## Workstream 4 — Pod attribution and AF_XDP capture
 
-**Priority: after the ring, because the ring is the consumer that justifies it.**
+**Priority**: WS4a attribution follows the observation time model; WS4b
+AF_XDP follows the measured capture prerequisites. They are independent.
+
+### 4a. Pod attribution
+
+Hubble already supplies pod names and workloads to cluster-flow records.
+A bounded pod-lifecycle cache can add a Pod UID only when the flow's occurrence
+time belongs unambiguously to that pod. Packet-analyzer records may inherit
+that identity only through a unique flow, direction, node, and time match.
+Record the attribution source and an explicit unknown or ambiguous outcome.
+
+A narrow eBPF/cgroup spike may add a stronger node-local signal, separate
+from AF_XDP. A physical switch mirror carries no source cgroup context, so
+mirrored packets cannot be assigned a pod from cgroup ID alone. ADR-0013
+defines the identity contract and the evidence threshold before implementation.
+
+### 4b. AF_XDP capture
 
 ### What is already free
 
@@ -474,25 +492,21 @@ Talos they cannot.
 
 ### What AF_XDP does not solve
 
-Zeek has no equivalent native AF_XDP source. So "one capture socket, both
-analyzers" is not achievable this way, which is the second reason the ring
-buffer comes first: the ring *is* the fan-out point.
+Zeek has no equivalent native AF_XDP source. When WS4b lands before WS2,
+only the signature analyzer benefits from this capture path. The later ring
+buffer becomes the fan-out point for both analyzers.
 
-### The other eBPF payoff
+## Workstream 5 — Additional fabric providers
 
-eBPF gives metadata the wire does not carry: cgroup and container identity,
-process and socket ownership, and (see Workstream 7) pre-encryption plaintext at
-the TLS library boundary. Per-pod attribution via cgroup ID is a better answer
-to the original architecture doc's sidecar-injection plan than the sidecar was —
-no mutating webhook, no workload restart, no privileged container inside
-someone else's pod. Worth an ADR superseding that section of the doc.
+**Priority: after 0.2 (device contention) and independent of capture evolution.**
 
-## Workstream 5 — Cloud fabric providers
+The current provider manages RouterOS 7 over HTTPS REST. WS5a adds a shared
+SSH transport and one reviewed RouterOS 7 CLI profile on the reference switch.
+SSH itself is not a generic mirroring command language; a new device family
+requires its own profile with capabilities, readback, and revert. Host keys
+must be pinned, and PortMirror and Secrets cannot contain arbitrary commands.
 
-**Priority: after 0.2 (device contention) and independent of the rest.**
-
-`internal/fabric/provider.go` is an interface with one implementation. The next
-implementations are not more switches:
+WS5b adds cloud providers, each as a separately tested slice:
 
 - **AWS VPC Traffic Mirroring** — mirror session, target, filter; source is an ENI
 - **Azure Virtual Network TAP**
@@ -680,41 +694,30 @@ conversion webhook written under pressure against a shape nobody planned.
 ## Dependency graph and sequencing
 
 ```text
-WS0  Carried gaps
-      │
-      ▼
-WS1  Observation time model  ◄──── gates WS2, WS6, WS8
-      │
-      ├──────────────┐
-      ▼              ▼
-WS2  Ring +        WS3  Storage interface revision
-     AnalysisJob         │
-      │                  ▼
-      │             WS3b Second/third backend
-      │
-      ├──────────────┬──────────────┐
-      ▼              ▼              ▼
-WS4  AF_XDP     WS6  Cloud flow  WS7  TLS key material
-     capture         ingestion        (needs AnalysisJob)
-                     (needs ring)
-      │
-      ▼
-WS8  Flow-addressable evidence  (research first)
+WS0 -> WS1 observation time -> WS4a pod attribution
+          |
+          +-> WS2 buffer + AnalysisJob -> WS6 late flows
+                    |                  -> WS7 session keys
+                    +------------------> WS8 flow retrieval
+WS3 storage portability -----------> WS6 late flows
 
-WS5  Cloud fabric providers  ──── independent, needs only WS0.2
+WS0.2 device contention -> WS5a SSH profile -> WS5b cloud providers
+WS0.3 + traffic generator ----------> WS4b AF_XDP
 ```
 
-**Recommended order:**
+**Current delivery order** (decision D-001 and the 2026-09-24 update):
 
-1. **WS0** — carried gaps. 0.1 through 0.4 are closed.
-2. **WS1** — event time versus ingest time. Small now, a migration later.
-3. **WS2** — ring buffer and AnalysisJob as one increment. The headline.
-4. **WS3** — storage interface revision, then the second backend.
-5. **WS4** — AF_XDP as a mirror-tap capture mode.
-6. **WS5** — cloud fabric providers. Can be pulled earlier; it is independent.
-7. **WS6** — cloud flow ingestion, once late triggers are useful.
-8. **WS7** — decryption key material on AnalysisJob.
-9. **WS8** — flow-addressable evidence, after research.
+1. **WS0** — carried gaps, closed.
+2. **WS1** — occurrence time versus ingestion time.
+3. **WS5a** — SSH transport and first reviewed device profile.
+4. **WS4a** — pod attribution with unknown/ambiguous outcomes.
+5. **WS5b** — cloud mirroring, one provider per verified slice.
+6. **WS4b** — AF_XDP on mirror interfaces with achieved-mode reporting.
+7. **WS2** — bounded rolling buffer and AnalysisJob.
+8. **WS3** — storage interface revision, then a second backend.
+9. **WS6** — late cloud flow ingestion and retrospective extraction.
+10. **WS7** — session-key analysis with separate authorization.
+11. **WS8** — flow-addressable evidence after the research gate.
 
 ## ADRs this plan requires
 
@@ -726,9 +729,9 @@ Following ADR-0001 through 0007, the next numbers:
 | 0009 | Ring buffer ownership (dedicated writer vs analyzer-owned), disk budget, exhaustion behaviour, truncation honesty | WS2 |
 | 0010 | AnalysisJob source union and the offline connection-boundary treatment | WS2 |
 | 0011 | Storage interface portability: the write-once guarantee all backends must hold, and what is refused rather than weakened | WS3 |
-| 0012 | AF_XDP constraints: mirror-only, achieved-mode reporting, fallback semantics | WS4 |
-| 0013 | Per-pod attribution via eBPF cgroup identity, superseding the sidecar-injection design in the original architecture document | WS4 |
-| 0014 | Cloud fabric provider model: credential handling, `deviceRef` typing, filter scope, cost visibility | WS5 |
+| 0012 | AF_XDP constraints: mirror-only, achieved-mode reporting, fallback semantics | WS4b |
+| 0013 | Time-bound Pod UID attribution, provenance, unknown states, and a node-local eBPF/cgroup feasibility gate; supersedes sidecar injection | WS4a |
+| 0014 | SSH device profiles and host-key custody, then cloud provider credentials, filter scope, and cost visibility | WS5a, WS5b |
 | 0015 | Late-arriving flow sources: watermarks, idempotency, and whether cloud flows are observations or a sibling type | WS6 |
 | 0016 | Key material custody: forms supported, memory-backed mounts, ledger obligations, the `decryption-analyst` grant | WS7 |
 | 0017 | API promotion to `v1beta1` and the conversion strategy | API versioning |
@@ -747,12 +750,11 @@ Following ADR-0001 through 0007, the next numbers:
    bidirectional Community ID pivots the five exactly-correlatable fixtures
    support. Only one fixture supports the complete signature/protocol round
    trip, and the evidence continues to say so.
-5. **Cost model for cloud mirroring.** Is spend visibility in scope for
-   `PortMirror` status, or explicitly out of scope?
-6. **Who is this for?** Coursework depth, portfolio and conference artifact, or
-   something someone else installs. WS2 and WS8 serve the first. WS3, WS5 and
-   WS7 serve the third. WS4 serves the second. The order above hedges; a clear
-   answer would sharpen it considerably.
+5. **Cloud mirroring volume — resolved in D-003.** PortMirror reports
+   observed mirrored volume, not an invented monetary estimate.
+6. **Primary audience — resolved in D-001.** The portfolio and conference
+   goal promotes cloud mirroring and AF_XDP; the delivery plan records the
+   cost of moving the buffer later.
 
 ## What this plan deliberately does not include
 
@@ -764,11 +766,11 @@ Following ADR-0001 through 0007, the next numbers:
   with GitOps is a better answer than a CRD holding rule text. This item from the
   original architecture document should be closed as *done differently*, not
   carried.
-- **Sidecar injection via mutating admission webhook.** Superseded by eBPF
-  cgroup attribution (Workstream 4, ADR-0013). The original design mutates user
-  workloads, requires a pod restart to take effect, couples tap lifecycle to
-  workload lifecycle, and places a privileged container inside someone else's
-  pod.
+- **Sidecar injection via mutating admission webhook.** Superseded by
+  time-bound Pod UID attribution (Workstream 4a, ADR-0013). The original design
+  mutates user workloads, requires a pod restart, and couples tap lifecycle to
+  workload lifecycle.
+- **Runtime-security-triggered capture.** Dropped from the current program.
 - **Server-private-key TLS decryption as a primary path.** See Workstream 7. It
   decrypts a shrinking remnant and carries the full custody burden of something
   that works.

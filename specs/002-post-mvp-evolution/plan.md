@@ -22,9 +22,9 @@ absorbed silently.
 
 `/speckit.tasks` should **not** be run against this plan to produce an
 implementation task list. It should be run against each extracted workstream
-feature. What this plan authorizes is the extraction of WS0 and WS1, and nothing
-beyond them, because the later workstreams depend on decisions the earlier ones
-produce.
+feature. WS0 is closed. This revision records candidate slices for WS5 and WS4; each
+still requires its governing ADR, an extracted feature spec, and its own gate
+before implementation begins.
 
 ## Technical Context
 
@@ -36,7 +36,7 @@ produce.
 
 **Testing**: Go unit tests, envtest control-plane integration tests under `test/integration/`, e2e acceptance under `test/e2e/` against an isolated Kind or Talos cluster, storage conformance under `internal/storage/storagetest/`, telemetry contract tests under `internal/telemetry/`
 
-**Target Platform**: Talos Linux on Kubernetes; no SSH, no host shell, no host package installation
+**Target Platform**: Talos Linux on Kubernetes; no SSH into cluster nodes, no host shell, no host package installation. WS5a may use outbound SSH from the controller to a supported network device.
 
 **Project Type**: Kubebuilder v4 single-group operator with seven satellite binaries
 
@@ -44,7 +44,7 @@ produce.
 
 **Constraints**: Passive only; bounded disk for the buffer with no path to host storage exhaustion; low-cardinality telemetry labels; strict configuration decoding, so a schema change rolls every config-parsing component
 
-**Scale/Scope**: Homelab reference cluster. Nine workstreams, ten user stories, 57 functional requirements, 17 measurable outcomes, ten new architecture decision records, one API version promotion.
+**Scale/Scope**: Homelab reference cluster. Nine workstreams with WS4 and WS5 split into bounded slices, twelve user stories, 65 functional requirements, 19 measurable outcomes, ten architecture decision records, one API version promotion.
 
 ## Constitution Check
 
@@ -57,7 +57,7 @@ produce.
 | **III. Evidence Integrity and Least Privilege** | WS2, WS3, WS5, WS7, WS8 | FR-021 routes extracts through the existing storage, authorization, retention and ledger path rather than a parallel one. FR-047 splits decryption from capture-read. FR-049 forbids key material in storage, layers, logs, status and metrics. FR-052 authorizes per-flow reads at flow granularity. FR-030 refuses a storage provider that cannot hold the write-once guarantee rather than weakening it. **Pass.** |
 | **IV. Observable and Correlatable by Design** | WS1, WS2, WS3, WS5 | FR-018 reports buffer storage pressure; FR-020 makes coverage gaps discoverable; FR-025 marks segment-boundary-affected records; FR-041 reports mirrored volume. Correlation values remain structured fields, not index labels. **Watch item:** WS8's flow index is a new high-cardinality surface and must keep flow identifiers as structured metadata. |
 | **V. Verification at Every Boundary** | Every workstream | FR-055 requires each new gate to be demonstrated executing — written directly against the MVP's finding of six silently skipping contract tests. FR-004 converts silent environmental skips to loud failures. D-002 acquires the generator that makes the throughput criterion verifiable rather than nominal. **Pass.** |
-| **VI. Small, Phased, Reversible Delivery** | Program structure | **Attention required.** This is the principle most at risk from a nine-workstream program. Mitigated by extracting one workstream at a time, and by authorizing only WS0 and WS1 extraction now. FR-056's single version promotion needs an explicit upgrade, rollback and cleanup definition before implementation, per the principle's third sentence. **Pass, conditional on the extraction discipline below being followed.** |
+| **VI. Small, Phased, Reversible Delivery** | Program structure | **Attention required.** This is the principle most at risk from a nine-workstream program. Mitigated by extracting one workstream at a time, and by requiring a governing ADR and feature extraction before each new slice. FR-056's single version promotion needs an explicit upgrade, rollback and cleanup definition before implementation, per the principle's third sentence. **Pass, conditional on the extraction discipline below being followed.** |
 
 ### Platform and security constraints
 
@@ -67,26 +67,31 @@ produce.
 - **Credentials**: WS3's workload identity and WS5's per-provider credentials both come from the cluster secret-management boundary. WS7's key material is stricter still — memory-backed and bounded by the run's lifetime.
 - **Capture bounds**: WS2 extends capture semantics, so extraction requests inherit the existing duration and size bounds, and the buffer adds a disk budget as a third bound.
 
-**Security review required** (per Workflow item 4) for: WS2 (new privileged binary, new evidence path), WS3 (credential model change), WS4 (privileged capture mode, node-severing failure mode), WS5 (external infrastructure mutation), WS7 (key custody, new RBAC grant), WS8 (authorization granularity below what RBAC expresses).
+**Security review required** (per Workflow item 4) for: WS2 (new privileged binary, new evidence path), WS3 (credential model change), WS4a (pod metadata RBAC and any new kernel collector), WS4b (privileged capture mode), WS5a (SSH host keys and device mutation), WS5b (external infrastructure mutation), WS7 (key custody, new RBAC grant), WS8 (authorization granularity below what RBAC expresses).
 
 ## Delivery Sequence
 
 Ordering under D-001 (portfolio and conference artifact). Deviations from the
 roadmap's recommended order are marked and justified.
 
-| # | Workstream | Story | Depends on | Extract when |
+| # | Workstream slice | Story | Depends on | Exit gate |
 |---|---|---|---|---|
-| 1 | WS0 Carried gaps | US1 | — | Now |
-| 2 | WS1 Observation time model | US2 | WS0 | Now |
-| 3 | WS5 Cloud fabric providers ⬆ | US7 | WS0.2 | After WS1 lands |
-| 4 | WS4 Kernel-bypass capture ⬆ | US6 | WS0.3, D-002 generator | After WS5 lands |
-| 5 | WS2 Ring buffer + AnalysisJob ⬇ | US3, US4 | WS1, ADR-0009/0010 | After WS4 lands |
-| 6 | WS3 Storage portability ⬇ | US5 | — (pulled ahead of WS6) | After WS2 lands |
-| 7 | WS6 Cloud flow ingestion | US8 | WS1, WS2, WS3 | After WS3 lands |
-| 8 | WS7 TLS key material | US9 | WS2 (AnalysisJob) | After WS6 lands |
-| 9 | WS8 Flow-addressable evidence | US10 | WS2, research | After research concludes |
+| 1 | WS0 Carried gaps | US1 | — | Closed |
+| 2 | WS1 Observation time model | US2 | WS0 | Occurrence and ingest time contract, conversion decision |
+| 3 | WS5a SSH-managed physical mirror | US11 | WS0.2, ADR-0014 | One profile verified on disposable hardware; wrong key and unsupported capability cause zero writes |
+| 4 | WS4a Pod attribution | US12 | WS1, ADR-0013 | Correct UID through pod churn; ambiguous and external traffic stay unknown |
+| 5 | WS5b Cloud fabric providers | US7 | WS0.2, WS5a provider lessons | First provider creates, observes, and reverts owned resources; volume observable |
+| 6 | WS4b AF_XDP capture | US6 | WS0.3, D-002 generator | Mirror-only admission; achieved mode and fallback measured |
+| 7 | WS2 Ring buffer + AnalysisJob | US3, US4 | WS1, ADR-0009/0010 | Pre-trigger extraction, bounded disk, honest coverage, pinned re-analysis |
+| 8 | WS3 Storage portability | US5 | ADR-0011 | Shared conformance suite passes second provider without weaker guarantees |
+| 9 | WS6 Cloud flow ingestion | US8 | WS1, WS2, WS3 | Late/repeated records extract exactly once |
+| 10 | WS7 TLS key material | US9 | WS2, ADR-0016 | Separate authorization and no key bytes in durable surfaces |
+| 11 | WS8 Flow-addressable evidence | US10 | WS2, R-5 research | Go/no-go on index cost and flow-granularity authorization |
 
-⬆ promoted under D-001 ⬇ demoted under D-001
+WS5a and WS4a are the newly scoped slices. WS5b and WS4b preserve the
+portfolio-first order in D-001. Splitting attribution from AF_XDP is deliberate:
+node-local identity does not require a kernel-bypass packet path.
+
 
 ### Why WS1 stays second despite the audience answer
 
@@ -104,21 +109,113 @@ Recorded so that a later reader sees these were chosen, not overlooked.
 1. **Kernel-bypass capture lands before the fan-out point exists.** The roadmap
    sequenced WS4 after WS2 because the buffer is what lets both analyzers share
    one capture path; the protocol analyzer has no native kernel-bypass source of
-   its own. Delivered at position 4, kernel-bypass capture benefits the
+   its own. Delivered at position 6, kernel-bypass capture benefits the
    signature analyzer only, and the protocol analyzer stays on the existing path
    until WS2 lands. Accepted: the demonstrable artifact is the achieved-mode
    reporting and the throughput number, both of which work with one analyzer.
 
-2. **The largest functional gap ships fifth.** Capturing the packets that
+2. **The largest functional gap ships seventh.** Capturing the packets that
    preceded a detection is the product's biggest missing capability, and under
-   this ordering it lands after two workstreams that are more visible but less
-   useful. If the audience answer changes, WS2 is the first thing to promote.
+   this ordering it lands after two portfolio-facing workstreams and the newly
+   requested SSH and attribution slices. If the audience answer changes, WS2
+   is the first thing to promote.
 
-3. **Storage portability is deferred behind cloud mirroring.** WS5 does not
+3. **Storage portability is deferred behind cloud mirroring.** WS5b does not
    depend on WS3, so this is safe, but it means the platform demonstrates cloud
    mirroring while still bound to one storage provider. WS3 is pulled ahead of
    WS6 because cloud flow ingestion reads from provider buckets and wants the
    workload-identity credential model already in place.
+
+## WS5a — SSH-managed physical mirrors
+
+RouterOS 7 over HTTPS REST is already implemented. SSH is a second transport,
+not a universal mirror command language. The first built-in CLI profile should
+target RouterOS 7 on the reference switch, which gives an end-to-end device
+test; a second vendor profile is a separate feature once a device and its
+mirror capabilities are named. PortMirror remains the sole authorizable
+resource and keeps the existing Configure, Observe, Revert, finalizer, and
+write-once audit path.
+
+1. Decide the first profile's supported model, firmware range, port layout,
+   mirror directions, and ownership rule in ADR-0014. Refuse anything outside
+   that matrix before writing. Preserve the one-device-one-owner contention
+   rule and immutable provider and device reference.
+2. Add a shared SSH transport with pinned host-key verification, bounded
+   connect/command timeouts, and Secret-held authentication. Extend the
+   device-credential decoder with a typed SSH form while keeping existing REST
+   Secrets valid. Restrict controller egress to approved device endpoints and
+   port 22. Never accept shell text from a CR or Secret.
+3. Implement profile-specific read, set, and clear operations. Parse a stable
+   machine-readable device output where available. Read back after each
+   configuration attempt and deletion. Treat partial writes as degraded until
+   observed and converged. Confirm direction in the shared state comparison
+   before using it for a new provider.
+4. Test refusal and lifecycle against a fake SSH server, then the reference
+   switch with a disposable mirror. Verify actual copied traffic, not only
+   configuration output; test host-key rotation, mid-write disconnect,
+   repeated reconcile, and deletion after manual drift.
+
+The deliverable is one supported SSH profile plus a reusable transport. A
+device without a reviewed profile remains unsupported, even if it offers SSH.
+
+## WS4a — Pod attribution
+
+This slice is independent of AF_XDP. The current Hubble normalizer already
+carries namespace, pod, and workload names for cluster flows, while Suricata
+and Zeek carry packet-derived flow keys. Hubble does not provide a Community
+ID in Trawl's current path, so joining those records is an inference that
+requires source, destination, ports, protocol, direction, node, and a bounded
+occurrence-time window. The record must expose its attribution source and an
+unknown or ambiguous state.
+
+1. Settle the endpoint identity schema in ADR-0013 after WS1 defines
+   occurrence time: pod UID, namespace, name, provenance, and time interval.
+   Store UID rather than treating a reusable name or IP as identity.
+2. Build a bounded pod-lifecycle cache from Kubernetes watch events. Resolve
+   Hubble's pod name to a UID only when the event time falls within one
+   unambiguous pod lifetime; otherwise record unknown. Do not attach current
+   pod metadata retroactively to old events.
+3. Correlate packet-analyzer observations with Hubble flow observations only
+   when the tuple, direction, node, and time uniquely agree. Preserve the
+   existing correlation grade; do not relabel an inferred match as exact.
+   NAT, shared addresses, missing records, and mirrored external traffic
+   remain unknown unless independent evidence resolves them.
+4. Run a narrow eBPF/cgroup spike on a node-local traffic path to determine
+   whether the kernel can emit a reliable socket or cgroup identifier and
+   whether that identifier can be mapped to Pod UID on Talos. Add a collector
+   only if the spike demonstrates higher coverage without wrong identities.
+   This is separate from AF_XDP capture and does not change user pods.
+5. Verify pod deletion and replacement, address reuse, traffic in both
+   directions, NAT, and a physical switch mirror. The acceptance threshold is
+   zero wrong UIDs in those fixtures, with unknown or ambiguous when proof is
+   absent.
+
+Packet copies from a switch have no originating process context. A cgroup
+helper running while processing such a packet would identify the processing
+context, not the source pod; this path must never invent pod ownership.
+
+## Later major features and gates
+
+- **WS5b cloud mirroring:** extract AWS first only after reviewing the
+  existing unmerged AWS branch; verify provider-owned resources, readback,
+  finalizer cleanup, audit, and mirrored volume. Scope GCP and Azure as
+  separate provider slices with the same gates.
+- **WS4b AF_XDP:** keep it on mirror interfaces, prove the achieved mode and
+  fallback on the reference NIC, and verify no node-level source can enable it.
+- **WS2 buffer and AnalysisJob:** preserve pre-trigger packets within a hard
+  disk budget, report complete/truncated/expired windows, and re-analyze
+  artifacts at pinned content versions.
+- **WS3 storage portability:** revise the interface before a second backend
+  and prove write-once semantics through a common conformance suite.
+- **WS6 late cloud flows:** ingest with watermarks and idempotency, then
+  extract the earlier packet window. It depends on WS1, WS2, and WS3.
+- **WS7 TLS session keys:** run only through AnalysisJob with separate
+  authorization, ephemeral custody, a non-secret ledger identifier, and
+  measured decryption coverage.
+- **WS8 per-flow retrieval:** research index cost and authorization first;
+  proceed only if both can preserve buffer coverage and evidence isolation.
+- **Runtime-security-triggered capture:** dropped from this program. It has
+  no implementation slot or acceptance target.
 
 ## Extraction Discipline
 
@@ -151,9 +248,11 @@ the following rules, which apply to every workstream after WS1:
 | R-4 | Which write-once guarantees all three storage providers can actually hold | ADR-0011, WS3 interface revision | Provider documentation plus a conformance spike against each |
 | R-5 | Flow index cost over a rolling buffer | WS8 go/no-go | Research spike; WS8 is not extracted until this concludes |
 | R-6 | Achieved-mode detection for the kernel-bypass path | ADR-0012, FR-035 | Empirical on the reference NIC and driver |
+| R-7 | First SSH profile capability and readback matrix | ADR-0014, WS5a | Test RouterOS 7 CLI on the reference switch; reject unsupported shapes before mutation |
+| R-8 | Node-local cgroup identity and Pod UID mapping feasibility | ADR-0013, WS4a | Spike on Talos, compare against Hubble metadata and pod-churn fixtures |
 
-R-6 is required before WS4 (position 4). R-1, R-2 and R-3 are required before
-WS2 (position 5). R-4 before WS3. R-5 before WS8.
+R-7 precedes WS5a and R-8 precedes any WS4a kernel collector. R-6 precedes
+WS4b. R-1, R-2 and R-3 precede WS2; R-4 precedes WS3; R-5 precedes WS8.
 
 ## Project Structure
 
@@ -161,11 +260,11 @@ WS2 (position 5). R-4 before WS3. R-5 before WS8.
 
 ```text
 specs/002-post-mvp-evolution/
-├── spec.md              # Program specification (10 stories, 57 FRs, 17 SCs)
+├── spec.md              # Program specification (12 stories, 65 FRs, 19 SCs)
 ├── plan.md              # This file — sequencing and decomposition
 ├── research.md          # Phase 0 — required before WS2 extraction
 └── checklists/
-    └── requirements.md  # Spec quality validation (all items pass)
+    └── requirements.md  # Initial draft validation; new slices revalidate
 ```
 
 Per-workstream features are created by `/speckit.specify` at extraction time:
@@ -173,13 +272,15 @@ Per-workstream features are created by `/speckit.specify` at extraction time:
 ```text
 specs/003-carried-gaps/           # WS0 — US1
 specs/004-observation-time/       # WS1 — US2
-specs/005-cloud-fabric/           # WS5 — US7
-specs/006-afxdp-capture/          # WS4 — US6
-specs/007-ring-buffer-analysis/   # WS2 — US3, US4
-specs/008-storage-portability/    # WS3 — US5
-specs/009-cloud-flow-ingestion/   # WS6 — US8
-specs/010-decryption-material/    # WS7 — US9
-specs/011-flow-addressable/       # WS8 — US10
+specs/005-ssh-fabric/             # WS5a — US11
+specs/006-pod-attribution/        # WS4a — US12
+specs/007-cloud-fabric/           # WS5b — US7
+specs/008-afxdp-capture/          # WS4b — US6
+specs/009-ring-buffer-analysis/   # WS2 — US3, US4
+specs/010-storage-portability/    # WS3 — US5
+specs/011-cloud-flow-ingestion/   # WS6 — US8
+specs/012-decryption-material/    # WS7 — US9
+specs/013-flow-addressable/       # WS8 — US10
 ```
 
 ### Source Code (repository root)
@@ -216,7 +317,7 @@ internal/
 ├── controller/                   # WS0.2 device contention, WS2 AnalysisJob,
                                   #   WS6 flow source
 ├── events/                       # WS1 cursor split, WS6 watermark + idempotency
-├── fabric/                       # WS5 aws/, azure/, gcp/ beside mikrotik/
+├── fabric/                       # WS5a ssh/ and first profile; WS5b cloud providers
 ├── observation/                  # WS1 envelope, WS2 boundary marking
 ├── sensor/                       # WS4 kernel-bypass path and mode detection
 ├── storage/                      # WS3 interface revision, then gcs/, azure/
@@ -233,13 +334,11 @@ docs/src/content/docs/adr/        # ADR-0008 .. ADR-0017
 ```
 
 **Structure Decision**: The existing Kubebuilder v4 single-group layout is
-retained. The program adds one API version directory (`api/v1beta1/` for
-FR-056), one binary (`cmd/buffer-writer/` for WS2), and provider subpackages
-under the two existing provider interfaces (`internal/fabric/`,
-`internal/storage/`). Everything else extends packages already present. No
-workstream requires a layout change, and the multi-group conversion described in
-`AGENTS.md` is not triggered, because every new kind stays in the `trawl.cloud`
-group.
+retained. The program plans one API version directory (api/v1beta1 for FR-056),
+one new binary (cmd/buffer-writer for WS2), and provider subpackages under
+internal/fabric and internal/storage. WS4a may need another collector binary
+if R-8 succeeds; that choice belongs to its extracted feature and security
+review. No new API group is planned.
 
 ## Complexity Tracking
 
@@ -251,7 +350,12 @@ group.
 
 ## Next Actions
 
-1. Accept or amend this plan's Delivery Sequence, particularly the D-001 promotions and their recorded costs.
-2. Extract **WS0** — `/speckit.specify` for the carried gaps, including the D-002 traffic generator as a prerequisite rather than a side task. Two of the four items (the external witness, the observed-byte counter) are already delivered on `phase7-carried-gaps`; the feature covers device contention and the §0.4 list.
-3. Draft **ADR-0008** (event time vs ingest time, lateness bounds, which clock governs rate limits and dedup) and **ADR-0017** (v1beta1 promotion and conversion strategy). WS1 is not extracted until both are accepted.
-4. Do **not** run `/speckit.tasks` against this plan. Run it against each extracted workstream feature.
+1. Finish WS1's occurrence/ingest-time ADR and extracted feature. It is a
+   prerequisite for time-correct pod attribution and later evidence features.
+2. Draft ADR-0014's SSH profile and credential decisions, run R-7 on the
+   reference RouterOS switch, then extract WS5a with FR-057 through FR-060.
+3. Draft ADR-0013's attribution contract, run R-8, then extract WS4a with
+   FR-061 through FR-064. The eBPF collector is conditional on that spike.
+4. Resume WS5b, WS4b, WS2, WS3, WS6, WS7, and WS8 in the delivery order,
+   with each slice's ADR and measured exit gate. Do not run a task generator
+   against this program-level plan.
