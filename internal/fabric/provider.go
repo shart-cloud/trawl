@@ -79,6 +79,11 @@ type Device struct {
 	Username string
 	Password string
 
+	// SSHHostKey is the pinned OpenSSH public key for an SSH-managed device.
+	// SSHPrivateKey is an optional client key; password auth remains available.
+	SSHHostKey    []byte
+	SSHPrivateKey []byte
+
 	// CACertPEM optionally pins the device's TLS certificate. Empty means the
 	// system roots, which on a homelab switch with a self-signed certificate
 	// means the connection will fail - deliberately, rather than silently
@@ -108,8 +113,13 @@ type State struct {
 	Sources []string
 	Target  string
 
-	// Direction is what the device reports, where it distinguishes them.
+	// Direction is the aggregate direction shown in status.
 	Direction Direction
+
+	// SourceDirections preserves each mirrored port's direction. An aggregate
+	// Both can mean one ingress-only source and one egress-only source, which
+	// must not satisfy a request for Both on every source.
+	SourceDirections map[string]Direction
 
 	// Identity is the device's own description of itself - model and firmware
 	// - recorded so an incident months later can tell which it was.
@@ -127,6 +137,18 @@ func (s State) Matches(m Mirror) bool {
 	}
 	if len(s.Sources) != len(m.Sources) {
 		return false
+	}
+	wantDirection := m.Direction
+	if wantDirection == "" {
+		wantDirection = DirectionBoth
+	}
+	if s.Direction != wantDirection {
+		return false
+	}
+	for _, source := range m.Sources {
+		if s.SourceDirections[source] != wantDirection {
+			return false
+		}
 	}
 	got := slices.Clone(s.Sources)
 	want := slices.Clone(m.Sources)
@@ -155,6 +177,11 @@ type Provider interface {
 
 // ErrUnsupportedProvider is returned when no driver is registered for a name.
 var ErrUnsupportedProvider = errors.New("no provider registered for this name")
+
+// ErrUnsupportedDevice means the contacted device cannot safely carry the
+// provider profile. ErrUntrustedDevice means its pinned identity did not match.
+var ErrUnsupportedDevice = errors.New("device is not supported by this provider")
+var ErrUntrustedDevice = errors.New("device SSH host key is not trusted")
 
 // Registry maps provider names to drivers.
 //

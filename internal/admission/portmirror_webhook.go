@@ -134,11 +134,15 @@ func ValidatePortMirrorSpec(spec *trawlv1alpha1.PortMirrorSpec) field.ErrorList 
 	var errs field.ErrorList
 	specPath := field.NewPath("spec")
 
-	if spec.Provider != trawlv1alpha1.MirrorProviderMikroTikRouterOS7 {
+	if spec.Provider != trawlv1alpha1.MirrorProviderMikroTikRouterOS7 &&
+		spec.Provider != trawlv1alpha1.MirrorProviderMikroTikRouterOS7SSH {
 		// A provider the binary has no driver for is not an inert typo: it
 		// names the vendor whose command set is about to be sent to hardware.
 		errs = append(errs, field.NotSupported(specPath.Child("provider"), spec.Provider,
-			[]string{string(trawlv1alpha1.MirrorProviderMikroTikRouterOS7)}))
+			[]string{
+				string(trawlv1alpha1.MirrorProviderMikroTikRouterOS7),
+				string(trawlv1alpha1.MirrorProviderMikroTikRouterOS7SSH),
+			}))
 	}
 
 	// LocalObjectReference carries an optional name, so "deviceRef: {}" is a

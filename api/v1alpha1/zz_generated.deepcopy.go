@@ -790,6 +790,13 @@ func (in *PortMirrorStatus) DeepCopyInto(out *PortMirrorStatus) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	if in.ObservedDirections != nil {
+		in, out := &in.ObservedDirections, &out.ObservedDirections
+		*out = make(map[string]MirrorDirection, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val
+		}
+	}
 	if in.LastVerifiedTime != nil {
 		in, out := &in.LastVerifiedTime, &out.LastVerifiedTime
 		*out = (*in).DeepCopy()

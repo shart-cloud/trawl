@@ -134,6 +134,7 @@ func (p *Provider) Observe(ctx context.Context, d fabric.Device) (fabric.State, 
 	// would produce, and the mismatch is what tells a controller to reconcile.
 	var sources []string
 	var anyIngress, anyEgress bool
+	sourceDirections := make(map[string]fabric.Direction)
 	for _, port := range ports {
 		in := stringField(port, ingressField) == routerOSTrue
 		eg := stringField(port, egressField) == routerOSTrue
@@ -142,13 +143,23 @@ func (p *Provider) Observe(ctx context.Context, d fabric.Device) (fabric.State, 
 		}
 		anyIngress = anyIngress || in
 		anyEgress = anyEgress || eg
-		sources = append(sources, stringField(port, nameField))
+		name := stringField(port, nameField)
+		sources = append(sources, name)
+		switch {
+		case in && eg:
+			sourceDirections[name] = fabric.DirectionBoth
+		case in:
+			sourceDirections[name] = fabric.DirectionIngress
+		case eg:
+			sourceDirections[name] = fabric.DirectionEgress
+		}
 	}
 
 	state := fabric.State{
-		Sources:  sources,
-		Target:   target,
-		Identity: identity,
+		Sources:          sources,
+		Target:           target,
+		SourceDirections: sourceDirections,
+		Identity:         identity,
 	}
 	switch {
 	case anyIngress && anyEgress:

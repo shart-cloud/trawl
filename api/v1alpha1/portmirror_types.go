@@ -27,13 +27,17 @@ import (
 // used and what commands are sent to hardware, and a typo that silently
 // selected a different driver would send one vendor's configuration to
 // another's switch.
-// +kubebuilder:validation:Enum=MikroTikRouterOS7
+// +kubebuilder:validation:Enum=MikroTikRouterOS7;MikroTikRouterOS7SSH
 type MirrorProvider string
 
 const (
 	// MirrorProviderMikroTikRouterOS7 drives RouterOS 7.x switches through
 	// their REST API.
 	MirrorProviderMikroTikRouterOS7 MirrorProvider = "MikroTikRouterOS7"
+
+	// MirrorProviderMikroTikRouterOS7SSH drives the reviewed CRS328
+	// RouterOS 7 CLI profile over host-key-verified SSH.
+	MirrorProviderMikroTikRouterOS7SSH MirrorProvider = "MikroTikRouterOS7SSH"
 )
 
 // MirrorDirection selects which of a source port's traffic is copied.
@@ -158,6 +162,12 @@ type PortMirrorStatus struct {
 
 	// +optional
 	ObservedTarget string `json:"observedTarget,omitempty"`
+
+	// ObservedDirections reports each mirrored source port's actual direction.
+	// A single aggregate Both would hide one ingress-only and one egress-only
+	// port, so this map makes a direction-only drift visible.
+	// +optional
+	ObservedDirections map[string]MirrorDirection `json:"observedDirections,omitempty"`
 
 	// DeviceIdentity is what the device said it is: model and firmware.
 	//

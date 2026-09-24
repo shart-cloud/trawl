@@ -119,6 +119,7 @@ spec:
                 description: Provider selects the driver used to talk to the device.
                 enum:
                 - MikroTikRouterOS7
+                - MikroTikRouterOS7SSH
                 type: string
               sources:
                 description: Sources are the device ports whose traffic is copied.
@@ -225,6 +226,20 @@ spec:
                   successfully.
                 format: date-time
                 type: string
+              observedDirections:
+                additionalProperties:
+                  description: MirrorDirection selects which of a source port's traffic
+                    is copied.
+                  enum:
+                  - Both
+                  - Ingress
+                  - Egress
+                  type: string
+                description: |-
+                  ObservedDirections reports each mirrored source port's actual direction.
+                  A single aggregate Both would hide one ingress-only and one egress-only
+                  port, so this map makes a direction-only drift visible.
+                type: object
               observedGeneration:
                 description: ObservedGeneration is the spec generation last reconciled.
                 format: int64

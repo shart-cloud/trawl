@@ -45,6 +45,7 @@ type fakeDevice struct {
 	reverts      int
 	observes     int
 	configureErr error
+	partialState *fabric.State
 	observeErr   error
 	revertErr    error
 
@@ -66,12 +67,19 @@ func (f *fakeDevice) Observe(context.Context, fabric.Device) (fabric.State, erro
 func (f *fakeDevice) Configure(_ context.Context, _ fabric.Device, m fabric.Mirror) error {
 	f.configures++
 	if f.configureErr != nil {
+		if f.partialState != nil {
+			f.state = *f.partialState
+		}
 		return f.configureErr
 	}
 	f.applied = m
+	directions := make(map[string]fabric.Direction, len(m.Sources))
+	for _, source := range m.Sources {
+		directions[source] = m.Direction
+	}
 	f.state = fabric.State{
 		Sources: m.Sources, Target: m.Target,
-		Direction: m.Direction, Identity: "FakeSwitch 1.0",
+		Direction: m.Direction, SourceDirections: directions, Identity: "FakeSwitch 1.0",
 	}
 	return nil
 }
@@ -188,6 +196,11 @@ func TestAPortMirrorConfiguresTheDeviceAndReportsActive(t *testing.T) {
 		t.Errorf("observedTarget = %q; status should record what the device said",
 			after.Status.ObservedTarget)
 	}
+	for _, source := range m.Spec.Sources {
+		if got := after.Status.ObservedDirections[source]; got != trawlv1alpha1.MirrorDirectionBoth {
+			t.Errorf("observedDirections[%q] = %q, want Both", source, got)
+		}
+	}
 	if after.Status.DeviceIdentity == "" {
 		t.Error("status records no device identity, so an incident cannot tell which device this was")
 	}
@@ -257,6 +270,37 @@ func TestADriftedDeviceIsReportedDegradedWithWhatItActuallyHas(t *testing.T) {
 	}
 }
 
+func TestAFailedMirrorWriteReportsThePartialDeviceState(t *testing.T) {
+	ns := NewNamespace(t)
+	h := mirrorReconcilerFor(t, ns)
+	deviceSecret(t, ns, map[string]string{
+		"address": "192.0.2.10", "username": "trawl", "password": "secret",
+	})
+	m := newMirror(t, ns, "partial")
+	h.device.configureErr = errors.New("second port write failed")
+	h.device.partialState = &fabric.State{
+		Sources: []string{"ether1"}, Target: "ether24",
+		Direction:        fabric.DirectionIngress,
+		SourceDirections: map[string]fabric.Direction{"ether1": fabric.DirectionIngress},
+		Identity:         "FakeSwitch 1.0",
+	}
+
+	reconcileMirror(t, h.r, m)
+
+	after := reloadMirror(t, m)
+	if after.Status.Phase != trawlv1alpha1.PortMirrorError {
+		t.Errorf("phase = %q, want Error", after.Status.Phase)
+	}
+	if got := after.Status.ObservedDirections["ether1"]; got != trawlv1alpha1.MirrorDirectionIngress {
+		t.Errorf("observedDirections[ether1] = %q, want Ingress", got)
+	}
+	if len(after.Status.ObservedSources) != 1 || after.Status.ObservedSources[0] != "ether1" {
+		t.Errorf("observedSources = %v, want [ether1]", after.Status.ObservedSources)
+	}
+	if h.device.observes < 2 {
+		t.Error("failed write was not followed by a readback")
+	}
+}
 func TestAnUnreachableDeviceIsNeverReportedActive(t *testing.T) {
 	// The whole reason Observe is mandatory. A controller that trusted its own
 	// writes would report coverage that stopped existing, and the captures

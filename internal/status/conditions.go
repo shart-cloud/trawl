@@ -125,6 +125,8 @@ const (
 	ReasonPending               = "Pending"
 	ReasonDeviceReachable       = "DeviceReachable"
 	ReasonDeviceUnreachable     = "DeviceUnreachable"
+	ReasonDeviceUnsupported     = "DeviceUnsupported"
+	ReasonDeviceUntrusted       = "DeviceUntrusted"
 	ReasonDeviceRefused         = "DeviceRefused"
 	ReasonMirrorConfigured      = "MirrorConfigured"
 	ReasonMirrorDrifted         = "MirrorDrifted"
@@ -155,7 +157,8 @@ func AllReasons() []string {
 		ReasonArtifactVerified, ReasonArtifactMissing, ReasonChecksumMismatch,
 		ReasonStorageFailure, ReasonDownloadable, ReasonNotDownloadable,
 		ReasonRetentionEnforced, ReasonRetentionFailed, ReasonExpired, ReasonPending,
-		ReasonDeviceReachable, ReasonDeviceUnreachable, ReasonDeviceRefused,
+		ReasonDeviceReachable, ReasonDeviceUnreachable, ReasonDeviceUnsupported,
+		ReasonDeviceUntrusted, ReasonDeviceRefused,
 		ReasonMirrorConfigured, ReasonMirrorDrifted, ReasonDeviceConflict,
 		ReasonCredentialMissing,
 	}

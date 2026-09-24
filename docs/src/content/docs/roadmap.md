@@ -731,7 +731,7 @@ Following ADR-0001 through 0007, the next numbers:
 | 0011 | Storage interface portability: the write-once guarantee all backends must hold, and what is refused rather than weakened | WS3 |
 | 0012 | AF_XDP constraints: mirror-only, achieved-mode reporting, fallback semantics | WS4b |
 | 0013 | Time-bound Pod UID attribution, provenance, unknown states, and a node-local eBPF/cgroup feasibility gate; supersedes sidecar injection | WS4a |
-| 0014 | SSH device profiles and host-key custody, then cloud provider credentials, filter scope, and cost visibility | WS5a, WS5b |
+| 0014 | SSH device profiles and host-key custody; amend for cloud credentials, filter scope, and cost visibility before WS5b | WS5a, WS5b |
 | 0015 | Late-arriving flow sources: watermarks, idempotency, and whether cloud flows are observations or a sibling type | WS6 |
 | 0016 | Key material custody: forms supported, memory-backed mounts, ledger obligations, the `decryption-analyst` grant | WS7 |
 | 0017 | API promotion to `v1beta1` and the conversion strategy | API versioning |

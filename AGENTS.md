@@ -80,7 +80,7 @@ plus a policy per component), `audit/`, `gateway/`, `alloy/` and `grafana/`.
 | `gateway` | the artifact download handler, rate limiters, the `trawlctl` transport |
 | `sensor` | log tailing, the packet meter, duplicate marking, status reporting |
 | `content` | analyzer rule layers: upstream fetch, custom overlay, merge |
-| `fabric` | switch drivers for PortMirror; `fabric/mikrotik` is the only one |
+| `fabric` | PortMirror drivers: RouterOS REST in `fabric/mikrotik`, reviewed RouterOS SSH profile in `fabric/mikrotikssh`, shared pinned-key transport in `fabric/sshtransport` |
 | `events` | Hubble flow streaming and Loki alert polling |
 | `witness` | the lease that lets the manager speak for a dead event worker |
 | `status` | condition types and the closed reason enum |
