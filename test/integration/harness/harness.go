@@ -97,14 +97,20 @@ func RequireMinIO(t *testing.T) *MinIO {
 
 	// Object-lock is enabled at container start: retention is a bucket-creation
 	// property, and the audit ledger's write-once guarantee depends on it.
+	// A clean runner prints image-pull progress to stderr; stdout must contain
+	// only the container ID used by subsequent docker commands.
 	out, err := exec.CommandContext(t.Context(), "docker", "run", "--detach", "--rm",
 		"--publish", fmt.Sprintf("%d:9000", port),
 		"--env", "MINIO_ROOT_USER="+minioAccessKey,
 		"--env", "MINIO_ROOT_PASSWORD="+minioSecretKey,
 		minioImage, "server", "/data",
-	).CombinedOutput()
+	).Output()
 	if err != nil {
-		t.Fatalf("starting MinIO: %v: %s", err, strings.TrimSpace(string(out)))
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			t.Fatalf("starting MinIO: %v: %s", err, strings.TrimSpace(string(exitErr.Stderr)))
+		}
+		t.Fatalf("starting MinIO: %v", err)
 	}
 	containerID := strings.TrimSpace(string(out))
 
