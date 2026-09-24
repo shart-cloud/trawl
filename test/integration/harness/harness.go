@@ -35,6 +35,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -48,7 +49,8 @@ import (
 const (
 	// minioImage is digest-pinned like every other image Trawl runs, so a test
 	// run is reproducible and an upstream retag cannot change what CI verified.
-	minioImage = "quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z"
+	// This source-built release includes the October 2025 MinIO security fix.
+	minioImage = "ghcr.io/coollabsio/minio@sha256:69b55a1c1c5dc285ce04db96689f5b2102317fc77a50680a1874ca6efd1c87f9"
 
 	minioAccessKey = "trawltestaccess"
 	minioSecretKey = "trawltestsecret0" //nolint:gosec // fixed credential for an ephemeral test container
@@ -100,9 +102,9 @@ func RequireMinIO(t *testing.T) *MinIO {
 		"--env", "MINIO_ROOT_USER="+minioAccessKey,
 		"--env", "MINIO_ROOT_PASSWORD="+minioSecretKey,
 		minioImage, "server", "/data",
-	).Output()
+	).CombinedOutput()
 	if err != nil {
-		t.Fatalf("starting MinIO: %v", err)
+		t.Fatalf("starting MinIO: %v: %s", err, strings.TrimSpace(string(out)))
 	}
 	containerID := strings.TrimSpace(string(out))
 
@@ -159,17 +161,26 @@ func (m *MinIO) storeFor(t *testing.T, bucket, credsDir string) *storage.S3Store
 // waitReady polls the MinIO health endpoint until it responds.
 func (m *MinIO) waitReady(ctx context.Context) error {
 	deadline := time.Now().Add(startupTimeout)
+	client := &http.Client{Timeout: 2 * time.Second}
+	url := "http://" + m.Endpoint + "/minio/health/live"
 	var lastErr error
 	for time.Now().Before(deadline) {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		cmd := exec.CommandContext(ctx, "docker", "exec", m.containerID,
-			"curl", "--silent", "--fail", "http://127.0.0.1:9000/minio/health/live")
-		if err := cmd.Run(); err == nil {
-			return nil
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return err
+		}
+		resp, err := client.Do(req)
+		if err == nil {
+			if closeErr := resp.Body.Close(); closeErr != nil {
+				lastErr = fmt.Errorf("closing MinIO health response: %w", closeErr)
+			} else if resp.StatusCode == http.StatusOK {
+				return nil
+			} else {
+				lastErr = fmt.Errorf("MinIO health returned HTTP %d", resp.StatusCode)
+			}
 		} else {
 			lastErr = err
 		}
