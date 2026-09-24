@@ -630,7 +630,7 @@ with hostNetwork can see overlay-decapsulated traffic on each node.
 - [ ] Community ID correlation dashboards
 - [ ] Scheduled baseline captures
 - [ ] Anomaly detection triggers (traffic volume deviation)
-- [ ] Integration with Falco for runtime events → capture triggers
+- [ ] ~~Integration with Falco for runtime events → capture triggers~~ — dropped from the current program (2026-09-24); revival requires a new specification.
 - [ ] PCAP replay capability for SEC503 exercises
 
 ### Phase 5: IPS Mode

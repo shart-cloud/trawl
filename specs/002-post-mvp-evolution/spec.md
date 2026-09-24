@@ -254,7 +254,7 @@ ledgered, and an identity holding only capture-read access cannot perform it.
 
 1. **Given** a stored capture and matching session key material, **When** an authorized analyst requests analysis with decryption, **Then** decrypted protocol observations are produced for the sessions the material covers.
 2. **Given** an identity authorized to read captures but not to decrypt them, **When** they request analysis with decryption, **Then** it is refused, because reading a capture and reading its plaintext are separate grants.
-3. **Given** any analysis run supplied with key material, **When** it runs, **Then** the ledger records who decrypted what, with which key material, and when.
+3. **Given** any analysis run supplied with key material, **When** it runs, **Then** the ledger records who decrypted what, a non-secret identifier for the material used, and when.
 4. **Given** key material supplied to a run, **When** the run ends, **Then** the material does not persist in durable storage, an image layer, logs, status, or metrics.
 5. **Given** key material covering only some sessions in a capture, **When** analysis completes, **Then** the coverage achieved is reported rather than implying the whole capture was decrypted.
 
@@ -285,6 +285,44 @@ granularity.
 
 ---
 
+### User Story 11 - Manage Physical Mirroring Through SSH (Priority: P3)
+
+As an operator, I can use PortMirror on a supported SSH-managed switch when
+the HTTPS API is unavailable. Trawl configures, reads back, audits, and removes
+the mirror through the existing resource lifecycle.
+
+**Independent Test**: Configure, re-reconcile, and delete a mirror on an
+emulator or disposable device for the first built-in profile. Wrong host keys,
+unknown models, and unsupported mirror shapes cause zero writes.
+
+**Acceptance Scenarios**:
+
+1. **Given** a supported profile and pinned host key, **When** a PortMirror is declared, **Then** Active follows readback of sources, direction, and target.
+2. **Given** a repeated reconcile or partial device write, **When** Trawl retries, **Then** it converges without unrelated edits or repeated effective changes.
+3. **Given** deletion, **When** revert completes, **Then** the mirror is absent on readback and mutations appear in the existing ledger.
+4. **Given** an unsupported capability or host-key mismatch, **When** evaluated, **Then** Trawl refuses with a specific reason before writing.
+5. **Given** a resource or Secret, **When** inspected, **Then** neither can supply arbitrary shell commands or templates.
+
+---
+
+### User Story 12 - Attribute Node Traffic to Pods Without Guessing (Priority: P4)
+
+As an analyst, I can see a verified pod identity and its evidence source on
+node-local flows. A reused pod name or address cannot change historical identity.
+
+**Independent Test**: Generate node-local flows, replace a pod with another
+using the same name, and include ambiguous or translated traffic. Verify the
+correct pod UID where evidence suffices and unknown otherwise.
+
+**Acceptance Scenarios**:
+
+1. **Given** a corroborated node-local flow, **When** normalized, **Then** the endpoint carries pod UID, namespace, name, attribution source, and occurrence time.
+2. **Given** pod replacement or address reuse, **When** older records are read, **Then** they retain the old UID.
+3. **Given** NAT, shared addresses, missing metadata, or conflicting matches, **When** attribution runs, **Then** it reports unknown or ambiguous rather than guessing by IP or name.
+4. **Given** a physical-switch mirror without corroborating cluster evidence, **When** packets arrive, **Then** no cgroup-based pod claim is made.
+
+---
+
 ### Edge Cases
 
 - What happens when a buffer extract is requested for a window that begins before the component maintaining the buffer last restarted?
@@ -306,9 +344,9 @@ This program does **not** include:
 
 - **Inline prevention or traffic modification.** The passive-only constraint is unchanged. Adding a second traffic-handling mode requires a separate approved specification, per Constitution Principle I.
 - **A resource holding detection rule or script text.** Digest-pinned content distributed through the existing content model supersedes it. This item from the original architecture document is closed as done differently, not carried.
-- **Injecting capture containers into user workloads.** Superseded by attribution derived from kernel-level container identity, which requires no workload mutation, no restart, and no privileged container inside another team's pod.
+- **Injecting capture containers into user workloads.** Superseded by time-bound Pod UID attribution from corroborated cluster flow metadata, with a node-local kernel signal considered only after a feasibility spike. This requires no workload mutation or restart.
 - **Server-private-key decryption as a primary path.** It recovers a shrinking remnant of modern traffic while carrying the full custody burden of something that works. It may be added last or never.
-- **Schedule-based and anomaly-based capture triggers.** Unchanged from the MVP's recorded exclusions.
+- **Schedule-based, anomaly-based, and runtime-security-triggered capture.** Dropped from the current program; a future proposal would need its own specification.
 
 ### Functional Requirements
 
@@ -387,7 +425,7 @@ This program does **not** include:
 
 - **FR-046**: Analysis runs MUST accept session key material as an input.
 - **FR-047**: Reading a capture and reading its decrypted content MUST be separate authorizations, and the finer grant MUST be verified explicitly rather than inferred.
-- **FR-048**: Every use of key material MUST be recorded in the ledger with the identity, the material, the target, and the time.
+- **FR-048**: Every use of key material MUST be recorded in the ledger with the identity, a non-secret material identifier or fingerprint, the target, and the time; raw key material MUST NOT enter the ledger.
 - **FR-049**: Key material MUST NOT persist in durable storage, image layers, logs, status fields, metrics, or error messages.
 - **FR-050**: Where key material covers only part of a capture, the coverage achieved MUST be reported rather than implied to be total.
 
@@ -403,6 +441,21 @@ This program does **not** include:
 - **FR-055**: Each workstream that introduces a gate MUST also demonstrate that the gate executes, because a gate nobody has run is not a gate.
 - **FR-056**: The cumulative API changes across this program MUST be released as one deliberate version promotion with a conversion path, rather than as a sequence of independent breaking changes to the existing version.
 
+**SSH-managed physical mirroring**
+
+- **FR-057**: SSH mirrors MUST use PortMirror and the existing fabric provider contract with built-in reviewed device profiles, never operator-supplied shell commands.
+- **FR-058**: SSH MUST verify a pinned host key and refuse unknown keys before device mutation; credentials come from the referenced Secret.
+- **FR-059**: Each profile MUST read back sources, direction, and target, configure and revert idempotently, and ledger device mutations.
+- **FR-060**: Unsupported device models, firmware, port layouts, and mirror capabilities MUST be refused before writing.
+
+**Pod attribution**
+
+- **FR-061**: Attributed endpoints MUST carry immutable pod UID, namespace, name, attribution source, and occurrence time; unknown or ambiguous attribution MUST be explicit.
+- **FR-062**: Node-local packet observations MAY inherit identity only from temporally and directionally corroborated flows or verified node-local kernel signals; IP or pod name alone MUST NOT establish identity.
+- **FR-063**: Physical-switch mirrored packets MUST NOT be assigned cgroup identity from the packet itself; independent cluster evidence is required for a pod link.
+- **FR-064**: Attribution MUST NOT mutate application workloads or require restarts. Any new kernel collector requires separate privilege and data-access review.
+
+
 ### Key Entities
 
 - **Observation envelope**: The normative record every analyzer output is normalized into. Gains a separate occurrence time and ingestion time, a lateness marker, and a re-analysis indicator.
@@ -411,10 +464,11 @@ This program does **not** include:
 - **Analysis run**: An execution of a pinned analyzer over a defined source, optionally with key material, producing observations and a ledger record.
 - **Analysis source**: A stored capture artifact, a buffer extraction window, or an object in durable storage.
 - **Storage provider**: An implementation of the evidence store. Characterized by the write-once, conditional-write, version-identity and authorized-read guarantees it can hold.
-- **Fabric provider**: An implementation of device mirroring, physical or cloud. Characterized by its credential model, its device reference shape, and whether its mirroring is metered.
+- **Fabric provider**: An implementation of device mirroring, physical or cloud. An SSH profile adds vendor-specific commands to a shared, host-key-verified transport.
 - **Late flow source**: A provider of flow records delivered after the traffic they describe. Characterized by a progress marker, a lateness tolerance, and re-delivery idempotency.
 - **Key material**: Session secrets supplied to an analysis run. Characterized by its form, the sessions it covers, and a custody lifetime bounded by the run.
 - **Flow reference**: A correlation value addressing one flow across observations and packets.
+- **Pod attribution**: A time-bound endpoint identity with pod UID, provenance, and an explicit unknown or ambiguous state when ownership cannot be established.
 
 ## Success Criteria *(mandatory)*
 
@@ -437,6 +491,8 @@ This program does **not** include:
 - **SC-014**: Per-flow retrieval returns only packets belonging to the requested flow in 100% of tests, and every request is authorized and ledgered at flow granularity.
 - **SC-015**: Every gate introduced by this program is demonstrated to execute and to fail when its condition is violated, with zero gates passing solely because they never ran.
 - **SC-016**: The cumulative API changes are released as a single version promotion, with 100% of existing resources converting without manual manifest edits.
+- **SC-017**: The first SSH profile verifies every Active claim by readback, leaves no mirror after deletion, and performs zero writes on host-key or capability refusal.
+- **SC-018**: In pod replacement, address reuse, NAT, and conflicting-metadata tests, zero observations receive a wrong pod UID and unresolved endpoints report unknown or ambiguous.
 
 ## Assumptions
 
