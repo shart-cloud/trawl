@@ -4,6 +4,11 @@
 **Created**: 2026-09-13
 **Feature**: [spec.md](../spec.md)
 
+**Validation scope**: These checked boxes record the 2026-09-13 draft review.
+The 2026-09-24 SSH and attribution amendments add explicit current-API and
+protocol constraints. Their extracted feature specs require fresh checklists;
+these historical boxes do not certify those future designs.
+
 ## Content Quality
 
 - [x] No implementation details (languages, frameworks, APIs)
